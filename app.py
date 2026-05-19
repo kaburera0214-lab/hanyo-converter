@@ -1,9 +1,12 @@
+import base64
 import csv
 import io
 from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
 
+import pandas as pd
+import requests
 import streamlit as st
 
 # ── Team-EC 固定受注者情報 ────────────────────────────────
@@ -26,13 +29,14 @@ OUT_HEADERS = [
     "出荷済フラグ", "顧客区分", "顧客コード", "消費税率（%）",
 ]
 
-MASTER_PATH = Path(__file__).parent / "master.csv"
+MASTER_PATH  = Path(__file__).parent / "master.csv"
+KOGUCHI_PATH = Path(__file__).parent / "koguchimaster.csv"
 
 
 # ── ユーティリティ ─────────────────────────────────────────
 def to_int(val):
     try:
-        return int(val.strip()) if val and val.strip() else 0
+        return int(str(val).strip()) if val is not None and str(val).strip() else 0
     except (ValueError, AttributeError):
         return 0
 
@@ -85,7 +89,6 @@ def receiver_info(first):
 # ── 商品マスタ読み込み ────────────────────────────────────
 @st.cache_data(show_spinner="商品マスタを読み込み中...")
 def load_master_from_file():
-    """リポジトリ内の master.csv を読み込む（UTF-8）。"""
     if not MASTER_PATH.exists():
         return None, "master.csv が見つかりません"
     master = {}
@@ -101,7 +104,6 @@ def load_master_from_file():
 
 
 def load_master_from_upload(file_bytes):
-    """アップロードされた商品マスタCSV（Shift-JIS）を読み込む。"""
     text = file_bytes.decode("shift_jis", errors="replace")
     reader = csv.DictReader(io.StringIO(text))
     cols = reader.fieldnames or []
@@ -121,8 +123,111 @@ def load_master_from_upload(file_bytes):
     return master, None
 
 
+# ── 個口数マスタ ──────────────────────────────────────────
+@st.cache_data(show_spinner="個口数マスタを読み込み中...")
+def load_koguchi_from_file():
+    """戻り値: {jan: [(数量, 個口数), ...]} 数量昇順"""
+    if not KOGUCHI_PATH.exists():
+        return {}
+    master = {}
+    with open(KOGUCHI_PATH, encoding="utf-8", newline="") as f:
+        for row in csv.DictReader(f):
+            jan     = row.get("SKUコード", "").strip()
+            qty     = to_int(row.get("数量", ""))
+            koguchi = to_int(row.get("個口数", ""))
+            if jan and qty and koguchi:
+                master.setdefault(jan, []).append((qty, koguchi))
+    for jan in master:
+        master[jan].sort(key=lambda x: x[0])
+    return master
+
+
+def koguchi_to_df(master):
+    """個口数マスタ dict → DataFrame"""
+    rows = []
+    for jan, entries in master.items():
+        for qty, koguchi in entries:
+            rows.append({"SKUコード": jan, "数量": qty, "個口数": koguchi})
+    return pd.DataFrame(rows, columns=["SKUコード", "数量", "個口数"]) if rows else \
+           pd.DataFrame(columns=["SKUコード", "数量", "個口数"])
+
+
+def df_to_koguchi(df):
+    """DataFrame → 個口数マスタ dict"""
+    master = {}
+    for _, row in df.iterrows():
+        jan     = str(row.get("SKUコード", "")).strip()
+        qty     = to_int(row.get("数量"))
+        koguchi = to_int(row.get("個口数"))
+        if jan and qty and koguchi:
+            master.setdefault(jan, []).append((qty, koguchi))
+    for jan in master:
+        master[jan].sort(key=lambda x: x[0])
+    return master
+
+
+def save_koguchi_to_github(master):
+    """個口数マスタをGitHubリポジトリに直接コミットする。"""
+    token = st.secrets.get("GITHUB_TOKEN", "")
+    repo  = st.secrets.get("GITHUB_REPO", "")
+    if not token or not repo:
+        return False, "GITHUB_TOKEN / GITHUB_REPO がSecretsに設定されていません"
+
+    rows = []
+    for jan, entries in master.items():
+        for qty, koguchi in sorted(entries):
+            rows.append({"SKUコード": jan, "数量": qty, "個口数": koguchi})
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=["SKUコード", "数量", "個口数"])
+    writer.writeheader()
+    writer.writerows(rows)
+    content_bytes = buf.getvalue().encode("utf-8")
+
+    url     = f"https://api.github.com/repos/{repo}/contents/koguchimaster.csv"
+    headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github.v3+json"}
+
+    r = requests.get(url, headers=headers)
+    sha = r.json().get("sha") if r.ok else None
+
+    payload = {
+        "message": "Update koguchimaster.csv via app",
+        "content": base64.b64encode(content_bytes).decode(),
+    }
+    if sha:
+        payload["sha"] = sha
+
+    r = requests.put(url, json=payload, headers=headers)
+    if r.ok:
+        load_koguchi_from_file.clear()
+        return True, None
+    return False, r.json().get("message", "不明なエラー")
+
+
+def calc_koguchi(items, koguchi_master):
+    if not koguchi_master:
+        return None
+    total = 0
+    found_any = False
+    for item in items:
+        jan     = item.get("SKUコード", "").strip()
+        qty     = to_int(item.get("注文個数", ""))
+        entries = koguchi_master.get(jan)
+        if entries is None:
+            continue
+        found_any = True
+        koguchi = None
+        for threshold, k in entries:
+            if threshold <= qty:
+                koguchi = k
+        if koguchi:
+            total += koguchi
+    if not found_any or total <= 1:
+        return None
+    return total
+
+
 # ── 変換処理 ─────────────────────────────────────────────
-def convert(order_bytes, master):
+def convert(order_bytes, master, koguchi_master):
     text = order_bytes.decode("shift_jis", errors="replace")
     all_rows = [r for r in csv.DictReader(io.StringIO(text)) if any(r.values())]
 
@@ -133,7 +238,6 @@ def convert(order_bytes, master):
 
     today = today_midnight()
     output_rows = []
-    # 未マッチ: {JANコード: [注文番号, ...]}
     not_found = {}
 
     for order_id, items in orders.items():
@@ -152,51 +256,56 @@ def convert(order_bytes, master):
         ship_addr1 = first.get("送付先都道府県", "") + first.get("送付先市区町村", "") + first.get("送付先町名・番地以降", "")
         ship_addr2 = delivery_note(first)
 
+        worker_note = order_datetime(first.get("モール注文日時", ""))
+        koguchi = calc_koguchi(items, koguchi_master)
+        if koguchi:
+            worker_note += f"【個口数{koguchi}】"
+
         for item in items:
-            jan = item.get("SKUコード", "").strip()
+            jan  = item.get("SKUコード", "").strip()
             prod = master.get(jan, {})
             if not prod:
                 not_found.setdefault(jan, []).append(order_id)
 
             row = {
-                "店舗伝票番号":     order_id,
-                "受注日":           today,
-                "受注郵便番号":     recv["郵便番号"],
-                "受注住所１":       recv["住所１"],
-                "受注住所２":       recv["住所２"],
-                "受注名":           recv["名前"],
-                "受注名カナ":       "",
-                "受注電話番号":     recv["電話"],
+                "店舗伝票番号":       order_id,
+                "受注日":             today,
+                "受注郵便番号":       recv["郵便番号"],
+                "受注住所１":         recv["住所１"],
+                "受注住所２":         recv["住所２"],
+                "受注名":             recv["名前"],
+                "受注名カナ":         "",
+                "受注電話番号":       recv["電話"],
                 "受注メールアドレス": "",
-                "発送郵便番号":     first.get("送付先郵便番号", ""),
-                "発送先住所１":     ship_addr1,
-                "発送先住所２":     ship_addr2,
-                "発送先名":         first.get("送付先氏名", ""),
-                "発送先カナ":       "",
-                "発送電話番号":     first.get("送付先電話番号", ""),
-                "支払方法":         "その他",
-                "発送方法":         "ヤマト運輸",
-                "商品計":           item_total or "",
-                "税金":             tax or "",
-                "発送料":           shipping or "",
-                "手数料":           fee or "",
-                "ポイント":         points or "",
-                "その他費用":       coupon or "",
-                "合計金額":         total or "",
-                "ギフトフラグ":     "",
-                "時間帯指定":       first.get("お届け指定時間帯", "").strip().lstrip("'"),
-                "日付指定":         "",
-                "作業者欄":         order_datetime(first.get("モール注文日時", "")),
-                "備考":             "",
-                "商品名":           prod.get("商品名") or item.get("商品名", ""),
-                "商品コード":       prod.get("商品コード") or jan,
-                "商品価格":         item.get("商品単価", ""),
-                "受注数量":         item.get("注文個数", ""),
-                "商品オプション":   "",
-                "出荷済フラグ":     "",
-                "顧客区分":         "",
-                "顧客コード":       "",
-                "消費税率（%）":    item.get("税率", ""),
+                "発送郵便番号":       first.get("送付先郵便番号", ""),
+                "発送先住所１":       ship_addr1,
+                "発送先住所２":       ship_addr2,
+                "発送先名":           first.get("送付先氏名", ""),
+                "発送先カナ":         "",
+                "発送電話番号":       first.get("送付先電話番号", ""),
+                "支払方法":           "その他",
+                "発送方法":           "ヤマト運輸",
+                "商品計":             item_total or "",
+                "税金":               tax or "",
+                "発送料":             shipping or "",
+                "手数料":             fee or "",
+                "ポイント":           points or "",
+                "その他費用":         coupon or "",
+                "合計金額":           total or "",
+                "ギフトフラグ":       "",
+                "時間帯指定":         first.get("お届け指定時間帯", "").strip().lstrip("'"),
+                "日付指定":           "",
+                "作業者欄":           worker_note,
+                "備考":               "",
+                "商品名":             prod.get("商品名") or item.get("商品名", ""),
+                "商品コード":         prod.get("商品コード") or jan,
+                "商品価格":           item.get("商品単価", ""),
+                "受注数量":           item.get("注文個数", ""),
+                "商品オプション":     "",
+                "出荷済フラグ":       "",
+                "顧客区分":           "",
+                "顧客コード":         "",
+                "消費税率（%）":      item.get("税率", ""),
             }
             output_rows.append(row)
 
@@ -211,7 +320,6 @@ def convert(order_bytes, master):
 
 # ── 出荷実績CSV生成 ──────────────────────────────────────
 def convert_shipment(ne_bytes):
-    """NE出荷完了CSV → 出荷実績CSV（モール注文番号・配送方法・送り状番号）"""
     text = ne_bytes.decode("cp932", errors="replace")
     reader = csv.DictReader(io.StringIO(text))
     cols = reader.fieldnames or []
@@ -229,18 +337,17 @@ def convert_shipment(ne_bytes):
         order_num = row[order_col].strip()
         if not order_num:
             continue
-        raw_method = row[method_col].strip()
-        method = "ネコポス" if "ネコポス" in raw_method else "ヤマト"
+        raw_method   = row[method_col].strip()
+        method       = "ネコポス" if "ネコポス" in raw_method else "ヤマト"
         tracking_raw = row[tracking_col].strip()
-        tracking = tracking_raw.split(",")[0].strip() if tracking_raw else ""
+        tracking     = tracking_raw.split(",")[0].strip() if tracking_raw else ""
         rows.append({"モール注文番号": order_num, "配送方法": method, "送り状番号": tracking})
 
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=["モール注文番号", "配送方法", "送り状番号"])
     writer.writeheader()
     writer.writerows(rows)
-    csv_bytes = buf.getvalue().encode("utf-8-sig")
-    return csv_bytes, len(rows), None
+    return buf.getvalue().encode("utf-8-sig"), len(rows), None
 
 
 # ── パスワード認証 ────────────────────────────────────────
@@ -279,16 +386,21 @@ def main():
             dt = datetime.fromtimestamp(mtime).strftime("%Y/%m/%d")
             st.session_state["master_info"] = f"{len(master):,} 件（更新日: {dt}）"
 
-    # ── サイドバー：マスタ更新 ────────────────────────────
+    # ── 個口数マスタの読み込み ────────────────────────────
+    if "koguchi_master" not in st.session_state:
+        km = load_koguchi_from_file()
+        st.session_state["koguchi_master"] = km
+
+    # ── サイドバー ────────────────────────────────────────
     with st.sidebar:
+        # 商品マスタ
         st.header("⚙️ 商品マスタ")
         if st.session_state.get("master"):
             st.success(st.session_state.get("master_info", "読み込み済み"))
         else:
             st.error("マスタ未読み込み")
-
         st.caption("マスタを更新する場合のみアップロード")
-        new_master = st.file_uploader("新しい商品マスタCSV（Shift-JIS）", type="csv")
+        new_master = st.file_uploader("新しい商品マスタCSV（Shift-JIS）", type="csv", key="up_master")
         if new_master:
             master, err = load_master_from_upload(new_master.read())
             if err:
@@ -298,28 +410,56 @@ def main():
                 st.session_state["master_info"] = f"{len(master):,} 件（今回アップロード）"
                 st.success(f"更新しました：{len(master):,} 件")
 
+        st.divider()
+
+        # 個口数マスタ
+        st.header("📦 個口数マスタ")
+        km = st.session_state.get("koguchi_master", {})
+        rule_count = sum(len(v) for v in km.values())
+        st.caption(f"現在 {rule_count} ルール登録済み")
+
+        df = koguchi_to_df(km)
+        edited_df = st.data_editor(
+            df,
+            num_rows="dynamic",
+            use_container_width=True,
+            column_config={
+                "SKUコード": st.column_config.TextColumn("SKUコード", width="medium"),
+                "数量":      st.column_config.NumberColumn("数量", min_value=1, step=1),
+                "個口数":    st.column_config.NumberColumn("個口数", min_value=1, step=1),
+            },
+            key="koguchi_editor",
+        )
+
+        if st.button("💾 GitHubに保存", type="primary", use_container_width=True):
+            new_km = df_to_koguchi(edited_df)
+            ok, err = save_koguchi_to_github(new_km)
+            if ok:
+                st.session_state["koguchi_master"] = new_km
+                st.success("保存しました")
+            else:
+                st.error(f"保存失敗: {err}")
+
     # ── タブ ──────────────────────────────────────────────
     tab1, tab2 = st.tabs(["① 汎用マスタCSV変換", "② 出荷実績CSV生成"])
 
-    # ────────────────────────────────────────────────────
     with tab1:
         st.caption("先方受注CSV → ネクストエンジン汎用マスタCSV")
         st.divider()
-
         st.subheader("受注CSV")
         order_file = st.file_uploader("先方からの受注ファイル", type="csv", key="order_upload")
-
         st.divider()
 
-        master = st.session_state.get("master")
-        can_convert = order_file is not None and master is not None
+        master         = st.session_state.get("master")
+        koguchi_master = st.session_state.get("koguchi_master", {})
+        can_convert    = order_file is not None and master is not None
 
         if not master:
             st.error("商品マスタが読み込まれていません。サイドバーからアップロードしてください。")
 
         if st.button("🔄 変換する", type="primary", disabled=not can_convert, key="btn_convert"):
             with st.spinner("変換中..."):
-                csv_bytes, n_orders, n_rows, not_found = convert(order_file.read(), master)
+                csv_bytes, n_orders, n_rows, not_found = convert(order_file.read(), master, koguchi_master)
 
             if not_found:
                 st.error(f"⚠️ 商品マスタに存在しないJANコードがあります（{len(not_found)} 件）")
@@ -338,24 +478,20 @@ def main():
                 key="dl_hanyo",
             )
 
-    # ────────────────────────────────────────────────────
     with tab2:
         st.caption("NEの出荷完了CSV → 先方への出荷実績CSV")
         st.divider()
-
         st.subheader("NE出荷完了CSV")
         ne_file = st.file_uploader(
             "ネクストエンジンからダウンロードした出荷完了CSV（Shift-JIS）",
             type="csv",
             key="ne_upload",
         )
-
         st.divider()
 
         if st.button("🔄 生成する", type="primary", disabled=ne_file is None, key="btn_shipment"):
             with st.spinner("生成中..."):
                 csv_bytes, n_rows, err = convert_shipment(ne_file.read())
-
             if err:
                 st.error(err)
             else:
