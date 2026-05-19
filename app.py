@@ -184,7 +184,7 @@ def convert(order_bytes, master):
                 "その他費用":       coupon or "",
                 "合計金額":         total or "",
                 "ギフトフラグ":     "",
-                "時間帯指定":       first.get("お届け指定時間帯", "").strip(),
+                "時間帯指定":       first.get("お届け指定時間帯", "").strip().lstrip("'"),
                 "日付指定":         "",
                 "作業者欄":         order_datetime(first.get("モール注文日時", "")),
                 "備考":             "",
