@@ -364,7 +364,7 @@ def main():
                 st.download_button(
                     label="⬇️ 出荷実績CSVをダウンロード",
                     data=csv_bytes,
-                    file_name=f"shipment_{today}.csv",
+                    file_name=f"{today}_[出荷代行]出荷実績.csv",
                     mime="text/csv",
                     key="dl_shipment",
                 )
