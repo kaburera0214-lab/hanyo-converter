@@ -2,6 +2,7 @@ import csv
 import io
 from collections import OrderedDict
 from datetime import datetime
+from pathlib import Path
 
 import streamlit as st
 
@@ -24,6 +25,8 @@ OUT_HEADERS = [
     "商品名", "商品コード", "商品価格", "受注数量", "商品オプション",
     "出荷済フラグ", "顧客区分", "顧客コード", "消費税率（%）",
 ]
+
+MASTER_PATH = Path(__file__).parent / "master.csv"
 
 
 # ── ユーティリティ ─────────────────────────────────────────
@@ -80,7 +83,25 @@ def receiver_info(first):
 
 
 # ── 商品マスタ読み込み ────────────────────────────────────
-def load_master(file_bytes):
+@st.cache_data(show_spinner="商品マスタを読み込み中...")
+def load_master_from_file():
+    """リポジトリ内の master.csv を読み込む（UTF-8）。"""
+    if not MASTER_PATH.exists():
+        return None, "master.csv が見つかりません"
+    master = {}
+    with open(MASTER_PATH, encoding="utf-8", newline="") as f:
+        for row in csv.DictReader(f):
+            jan = row.get("JANコード", "").strip()
+            if jan:
+                master[jan] = {
+                    "商品コード": row.get("商品コード", "").strip(),
+                    "商品名":     row.get("商品名", "").strip(),
+                }
+    return master, None
+
+
+def load_master_from_upload(file_bytes):
+    """アップロードされた商品マスタCSV（Shift-JIS）を読み込む。"""
     text = file_bytes.decode("shift_jis", errors="replace")
     reader = csv.DictReader(io.StringIO(text))
     cols = reader.fieldnames or []
@@ -88,7 +109,7 @@ def load_master(file_bytes):
     code_col = next((c for c in cols if "商品コード" in c), None)
     name_col = next((c for c in cols if "商品名" in c and "英語" not in c), None)
     if not (jan_col and code_col and name_col):
-        return {}, "商品マスタのカラムが見つかりません"
+        return None, "商品マスタのカラムが見つかりません"
     master = {}
     for row in reader:
         jan = row[jan_col].strip()
@@ -112,7 +133,8 @@ def convert(order_bytes, master):
 
     today = today_midnight()
     output_rows = []
-    not_found = set()
+    # 未マッチ: {JANコード: [注文番号, ...]}
+    not_found = {}
 
     for order_id, items in orders.items():
         first = items[0]
@@ -134,7 +156,7 @@ def convert(order_bytes, master):
             jan = item.get("SKUコード", "").strip()
             prod = master.get(jan, {})
             if not prod:
-                not_found.add(jan)
+                not_found.setdefault(jan, []).append(order_id)
 
             row = {
                 "店舗伝票番号":     order_id,
@@ -194,8 +216,7 @@ def check_password():
     st.title("🔐 ログイン")
     pw = st.text_input("パスワード", type="password")
     if st.button("ログイン"):
-        correct = st.secrets.get("APP_PASSWORD", "")
-        if pw == correct:
+        if pw == st.secrets.get("APP_PASSWORD", ""):
             st.session_state["authenticated"] = True
             st.rerun()
         else:
@@ -213,36 +234,68 @@ def main():
     st.title("📦 汎用マスタCSV変換ツール")
     st.caption("先方受注CSV → ネクストエンジン汎用マスタCSV")
 
-    st.divider()
+    # ── 商品マスタの読み込み ──────────────────────────────
+    # セッション内にキャッシュされたマスタを優先
+    if "master" not in st.session_state:
+        master, err = load_master_from_file()
+        if err:
+            st.session_state["master"] = None
+            st.session_state["master_info"] = "未読み込み"
+        else:
+            st.session_state["master"] = master
+            import os
+            mtime = Path(MASTER_PATH).stat().st_mtime
+            dt = datetime.fromtimestamp(mtime).strftime("%Y/%m/%d")
+            st.session_state["master_info"] = f"{len(master):,} 件（更新日: {dt}）"
 
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("① 受注CSV")
-        order_file = st.file_uploader("先方からの受注ファイル", type="csv", key="order")
-    with col2:
-        st.subheader("② 商品マスタCSV")
-        master_file = st.file_uploader("NEからDLした商品マスタ", type="csv", key="master")
+    # ── サイドバー：マスタ更新 ────────────────────────────
+    with st.sidebar:
+        st.header("⚙️ 商品マスタ")
+        if st.session_state.get("master"):
+            st.success(st.session_state.get("master_info", "読み込み済み"))
+        else:
+            st.error("マスタ未読み込み")
 
-    st.divider()
-
-    if st.button("🔄 変換する", type="primary", disabled=not (order_file and master_file)):
-        with st.spinner("変換中..."):
-            master, err = load_master(master_file.read())
+        st.caption("マスタを更新する場合のみアップロード")
+        new_master = st.file_uploader("新しい商品マスタCSV（Shift-JIS）", type="csv")
+        if new_master:
+            master, err = load_master_from_upload(new_master.read())
             if err:
                 st.error(err)
-                return
+            else:
+                st.session_state["master"] = master
+                st.session_state["master_info"] = f"{len(master):,} 件（今回アップロード）"
+                st.success(f"更新しました：{len(master):,} 件")
 
+    st.divider()
+
+    # ── 受注CSV ──────────────────────────────────────────
+    st.subheader("① 受注CSV")
+    order_file = st.file_uploader("先方からの受注ファイル", type="csv")
+
+    st.divider()
+
+    # ── 変換ボタン ────────────────────────────────────────
+    master = st.session_state.get("master")
+    can_convert = order_file is not None and master is not None
+
+    if not master:
+        st.error("商品マスタが読み込まれていません。サイドバーからアップロードしてください。")
+
+    if st.button("🔄 変換する", type="primary", disabled=not can_convert):
+        with st.spinner("変換中..."):
             csv_bytes, n_orders, n_rows, not_found = convert(order_file.read(), master)
 
-        st.success(f"変換完了：{n_orders} 件の注文 / {n_rows} 行")
-
+        # ── エラー表示 ────────────────────────────────────
         if not_found:
-            st.warning(
-                f"商品マスタに見つからなかったJANコード（{len(not_found)}件）：\n"
-                + ", ".join(sorted(not_found))
-                + "\n→ 入力値のまま出力しています"
-            )
+            st.error(f"⚠️ 商品マスタに存在しないJANコードがあります（{len(not_found)} 件）")
+            for jan, orders in not_found.items():
+                st.markdown(f"- **JAN: `{jan}`** → 注文番号: {', '.join(orders)}")
+            st.warning("上記の商品は入力値のまま出力されています。商品マスタを最新版に更新してください。")
+            st.divider()
 
+        # ── 成功・ダウンロード ────────────────────────────
+        st.success(f"変換完了：{n_orders} 件の注文 / {n_rows} 行")
         today = datetime.now().strftime("%Y%m%d")
         st.download_button(
             label="⬇️ 変換済みCSVをダウンロード",
