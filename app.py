@@ -126,16 +126,17 @@ def load_master_from_upload(file_bytes):
 # ── 個口数マスタ ──────────────────────────────────────────
 @st.cache_data(show_spinner="個口数マスタを読み込み中...")
 def load_koguchi_from_file():
-    """戻り値: {jan: [(下限, 上限, 個口数), ...]} 下限昇順。上限0=無制限。"""
+    """戻り値: {jan: [(下限, 上限, 個口数), ...]} 下限昇順。上限0=無制限。個口数は int or '宅配'。"""
     if not KOGUCHI_PATH.exists():
         return {}
     master = {}
     with open(KOGUCHI_PATH, encoding="utf-8", newline="") as f:
         for row in csv.DictReader(f):
-            jan     = (row.get("JANコード") or row.get("SKUコード") or "").strip()
-            lower   = to_int(row.get("数量（下限）") or row.get("数量") or "")
-            upper   = to_int(row.get("数量（上限）", "") or "")
-            koguchi = to_int(row.get("個口数", ""))
+            jan   = (row.get("JANコード") or row.get("SKUコード") or "").strip()
+            lower = to_int(row.get("数量（下限）") or row.get("数量") or "")
+            upper = to_int(row.get("数量（上限）", "") or "")
+            raw   = str(row.get("個口数", "") or "").strip()
+            koguchi = "宅配" if raw == "宅配" else to_int(raw)
             if jan and lower and koguchi:
                 master.setdefault(jan, []).append((lower, upper, koguchi))
     for jan in master:
@@ -162,10 +163,11 @@ def df_to_koguchi(df):
     """DataFrame → 個口数マスタ dict"""
     master = {}
     for _, row in df.iterrows():
-        jan     = str(row.get("JANコード", "") or "").strip()
-        lower   = to_int(row.get("数量（下限）"))
-        upper   = to_int(row.get("数量（上限）") or 0)
-        koguchi = to_int(row.get("個口数"))
+        jan       = str(row.get("JANコード", "") or "").strip()
+        lower     = to_int(row.get("数量（下限）"))
+        upper     = to_int(row.get("数量（上限）") or 0)
+        raw       = str(row.get("個口数", "") or "").strip()
+        koguchi   = "宅配" if raw == "宅配" else to_int(raw)
         if jan and lower and koguchi:
             master.setdefault(jan, []).append((lower, upper, koguchi))
     for jan in master:
@@ -216,10 +218,12 @@ def save_koguchi_to_github(master):
 
 
 def calc_koguchi(items, koguchi_master):
+    """None / int / '宅配' を返す。複数アイテムで1つでも宅配なら宅配優先。"""
     if not koguchi_master:
         return None
     total = 0
     found_any = False
+    is_takuhai = False
     for item in items:
         jan     = item.get("SKUコード", "").strip()
         qty     = to_int(item.get("注文個数", ""))
@@ -227,14 +231,18 @@ def calc_koguchi(items, koguchi_master):
         if entries is None:
             continue
         found_any = True
-        koguchi = None
         for lower, upper, k in entries:
             if lower <= qty and (upper == 0 or qty <= upper):
-                koguchi = k
+                if k == "宅配":
+                    is_takuhai = True
+                else:
+                    total += k
                 break
-        if koguchi:
-            total += koguchi
-    if not found_any or total <= 1:
+    if not found_any:
+        return None
+    if is_takuhai:
+        return "宅配"
+    if total <= 1:
         return None
     return total
 
@@ -271,7 +279,9 @@ def convert(order_bytes, master, koguchi_master):
 
         worker_note = order_datetime(first.get("モール注文日時", ""))
         koguchi = calc_koguchi(items, koguchi_master)
-        if koguchi:
+        if koguchi == "宅配":
+            worker_note += "【宅配変更】"
+        elif koguchi:
             worker_note += f"【個口数{koguchi}】"
 
         for item in items:
@@ -441,7 +451,7 @@ def main():
                 "数量（下限）": st.column_config.NumberColumn("数量（下限）", min_value=1, step=1),
                 "数量（上限）": st.column_config.NumberColumn("数量（上限）", min_value=0, step=1,
                                 help="空白 or 0 = 上限なし"),
-                "個口数":       st.column_config.NumberColumn("個口数", min_value=1, step=1),
+                "個口数":       st.column_config.TextColumn("個口数", help="数字 or 宅配"),
             },
             key="koguchi_editor",
         )
