@@ -153,7 +153,7 @@ def koguchi_to_df(master):
                 "JANコード":    jan,
                 "数量（下限）": lower,
                 "数量（上限）": upper if upper else None,
-                "個口数":       koguchi,
+                "個口数":       str(koguchi),
             })
     cols = ["JANコード", "数量（下限）", "数量（上限）", "個口数"]
     return pd.DataFrame(rows, columns=cols) if rows else pd.DataFrame(columns=cols)
