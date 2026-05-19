@@ -209,6 +209,40 @@ def convert(order_bytes, master):
     return csv_bytes, len(orders), len(output_rows), not_found
 
 
+# ── 出荷実績CSV生成 ──────────────────────────────────────
+def convert_shipment(ne_bytes):
+    """NE出荷完了CSV → 出荷実績CSV（モール注文番号・配送方法・送り状番号）"""
+    text = ne_bytes.decode("cp932", errors="replace")
+    reader = csv.DictReader(io.StringIO(text))
+    cols = reader.fieldnames or []
+
+    order_col    = next((c for c in cols if "受注番号" in c), None)
+    method_col   = next((c for c in cols if "発送方法" in c), None)
+    tracking_col = next((c for c in cols if "発送伝票番号" in c), None)
+
+    missing = [n for n, c in [("受注番号", order_col), ("発送方法", method_col), ("発送伝票番号", tracking_col)] if not c]
+    if missing:
+        return None, 0, f"必要なカラムが見つかりません: {', '.join(missing)}"
+
+    rows = []
+    for row in reader:
+        order_num = row[order_col].strip()
+        if not order_num:
+            continue
+        raw_method = row[method_col].strip()
+        method = "ネコポス" if "ネコポス" in raw_method else "ヤマト"
+        tracking_raw = row[tracking_col].strip()
+        tracking = tracking_raw.split(",")[0].strip() if tracking_raw else ""
+        rows.append({"モール注文番号": order_num, "配送方法": method, "送り状番号": tracking})
+
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=["モール注文番号", "配送方法", "送り状番号"])
+    writer.writeheader()
+    writer.writerows(rows)
+    csv_bytes = buf.getvalue().encode("utf-8-sig")
+    return csv_bytes, len(rows), None
+
+
 # ── パスワード認証 ────────────────────────────────────────
 def check_password():
     if st.session_state.get("authenticated"):
@@ -232,10 +266,8 @@ def main():
         return
 
     st.title("📦 汎用マスタCSV変換ツール")
-    st.caption("先方受注CSV → ネクストエンジン汎用マスタCSV")
 
     # ── 商品マスタの読み込み ──────────────────────────────
-    # セッション内にキャッシュされたマスタを優先
     if "master" not in st.session_state:
         master, err = load_master_from_file()
         if err:
@@ -243,7 +275,6 @@ def main():
             st.session_state["master_info"] = "未読み込み"
         else:
             st.session_state["master"] = master
-            import os
             mtime = Path(MASTER_PATH).stat().st_mtime
             dt = datetime.fromtimestamp(mtime).strftime("%Y/%m/%d")
             st.session_state["master_info"] = f"{len(master):,} 件（更新日: {dt}）"
@@ -267,42 +298,76 @@ def main():
                 st.session_state["master_info"] = f"{len(master):,} 件（今回アップロード）"
                 st.success(f"更新しました：{len(master):,} 件")
 
-    st.divider()
+    # ── タブ ──────────────────────────────────────────────
+    tab1, tab2 = st.tabs(["① 汎用マスタCSV変換", "② 出荷実績CSV生成"])
 
-    # ── 受注CSV ──────────────────────────────────────────
-    st.subheader("① 受注CSV")
-    order_file = st.file_uploader("先方からの受注ファイル", type="csv")
+    # ────────────────────────────────────────────────────
+    with tab1:
+        st.caption("先方受注CSV → ネクストエンジン汎用マスタCSV")
+        st.divider()
 
-    st.divider()
+        st.subheader("受注CSV")
+        order_file = st.file_uploader("先方からの受注ファイル", type="csv", key="order_upload")
 
-    # ── 変換ボタン ────────────────────────────────────────
-    master = st.session_state.get("master")
-    can_convert = order_file is not None and master is not None
+        st.divider()
 
-    if not master:
-        st.error("商品マスタが読み込まれていません。サイドバーからアップロードしてください。")
+        master = st.session_state.get("master")
+        can_convert = order_file is not None and master is not None
 
-    if st.button("🔄 変換する", type="primary", disabled=not can_convert):
-        with st.spinner("変換中..."):
-            csv_bytes, n_orders, n_rows, not_found = convert(order_file.read(), master)
+        if not master:
+            st.error("商品マスタが読み込まれていません。サイドバーからアップロードしてください。")
 
-        # ── エラー表示 ────────────────────────────────────
-        if not_found:
-            st.error(f"⚠️ 商品マスタに存在しないJANコードがあります（{len(not_found)} 件）")
-            for jan, orders in not_found.items():
-                st.markdown(f"- **JAN: `{jan}`** → 注文番号: {', '.join(orders)}")
-            st.warning("上記の商品は入力値のまま出力されています。商品マスタを最新版に更新してください。")
-            st.divider()
+        if st.button("🔄 変換する", type="primary", disabled=not can_convert, key="btn_convert"):
+            with st.spinner("変換中..."):
+                csv_bytes, n_orders, n_rows, not_found = convert(order_file.read(), master)
 
-        # ── 成功・ダウンロード ────────────────────────────
-        st.success(f"変換完了：{n_orders} 件の注文 / {n_rows} 行")
-        today = datetime.now().strftime("%Y%m%d")
-        st.download_button(
-            label="⬇️ 変換済みCSVをダウンロード",
-            data=csv_bytes,
-            file_name=f"hanyo_master_{today}.csv",
-            mime="text/csv",
+            if not_found:
+                st.error(f"⚠️ 商品マスタに存在しないJANコードがあります（{len(not_found)} 件）")
+                for jan, orders in not_found.items():
+                    st.markdown(f"- **JAN: `{jan}`** → 注文番号: {', '.join(orders)}")
+                st.warning("上記の商品は入力値のまま出力されています。商品マスタを最新版に更新してください。")
+                st.divider()
+
+            st.success(f"変換完了：{n_orders} 件の注文 / {n_rows} 行")
+            today = datetime.now().strftime("%Y%m%d")
+            st.download_button(
+                label="⬇️ 変換済みCSVをダウンロード",
+                data=csv_bytes,
+                file_name=f"hanyo_master_{today}.csv",
+                mime="text/csv",
+                key="dl_hanyo",
+            )
+
+    # ────────────────────────────────────────────────────
+    with tab2:
+        st.caption("NEの出荷完了CSV → 先方への出荷実績CSV")
+        st.divider()
+
+        st.subheader("NE出荷完了CSV")
+        ne_file = st.file_uploader(
+            "ネクストエンジンからダウンロードした出荷完了CSV（Shift-JIS）",
+            type="csv",
+            key="ne_upload",
         )
+
+        st.divider()
+
+        if st.button("🔄 生成する", type="primary", disabled=ne_file is None, key="btn_shipment"):
+            with st.spinner("生成中..."):
+                csv_bytes, n_rows, err = convert_shipment(ne_file.read())
+
+            if err:
+                st.error(err)
+            else:
+                st.success(f"生成完了：{n_rows} 件")
+                today = datetime.now().strftime("%Y%m%d")
+                st.download_button(
+                    label="⬇️ 出荷実績CSVをダウンロード",
+                    data=csv_bytes,
+                    file_name=f"shipment_{today}.csv",
+                    mime="text/csv",
+                    key="dl_shipment",
+                )
 
 
 if __name__ == "__main__":
