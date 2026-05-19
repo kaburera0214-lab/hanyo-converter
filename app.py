@@ -126,17 +126,18 @@ def load_master_from_upload(file_bytes):
 # ── 個口数マスタ ──────────────────────────────────────────
 @st.cache_data(show_spinner="個口数マスタを読み込み中...")
 def load_koguchi_from_file():
-    """戻り値: {jan: [(数量, 個口数), ...]} 数量昇順"""
+    """戻り値: {jan: [(下限, 上限, 個口数), ...]} 下限昇順。上限0=無制限。"""
     if not KOGUCHI_PATH.exists():
         return {}
     master = {}
     with open(KOGUCHI_PATH, encoding="utf-8", newline="") as f:
         for row in csv.DictReader(f):
-            jan     = row.get("SKUコード", "").strip()
-            qty     = to_int(row.get("数量", ""))
+            jan     = (row.get("JANコード") or row.get("SKUコード") or "").strip()
+            lower   = to_int(row.get("数量（下限）") or row.get("数量") or "")
+            upper   = to_int(row.get("数量（上限）", "") or "")
             koguchi = to_int(row.get("個口数", ""))
-            if jan and qty and koguchi:
-                master.setdefault(jan, []).append((qty, koguchi))
+            if jan and lower and koguchi:
+                master.setdefault(jan, []).append((lower, upper, koguchi))
     for jan in master:
         master[jan].sort(key=lambda x: x[0])
     return master
@@ -146,21 +147,27 @@ def koguchi_to_df(master):
     """個口数マスタ dict → DataFrame"""
     rows = []
     for jan, entries in master.items():
-        for qty, koguchi in entries:
-            rows.append({"SKUコード": jan, "数量": qty, "個口数": koguchi})
-    return pd.DataFrame(rows, columns=["SKUコード", "数量", "個口数"]) if rows else \
-           pd.DataFrame(columns=["SKUコード", "数量", "個口数"])
+        for lower, upper, koguchi in entries:
+            rows.append({
+                "JANコード":    jan,
+                "数量（下限）": lower,
+                "数量（上限）": upper if upper else None,
+                "個口数":       koguchi,
+            })
+    cols = ["JANコード", "数量（下限）", "数量（上限）", "個口数"]
+    return pd.DataFrame(rows, columns=cols) if rows else pd.DataFrame(columns=cols)
 
 
 def df_to_koguchi(df):
     """DataFrame → 個口数マスタ dict"""
     master = {}
     for _, row in df.iterrows():
-        jan     = str(row.get("SKUコード", "")).strip()
-        qty     = to_int(row.get("数量"))
+        jan     = str(row.get("JANコード", "") or "").strip()
+        lower   = to_int(row.get("数量（下限）"))
+        upper   = to_int(row.get("数量（上限）") or 0)
         koguchi = to_int(row.get("個口数"))
-        if jan and qty and koguchi:
-            master.setdefault(jan, []).append((qty, koguchi))
+        if jan and lower and koguchi:
+            master.setdefault(jan, []).append((lower, upper, koguchi))
     for jan in master:
         master[jan].sort(key=lambda x: x[0])
     return master
@@ -175,10 +182,15 @@ def save_koguchi_to_github(master):
 
     rows = []
     for jan, entries in master.items():
-        for qty, koguchi in sorted(entries):
-            rows.append({"SKUコード": jan, "数量": qty, "個口数": koguchi})
+        for lower, upper, koguchi in sorted(entries):
+            rows.append({
+                "JANコード":    jan,
+                "数量（下限）": lower,
+                "数量（上限）": upper if upper else "",
+                "個口数":       koguchi,
+            })
     buf = io.StringIO()
-    writer = csv.DictWriter(buf, fieldnames=["SKUコード", "数量", "個口数"])
+    writer = csv.DictWriter(buf, fieldnames=["JANコード", "数量（下限）", "数量（上限）", "個口数"])
     writer.writeheader()
     writer.writerows(rows)
     content_bytes = buf.getvalue().encode("utf-8")
@@ -216,9 +228,10 @@ def calc_koguchi(items, koguchi_master):
             continue
         found_any = True
         koguchi = None
-        for threshold, k in entries:
-            if threshold <= qty:
+        for lower, upper, k in entries:
+            if lower <= qty and (upper == 0 or qty <= upper):
                 koguchi = k
+                break
         if koguchi:
             total += koguchi
     if not found_any or total <= 1:
@@ -424,9 +437,11 @@ def main():
             num_rows="dynamic",
             use_container_width=True,
             column_config={
-                "SKUコード": st.column_config.TextColumn("SKUコード", width="medium"),
-                "数量":      st.column_config.NumberColumn("数量", min_value=1, step=1),
-                "個口数":    st.column_config.NumberColumn("個口数", min_value=1, step=1),
+                "JANコード":    st.column_config.TextColumn("JANコード", width="large"),
+                "数量（下限）": st.column_config.NumberColumn("数量（下限）", min_value=1, step=1),
+                "数量（上限）": st.column_config.NumberColumn("数量（上限）", min_value=0, step=1,
+                                help="空白 or 0 = 上限なし"),
+                "個口数":       st.column_config.NumberColumn("個口数", min_value=1, step=1),
             },
             key="koguchi_editor",
         )
