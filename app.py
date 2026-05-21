@@ -1,5 +1,6 @@
 import base64
 import csv
+import hashlib
 import io
 import json
 from collections import OrderedDict
@@ -991,17 +992,21 @@ def main():
                                                type="csv", key="setup_sample")
 
             col_ss_key = f"setup_cols_{sel_tpl}"
-            pfx        = f"e{abs(hash(sel_tpl)) % 999999}"
+            # hash() はプロセス起動ごとに変わるため hashlib で安定した pfx を生成
+            pfx        = "e" + hashlib.md5(sel_tpl.encode("utf-8")).hexdigest()[:8]
             if sample_file:
                 try:
                     raw_text   = sample_file.read().decode(s_enc_map[s_enc_label], errors="replace")
                     found_cols = list(csv.DictReader(io.StringIO(raw_text)).fieldnames or [])
                     prev_cols  = st.session_state.get(col_ss_key, [])
                     if found_cols != prev_cols:
-                        # 列が変わったらフィールドのウィジェット状態をリセット → 推測値が index として反映される
+                        # 列が変わったら、未保存フィールドに推測値をセッションに直接書き込む
+                        saved_fields = current_tpl.get("fields", {})
                         for _f in OUT_HEADERS:
-                            st.session_state.pop(f"{pfx}_cs_{_f}", None)
-                            st.session_state.pop(f"{pfx}_t_{_f}", None)
+                            if _f not in saved_fields:
+                                suggested = suggest_column(_f, found_cols)
+                                st.session_state[f"{pfx}_t_{_f}"] = "列マッピング"
+                                st.session_state[f"{pfx}_cs_{_f}"] = suggested if suggested in found_cols else "（未設定）"
                     st.session_state[col_ss_key] = found_cols
                     st.success(f"{len(found_cols)} 列を検出しました")
                 except Exception as ex:
