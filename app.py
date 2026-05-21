@@ -218,8 +218,13 @@ def save_koguchi_to_github(master):
 
 
 def calc_koguchi(items, koguchi_master):
-    """None / int / '宅配' を返す。複数アイテムで1つでも宅配なら宅配優先。"""
+    """None / int / '宅配' を返す。複数アイテムで1つでも宅配なら宅配優先。
+    複数SKUが混在する注文は個口数判定対象外。"""
     if not koguchi_master:
+        return None
+    # 複数SKU混在の注文はスキップ
+    distinct_skus = {item.get("SKUコード", "").strip() for item in items}
+    if len(distinct_skus) > 1:
         return None
     total = 0
     found_any = False
