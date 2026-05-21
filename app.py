@@ -57,6 +57,15 @@ FIELD_GROUPS = [
 _TYPE_LABELS = ["（空欄）", "固定値", "列マッピング", "列結合", "値変換", "特殊ロジック"]
 _TYPE_KEYS   = ["empty",   "fixed",  "column",      "concat", "value_map", "special"]
 
+# NEの通常テンプレートにおける必須・準必須フィールド
+REQUIRED_FIELDS = {
+    "店舗伝票番号", "受注日", "受注郵便番号", "受注住所１", "受注名",
+    "発送郵便番号", "発送先住所１", "発送先名", "発送電話番号",
+    "支払方法", "発送方法", "商品計", "合計金額", "ギフトフラグ",
+    "商品名", "商品コード", "商品価格", "受注数量", "出荷済フラグ", "顧客区分",
+}
+SEMI_REQUIRED_FIELDS = {"受注電話番号", "受注メールアドレス"}  # どちらか一方が必須
+
 # 出力フィールドに対する推測ヒント（部分一致で入力列を探す）
 FIELD_HINTS = {
     "店舗伝票番号":       ["注文番号", "モール注文番号", "注文ID", "伝票番号"],
@@ -621,9 +630,16 @@ def _field_config_ui(field, current, columns, pfx):
     c_type   = current.get("type", "column")
     type_idx = _TYPE_KEYS.index(c_type) if c_type in _TYPE_KEYS else _TYPE_KEYS.index("column")
 
+    if field in REQUIRED_FIELDS:
+        display = f"🔴 {field}"
+    elif field in SEMI_REQUIRED_FIELDS:
+        display = f"🟡 {field}"
+    else:
+        display = field
+
     col_a, col_b = st.columns([2, 5])
     with col_a:
-        chosen_label = st.selectbox(field, _TYPE_LABELS, index=type_idx, key=f"{pfx}_t_{field}")
+        chosen_label = st.selectbox(display, _TYPE_LABELS, index=type_idx, key=f"{pfx}_t_{field}")
     chosen_type = _TYPE_KEYS[_TYPE_LABELS.index(chosen_label)]
     new_cfg = {"type": chosen_type}
 
@@ -1050,7 +1066,7 @@ def main():
 
             # ── フィールド紐づけ ────────────────────────────
             st.subheader("③ 出力フィールドの紐づけ（全38列）")
-            st.caption("各フィールドのタイプを選択し、対応する設定を入力してください。「空欄」は出力がブランクになります。")
+            st.caption("🔴 必須　🟡 電話／メールどちらか必須　マークなし：任意　 ／　「空欄」は出力がブランクになります。")
 
             new_fields = {}
             for group_name, group_fields in FIELD_GROUPS:
