@@ -175,6 +175,46 @@ def df_to_koguchi(df):
     return master
 
 
+def load_koguchi_from_csv_bytes(file_bytes):
+    """アップロードされたCSVバイト列から個口数マスタを読み込む。UTF-8/Shift-JIS 自動判定。"""
+    text = None
+    for enc in ("utf-8-sig", "utf-8", "shift_jis"):
+        try:
+            text = file_bytes.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    if text is None:
+        return None, "文字コードを判定できませんでした（UTF-8 または Shift-JIS で保存してください）"
+
+    reader = csv.DictReader(io.StringIO(text))
+    cols = reader.fieldnames or []
+    jan_col     = next((c for c in cols if "JAN" in c or "ＪＡＮ" in c or "SKU" in c), None)
+    lower_col   = next((c for c in cols if "下限" in c or c.strip() == "数量"), None)
+    upper_col   = next((c for c in cols if "上限" in c), None)
+    koguchi_col = next((c for c in cols if "個口" in c), None)
+
+    if not (jan_col and lower_col and koguchi_col):
+        missing = [n for n, c in [("JANコード", jan_col), ("数量（下限）", lower_col), ("個口数", koguchi_col)] if not c]
+        return None, f"必要なカラムが見つかりません: {', '.join(missing)}"
+
+    master = {}
+    for row in reader:
+        jan     = (row.get(jan_col) or "").strip()
+        lower   = to_int(row.get(lower_col) or "")
+        upper   = to_int(row.get(upper_col, "") or "") if upper_col else 0
+        raw     = str(row.get(koguchi_col, "") or "").strip()
+        koguchi = "宅配" if raw == "宅配" else to_int(raw)
+        if jan and lower and koguchi:
+            master.setdefault(jan, []).append((lower, upper, koguchi))
+    for jan in master:
+        master[jan].sort(key=lambda x: x[0])
+
+    if not master:
+        return None, "有効なデータが見つかりませんでした"
+    return master, None
+
+
 def save_koguchi_to_github(master):
     """個口数マスタをGitHubリポジトリに直接コミットする。"""
     token = st.secrets.get("GITHUB_TOKEN", "")
@@ -446,6 +486,22 @@ def main():
         rule_count = sum(len(v) for v in km.values())
         st.caption(f"現在 {rule_count} ルール登録済み")
 
+        koguchi_csv = st.file_uploader(
+            "CSVで一括更新",
+            type="csv",
+            key="up_koguchi",
+            help="JANコード・数量（下限）・数量（上限）・個口数 の列を含むCSV",
+        )
+        if koguchi_csv:
+            new_km, err = load_koguchi_from_csv_bytes(koguchi_csv.read())
+            if err:
+                st.error(err)
+            else:
+                st.session_state["koguchi_master"] = new_km
+                km = new_km
+                total_rules = sum(len(v) for v in new_km.values())
+                st.success(f"読み込み完了：{total_rules} ルール　→ 下のボタンで保存してください")
+
         df = koguchi_to_df(km)
         edited_df = st.data_editor(
             df,
@@ -506,6 +562,11 @@ def main():
                 file_name=f"hanyo_master_{today}.csv",
                 mime="text/csv",
                 key="dl_hanyo",
+            )
+            st.link_button(
+                "📋 ネクストエンジンに登録する →",
+                "https://main.next-engine.com/Usercsv",
+                use_container_width=True,
             )
 
     with tab2:
