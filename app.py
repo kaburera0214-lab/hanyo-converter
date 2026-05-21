@@ -532,6 +532,11 @@ def main():
     with tab1:
         st.caption("先方受注CSV → ネクストエンジン汎用マスタCSV")
         st.divider()
+        st.link_button(
+            "📂 受注CSVフォルダを開く（Google Drive）",
+            "https://drive.google.com/drive/u/2/folders/1Xil5jgZvxk3A-3s-W-7eYrcMu4R8qvQX",
+            use_container_width=True,
+        )
         st.subheader("受注CSV")
         order_file = st.file_uploader("先方からの受注ファイル", type="csv", key="order_upload")
         st.divider()
@@ -594,6 +599,11 @@ def main():
                     file_name=f"{today}_[出荷代行]出荷実績.csv",
                     mime="text/csv",
                     key="dl_shipment",
+                )
+                st.link_button(
+                    "📂 格納フォルダを開く（Google Drive）",
+                    "https://drive.google.com/drive/u/2/folders/1jhsvohRf7FLg3vrj8A-8qyEzQlqsYXrJ",
+                    use_container_width=True,
                 )
 
 
