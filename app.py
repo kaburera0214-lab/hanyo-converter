@@ -991,10 +991,17 @@ def main():
                                                type="csv", key="setup_sample")
 
             col_ss_key = f"setup_cols_{sel_tpl}"
+            pfx        = f"e{abs(hash(sel_tpl)) % 999999}"
             if sample_file:
                 try:
-                    raw_text     = sample_file.read().decode(s_enc_map[s_enc_label], errors="replace")
-                    found_cols   = list(csv.DictReader(io.StringIO(raw_text)).fieldnames or [])
+                    raw_text   = sample_file.read().decode(s_enc_map[s_enc_label], errors="replace")
+                    found_cols = list(csv.DictReader(io.StringIO(raw_text)).fieldnames or [])
+                    prev_cols  = st.session_state.get(col_ss_key, [])
+                    if found_cols != prev_cols:
+                        # 列が変わったらフィールドのウィジェット状態をリセット → 推測値が index として反映される
+                        for _f in OUT_HEADERS:
+                            st.session_state.pop(f"{pfx}_cs_{_f}", None)
+                            st.session_state.pop(f"{pfx}_t_{_f}", None)
                     st.session_state[col_ss_key] = found_cols
                     st.success(f"{len(found_cols)} 列を検出しました")
                 except Exception as ex:
@@ -1040,7 +1047,6 @@ def main():
             st.subheader("③ 出力フィールドの紐づけ（全38列）")
             st.caption("各フィールドのタイプを選択し、対応する設定を入力してください。「空欄」は出力がブランクになります。")
 
-            pfx       = f"e{abs(hash(sel_tpl)) % 999999}"
             new_fields = {}
             for group_name, group_fields in FIELD_GROUPS:
                 with st.expander(group_name, expanded=True):
