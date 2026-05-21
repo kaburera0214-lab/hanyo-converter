@@ -1,6 +1,7 @@
 import base64
 import csv
 import io
+import json
 from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
@@ -29,8 +30,31 @@ OUT_HEADERS = [
     "出荷済フラグ", "顧客区分", "顧客コード", "消費税率（%）",
 ]
 
-MASTER_PATH  = Path(__file__).parent / "master.csv"
-KOGUCHI_PATH = Path(__file__).parent / "koguchimaster.csv"
+MASTER_PATH   = Path(__file__).parent / "master.csv"
+KOGUCHI_PATH  = Path(__file__).parent / "koguchimaster.csv"
+MAPPING_GITHUB_PATH = "mapping_templates.json"
+
+SPECIAL_LOGICS = {
+    "today":           "今日の日付",
+    "order_datetime":  "日時フォーマット変換",
+    "jan_master_name": "JANマスタ→商品名",
+    "jan_master_code": "JANマスタ→商品コード",
+    "koguchi_note":    "個口数メモ（日時列指定）",
+}
+
+FIELD_GROUPS = [
+    ("注文情報",   ["店舗伝票番号", "受注日"]),
+    ("受注者情報", ["受注郵便番号", "受注住所１", "受注住所２", "受注名", "受注名カナ", "受注電話番号", "受注メールアドレス"]),
+    ("発送先情報", ["発送郵便番号", "発送先住所１", "発送先住所２", "発送先名", "発送先カナ", "発送電話番号"]),
+    ("支払・発送", ["支払方法", "発送方法"]),
+    ("金額",       ["商品計", "税金", "発送料", "手数料", "ポイント", "その他費用", "合計金額"]),
+    ("オプション", ["ギフトフラグ", "時間帯指定", "日付指定", "作業者欄", "備考"]),
+    ("商品情報",   ["商品名", "商品コード", "商品価格", "受注数量", "商品オプション"]),
+    ("管理情報",   ["出荷済フラグ", "顧客区分", "顧客コード", "消費税率（%）"]),
+]
+
+_TYPE_LABELS = ["（空欄）", "固定値", "列マッピング", "列結合", "値変換", "特殊ロジック"]
+_TYPE_KEYS   = ["empty",   "fixed",  "column",      "concat", "value_map", "special"]
 
 
 # ── ユーティリティ ─────────────────────────────────────────
@@ -418,6 +442,214 @@ def convert_shipment(ne_bytes):
     return buf.getvalue().encode("utf-8-sig"), len(rows), None
 
 
+# ── カスタムマッピング：GitHub 保存・読み込み ───────────────
+def load_mappings_from_github():
+    token = st.secrets.get("GITHUB_TOKEN", "")
+    repo  = st.secrets.get("GITHUB_REPO", "")
+    if not token or not repo:
+        return {}
+    url     = f"https://api.github.com/repos/{repo}/contents/{MAPPING_GITHUB_PATH}"
+    headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github.v3+json"}
+    r = requests.get(url, headers=headers)
+    if not r.ok:
+        return {}
+    try:
+        return json.loads(base64.b64decode(r.json()["content"]).decode("utf-8"))
+    except Exception:
+        return {}
+
+
+def save_mappings_to_github(mappings):
+    token = st.secrets.get("GITHUB_TOKEN", "")
+    repo  = st.secrets.get("GITHUB_REPO", "")
+    if not token or not repo:
+        return False, "GITHUB_TOKEN / GITHUB_REPO がSecretsに設定されていません"
+
+    content_bytes = json.dumps(mappings, ensure_ascii=False, indent=2).encode("utf-8")
+    url     = f"https://api.github.com/repos/{repo}/contents/{MAPPING_GITHUB_PATH}"
+    headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github.v3+json"}
+
+    r   = requests.get(url, headers=headers)
+    sha = r.json().get("sha") if r.ok else None
+
+    payload = {"message": "Update mapping_templates.json via app",
+               "content": base64.b64encode(content_bytes).decode()}
+    if sha:
+        payload["sha"] = sha
+
+    r = requests.put(url, json=payload, headers=headers)
+    if r.ok:
+        return True, None
+    return False, r.json().get("message", "不明なエラー")
+
+
+# ── カスタムマッピング：変換エンジン ─────────────────────────
+def apply_custom_mapping(order_bytes, mapping_def, master, koguchi_master, encoding="shift_jis"):
+    try:
+        text = order_bytes.decode(encoding, errors="replace")
+    except Exception:
+        text = order_bytes.decode("utf-8", errors="replace")
+
+    all_rows = [r for r in csv.DictReader(io.StringIO(text)) if any(r.values())]
+    if not all_rows:
+        return None, 0, 0, {}, "CSVにデータが見つかりません"
+
+    group_key = mapping_def.get("group_key_column", "")
+    sku_col   = mapping_def.get("sku_column", "")
+    qty_col   = mapping_def.get("qty_column", "")
+    fields    = mapping_def.get("fields", {})
+
+    orders = OrderedDict()
+    for i, row in enumerate(all_rows):
+        oid = row.get(group_key, "").strip() if group_key else str(i)
+        orders.setdefault(oid, []).append(row)
+
+    today_str   = today_midnight()
+    output_rows = []
+    not_found   = {}
+
+    for order_id, items in orders.items():
+        koguchi_items = [
+            {"SKUコード": r.get(sku_col, "").strip(), "注文個数": r.get(qty_col, "").strip()}
+            for r in items
+        ] if sku_col and qty_col else []
+        koguchi = calc_koguchi(koguchi_items, koguchi_master) if koguchi_items else None
+
+        for item in items:
+            jan  = item.get(sku_col, "").strip() if sku_col else ""
+            prod = master.get(jan, {}) if (master and jan) else {}
+            if master and jan and not prod:
+                not_found.setdefault(jan, []).append(order_id)
+
+            out_row = {}
+            for out_field in OUT_HEADERS:
+                fd    = fields.get(out_field, {"type": "empty"})
+                ftype = fd.get("type", "empty")
+
+                if ftype == "fixed":
+                    val = fd.get("value", "")
+                elif ftype == "column":
+                    val = item.get(fd.get("source", ""), "")
+                elif ftype == "concat":
+                    val = fd.get("sep", "").join(item.get(s, "") for s in fd.get("sources", []))
+                elif ftype == "value_map":
+                    raw = item.get(fd.get("source", ""), "")
+                    val = fd.get("map", {}).get(raw, fd.get("default", raw))
+                elif ftype == "special":
+                    logic = fd.get("logic", "")
+                    src   = fd.get("source", "")
+                    if logic == "today":
+                        val = today_str
+                    elif logic == "order_datetime":
+                        val = order_datetime(item.get(src, ""))
+                    elif logic == "jan_master_name":
+                        val = prod.get("商品名") or item.get("商品名", "")
+                    elif logic == "jan_master_code":
+                        val = prod.get("商品コード") or jan
+                    elif logic == "koguchi_note":
+                        note = order_datetime(item.get(src, "")) if src else ""
+                        if koguchi == "宅配":
+                            note += "【宅配変更】"
+                        elif koguchi:
+                            note += f"【個口数{koguchi}】"
+                        val = note
+                    else:
+                        val = ""
+                else:
+                    val = ""
+                out_row[out_field] = val
+            output_rows.append(out_row)
+
+    buf = io.StringIO()
+    w   = csv.DictWriter(buf, fieldnames=OUT_HEADERS)
+    w.writeheader()
+    w.writerows(output_rows)
+    csv_bytes = buf.getvalue().encode("shift_jis", errors="replace")
+    return csv_bytes, len(orders), len(output_rows), not_found, None
+
+
+# ── カスタムマッピング：フィールド設定UI ─────────────────────
+def _field_config_ui(field, current, columns, pfx):
+    """1フィールド分の設定UIを描画し、新しい config dict を返す"""
+    col_opts = ["（未設定）"] + columns
+    c_type   = current.get("type", "empty")
+    type_idx = _TYPE_KEYS.index(c_type) if c_type in _TYPE_KEYS else 0
+
+    col_a, col_b = st.columns([2, 5])
+    with col_a:
+        chosen_label = st.selectbox(field, _TYPE_LABELS, index=type_idx, key=f"{pfx}_t_{field}")
+    chosen_type = _TYPE_KEYS[_TYPE_LABELS.index(chosen_label)]
+    new_cfg = {"type": chosen_type}
+
+    with col_b:
+        if chosen_type == "empty":
+            st.caption("—")
+
+        elif chosen_type == "fixed":
+            new_cfg["value"] = st.text_input(
+                "固定値", value=current.get("value", ""),
+                key=f"{pfx}_fv_{field}", label_visibility="collapsed",
+            )
+
+        elif chosen_type == "column":
+            src = current.get("source", "")
+            idx = col_opts.index(src) if src in col_opts else 0
+            sel = st.selectbox("列", col_opts, index=idx,
+                               key=f"{pfx}_cs_{field}", label_visibility="collapsed")
+            new_cfg["source"] = "" if sel == "（未設定）" else sel
+
+        elif chosen_type == "concat":
+            srcs = [s for s in current.get("sources", []) if s in columns]
+            subs = st.multiselect("結合列", columns, default=srcs,
+                                  key=f"{pfx}_cc_{field}", label_visibility="collapsed")
+            new_cfg["sources"] = subs
+            new_cfg["sep"] = current.get("sep", "")
+
+        elif chosen_type == "value_map":
+            v1, v2 = st.columns([1, 2])
+            with v1:
+                src = current.get("source", "")
+                idx = col_opts.index(src) if src in col_opts else 0
+                sel = st.selectbox("元の列", col_opts, index=idx, key=f"{pfx}_vms_{field}")
+                new_cfg["source"]  = "" if sel == "（未設定）" else sel
+                new_cfg["default"] = st.text_input(
+                    "デフォルト値", value=current.get("default", ""), key=f"{pfx}_vmd_{field}",
+                )
+            with v2:
+                existing = current.get("map", {})
+                txt = "\n".join(f"{k} → {v}" for k, v in existing.items())
+                edited = st.text_area(
+                    "変換テーブル（元の値 → 変換後の値、1行1ペア）",
+                    value=txt, height=90, key=f"{pfx}_vmt_{field}",
+                )
+                m = {}
+                for ln in edited.strip().split("\n"):
+                    if "→" in ln:
+                        parts = ln.split("→", 1)
+                        m[parts[0].strip()] = parts[1].strip()
+                new_cfg["map"] = m
+
+        elif chosen_type == "special":
+            s_keys   = list(SPECIAL_LOGICS.keys())
+            s_labels = list(SPECIAL_LOGICS.values())
+            cur_logic = current.get("logic", "today")
+            l_idx = s_keys.index(cur_logic) if cur_logic in s_keys else 0
+            v1, v2 = st.columns([2, 2])
+            with v1:
+                sel_label    = st.selectbox("ロジック", s_labels, index=l_idx,
+                                            key=f"{pfx}_sl_{field}", label_visibility="collapsed")
+                chosen_logic = s_keys[s_labels.index(sel_label)]
+                new_cfg["logic"] = chosen_logic
+            if chosen_logic in ("order_datetime", "koguchi_note"):
+                with v2:
+                    src = current.get("source", "")
+                    idx = col_opts.index(src) if src in col_opts else 0
+                    sel = st.selectbox("参照列", col_opts, index=idx,
+                                       key=f"{pfx}_sls_{field}", label_visibility="collapsed")
+                    new_cfg["source"] = "" if sel == "（未設定）" else sel
+    return new_cfg
+
+
 # ── パスワード認証 ────────────────────────────────────────
 def check_password():
     if st.session_state.get("authenticated"):
@@ -527,7 +759,7 @@ def main():
                 st.error(f"保存失敗: {err}")
 
     # ── タブ ──────────────────────────────────────────────
-    tab1, tab2 = st.tabs(["① 汎用マスタCSV変換", "② 出荷実績CSV生成"])
+    tab1, tab2, tab3 = st.tabs(["① 汎用マスタCSV変換", "② 出荷実績CSV生成", "③ カスタム変換"])
 
     with tab1:
         st.caption("先方受注CSV → ネクストエンジン汎用マスタCSV")
@@ -605,6 +837,193 @@ def main():
                     "https://drive.google.com/drive/u/2/folders/1jhsvohRf7FLg3vrj8A-8qyEzQlqsYXrJ",
                     use_container_width=True,
                 )
+
+
+    # ── Tab③ カスタム変換 ──────────────────────────────────
+    with tab3:
+        if "custom_mappings" not in st.session_state:
+            with st.spinner("マッピングテンプレートを読み込み中..."):
+                st.session_state["custom_mappings"] = load_mappings_from_github()
+
+        mappings = st.session_state.get("custom_mappings", {})
+
+        exec_tab, setup_tab = st.tabs(["▶ 変換実行", "⚙ 紐づけ設定"])
+
+        # ── 変換実行 ──────────────────────────────────────
+        with exec_tab:
+            st.caption("保存済みテンプレートを使って受注CSVを変換します")
+            if not mappings:
+                st.info("まず「紐づけ設定」タブでテンプレートを作成してください。")
+            else:
+                sel_name = st.selectbox("テンプレート", list(mappings.keys()), key="exec_tpl_select")
+                enc_map  = {"Shift-JIS": "shift_jis", "UTF-8": "utf-8", "UTF-8 (BOM付き)": "utf-8-sig"}
+                enc_lbl  = st.selectbox("文字コード", list(enc_map.keys()), key="exec_encoding")
+                order3   = st.file_uploader("受注CSVをアップロード", type="csv", key="order3_upload")
+                st.divider()
+
+                master3         = st.session_state.get("master")
+                koguchi_master3 = st.session_state.get("koguchi_master", {})
+                if not master3:
+                    st.warning("商品マスタが未読み込みです。サイドバーからアップロードしてください。")
+
+                if st.button("🔄 変換する", type="primary", disabled=order3 is None, key="btn_custom_convert"):
+                    with st.spinner("変換中..."):
+                        csv_bytes3, n_orders3, n_rows3, not_found3, err3 = apply_custom_mapping(
+                            order3.read(), mappings[sel_name],
+                            master3 or {}, koguchi_master3, enc_map[enc_lbl],
+                        )
+                    if err3:
+                        st.error(err3)
+                    else:
+                        if not_found3:
+                            st.error(f"⚠️ 商品マスタに存在しないJANコードがあります（{len(not_found3)} 件）")
+                            for jan, oids in not_found3.items():
+                                st.markdown(f"- **JAN: `{jan}`** → 注文番号: {', '.join(oids)}")
+                            st.warning("上記の商品は入力値のまま出力されています。")
+                            st.divider()
+                        st.success(f"変換完了：{n_orders3} 件の注文 / {n_rows3} 行")
+                        today3 = datetime.now().strftime("%Y%m%d")
+                        st.download_button(
+                            label="⬇️ 変換済みCSVをダウンロード",
+                            data=csv_bytes3,
+                            file_name=f"hanyo_master_{today3}.csv",
+                            mime="text/csv",
+                            key="dl_custom",
+                        )
+                        st.link_button("📋 ネクストエンジンに登録する →",
+                                       "https://main.next-engine.com/Usercsv",
+                                       use_container_width=True)
+                        st.link_button("📂 受注CSVフォルダ（Google Drive）",
+                                       "https://drive.google.com/drive/u/2/folders/1Xil5jgZvxk3A-3s-W-7eYrcMu4R8qvQX",
+                                       use_container_width=True)
+
+        # ── 紐づけ設定 ──────────────────────────────────
+        with setup_tab:
+            st.caption("インプットCSVの列と出力フィールドの対応を定義し、テンプレートとして保存します")
+
+            # ── テンプレート選択 ──────────────────────────
+            tpl_options = ["＋ 新規作成"] + list(mappings.keys())
+            sel_tpl     = st.selectbox("テンプレートを選択・新規作成", tpl_options, key="setup_tpl_select")
+            is_new      = (sel_tpl == "＋ 新規作成")
+
+            if is_new:
+                tpl_name   = st.text_input("新しいテンプレート名", key="new_tpl_name")
+                current_tpl = {}
+            else:
+                tpl_name    = sel_tpl
+                current_tpl = mappings.get(sel_tpl, {})
+                if st.button("🗑 このテンプレートを削除", key="btn_delete_tpl"):
+                    st.session_state["_confirm_delete"] = True
+                if st.session_state.get("_confirm_delete"):
+                    st.warning(f"「{sel_tpl}」を削除します。よろしいですか？")
+                    dc1, dc2 = st.columns(2)
+                    with dc1:
+                        if st.button("はい、削除する", key="btn_delete_confirm"):
+                            del mappings[sel_tpl]
+                            ok, derr = save_mappings_to_github(mappings)
+                            if ok:
+                                st.session_state["custom_mappings"] = mappings
+                                st.session_state["_confirm_delete"] = False
+                                st.success("削除しました")
+                                st.rerun()
+                            else:
+                                st.error(f"削除失敗: {derr}")
+                    with dc2:
+                        if st.button("キャンセル", key="btn_delete_cancel"):
+                            st.session_state["_confirm_delete"] = False
+                            st.rerun()
+
+            st.divider()
+
+            # ── サンプルCSVで列名取得 ──────────────────────
+            st.subheader("① インプットCSVの列を取得")
+            sc1, sc2 = st.columns([3, 1])
+            with sc2:
+                s_enc_map   = {"Shift-JIS": "shift_jis", "UTF-8": "utf-8", "UTF-8 (BOM付き)": "utf-8-sig"}
+                s_enc_label = st.selectbox("文字コード", list(s_enc_map.keys()), key="setup_enc")
+            with sc1:
+                sample_file = st.file_uploader("サンプルCSVをアップロード（列名取得用）",
+                                               type="csv", key="setup_sample")
+
+            col_ss_key = f"setup_cols_{sel_tpl}"
+            if sample_file:
+                try:
+                    raw_text     = sample_file.read().decode(s_enc_map[s_enc_label], errors="replace")
+                    found_cols   = list(csv.DictReader(io.StringIO(raw_text)).fieldnames or [])
+                    st.session_state[col_ss_key] = found_cols
+                    st.success(f"{len(found_cols)} 列を検出しました")
+                except Exception as ex:
+                    st.error(f"列名の取得に失敗しました: {ex}")
+
+            available_columns = st.session_state.get(col_ss_key, [])
+            if available_columns:
+                st.caption("検出列: " + "　".join(available_columns))
+            else:
+                st.info("サンプルCSVをアップロードすると列名が選択肢に表示されます。手動入力での固定値設定は列なしでも可能です。")
+
+            st.divider()
+
+            # ── グルーピング・SKU・数量列 ───────────────────
+            st.subheader("② 注文グルーピング・SKU列の設定")
+            col_base = ["（未設定）"] + available_columns
+            gc1, gc2, gc3 = st.columns(3)
+            with gc1:
+                gk_cur = current_tpl.get("group_key_column", "")
+                gk_idx = col_base.index(gk_cur) if gk_cur in col_base else 0
+                group_key_sel = st.selectbox(
+                    "注文グループキー列", col_base, index=gk_idx, key="setup_gk",
+                    help="同一注文の複数行をまとめる列（例：注文番号）",
+                )
+            with gc2:
+                sku_cur = current_tpl.get("sku_column", "")
+                sku_idx = col_base.index(sku_cur) if sku_cur in col_base else 0
+                sku_sel = st.selectbox(
+                    "SKU / JANコード列", col_base, index=sku_idx, key="setup_sku",
+                    help="JANマスタ検索・個口数計算に使う列",
+                )
+            with gc3:
+                qty_cur = current_tpl.get("qty_column", "")
+                qty_idx = col_base.index(qty_cur) if qty_cur in col_base else 0
+                qty_sel = st.selectbox(
+                    "数量列", col_base, index=qty_idx, key="setup_qty",
+                    help="個口数計算に使う列",
+                )
+
+            st.divider()
+
+            # ── フィールド紐づけ ────────────────────────────
+            st.subheader("③ 出力フィールドの紐づけ（全38列）")
+            st.caption("各フィールドのタイプを選択し、対応する設定を入力してください。「空欄」は出力がブランクになります。")
+
+            pfx       = f"e{abs(hash(sel_tpl)) % 999999}"
+            new_fields = {}
+            for group_name, group_fields in FIELD_GROUPS:
+                with st.expander(group_name, expanded=True):
+                    for field in group_fields:
+                        cur_cfg         = current_tpl.get("fields", {}).get(field, {"type": "empty"})
+                        new_fields[field] = _field_config_ui(field, cur_cfg, available_columns, pfx)
+
+            st.divider()
+
+            # ── 保存 ────────────────────────────────────────
+            new_tpl = {
+                "group_key_column": "" if group_key_sel == "（未設定）" else group_key_sel,
+                "sku_column":       "" if sku_sel       == "（未設定）" else sku_sel,
+                "qty_column":       "" if qty_sel        == "（未設定）" else qty_sel,
+                "fields":           new_fields,
+            }
+            btn_label = "💾 新規保存する" if is_new else "💾 変更を保存する"
+            if st.button(btn_label, type="primary", key="btn_save_tpl"):
+                if not tpl_name.strip():
+                    st.error("テンプレート名を入力してください")
+                else:
+                    mappings[tpl_name.strip()] = new_tpl
+                    ok, serr = save_mappings_to_github(mappings)
+                    if ok:
+                        st.session_state["custom_mappings"] = mappings
+                        st.success(f"「{tpl_name.strip()}」を保存しました")
+                    else:
+                        st.error(f"保存失敗: {serr}")
 
 
 if __name__ == "__main__":
