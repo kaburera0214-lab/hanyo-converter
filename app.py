@@ -502,16 +502,6 @@ def main():
                 total_rules = sum(len(v) for v in new_km.values())
                 st.success(f"読み込み完了：{total_rules} ルール　→ 下のボタンで保存してください")
 
-        # 数量・個口数列をセンタリング
-        st.markdown("""
-<style>
-[data-testid="stDataEditor"] td:not(:first-child),
-[data-testid="stDataEditor"] th:not(:first-child) {
-    text-align: center !important;
-}
-</style>
-""", unsafe_allow_html=True)
-
         df = koguchi_to_df(km)
         edited_df = st.data_editor(
             df,
