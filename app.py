@@ -508,11 +508,11 @@ def main():
             num_rows="dynamic",
             use_container_width=True,
             column_config={
-                "JANコード":    st.column_config.TextColumn("JANコード", width="large"),
-                "数量（下限）": st.column_config.NumberColumn("数量（下限）", min_value=1, step=1),
-                "数量（上限）": st.column_config.NumberColumn("数量（上限）", min_value=0, step=1,
+                "JANコード":    st.column_config.TextColumn("JANコード",    width="medium"),
+                "数量（下限）": st.column_config.NumberColumn("数量（下限）", width="small", min_value=1, step=1),
+                "数量（上限）": st.column_config.NumberColumn("数量（上限）", width="small", min_value=0, step=1,
                                 help="空白 or 0 = 上限なし"),
-                "個口数":       st.column_config.TextColumn("個口数", help="数字 or 宅配"),
+                "個口数":       st.column_config.TextColumn("個口数",        width="small", help="数字 or 宅配"),
             },
             key="koguchi_editor",
         )
