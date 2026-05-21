@@ -502,13 +502,23 @@ def main():
                 total_rules = sum(len(v) for v in new_km.values())
                 st.success(f"読み込み完了：{total_rules} ルール　→ 下のボタンで保存してください")
 
+        # 数量・個口数列をセンタリング
+        st.markdown("""
+<style>
+[data-testid="stDataEditor"] td:not(:first-child),
+[data-testid="stDataEditor"] th:not(:first-child) {
+    text-align: center !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
         df = koguchi_to_df(km)
         edited_df = st.data_editor(
             df,
             num_rows="dynamic",
             use_container_width=True,
             column_config={
-                "JANコード":    st.column_config.TextColumn("JANコード",    width="medium"),
+                "JANコード":    st.column_config.TextColumn("JANコード",    width="small"),
                 "数量（下限）": st.column_config.NumberColumn("数量（下限）", width="small", min_value=1, step=1),
                 "数量（上限）": st.column_config.NumberColumn("数量（上限）", width="small", min_value=0, step=1,
                                 help="空白 or 0 = 上限なし"),
