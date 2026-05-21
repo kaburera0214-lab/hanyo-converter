@@ -56,6 +56,51 @@ FIELD_GROUPS = [
 _TYPE_LABELS = ["（空欄）", "固定値", "列マッピング", "列結合", "値変換", "特殊ロジック"]
 _TYPE_KEYS   = ["empty",   "fixed",  "column",      "concat", "value_map", "special"]
 
+# 出力フィールドに対する推測ヒント（部分一致で入力列を探す）
+FIELD_HINTS = {
+    "店舗伝票番号":       ["注文番号", "モール注文番号", "注文ID", "伝票番号"],
+    "受注日":             ["注文可能日", "モール注文日", "注文日", "受注日"],
+    "受注郵便番号":       ["注文者郵便", "購入者郵便", "請求先郵便"],
+    "受注住所１":         ["注文者都道府県", "注文者住所", "購入者住所"],
+    "受注名":             ["注文者の名前", "注文者氏名", "注文者名", "購入者名"],
+    "受注電話番号":       ["注文者電話", "購入者電話"],
+    "受注メールアドレス": ["メール", "mail", "email"],
+    "発送郵便番号":       ["配送先 郵便", "配送先郵便", "送付先郵便"],
+    "発送先住所１":       ["配送先 都道府県", "送付先都道府県"],
+    "発送先名":           ["配送先 氏名", "配送先氏名", "送付先氏名"],
+    "発送先カナ":         ["配送先 カナ", "送付先カナ"],
+    "発送電話番号":       ["配送先 電話", "配送先電話", "送付先電話"],
+    "支払方法":           ["支払方法", "決済方法"],
+    "発送方法":           ["配送方法", "発送方法"],
+    "商品計":             ["商品合計税抜", "商品合計", "商品計"],
+    "税金":               ["消費税"],
+    "発送料":             ["送料合計税抜", "配送料", "送料"],
+    "手数料":             ["決済手数料", "手数料"],
+    "ポイント":           ["ポイント"],
+    "その他費用":         ["値引額", "クーポン"],
+    "合計金額":           ["合計金額", "総額"],
+    "時間帯指定":         ["お届け指定時間", "時間帯"],
+    "日付指定":           ["配送日指定", "お届け日", "配達日"],
+    "商品名":             ["商品名"],
+    "商品コード":         ["商品コード"],
+    "商品価格":           ["商品単価", "単価"],
+    "受注数量":           ["注文個数", "数量"],
+    "消費税率（%）":      ["税率"],
+}
+
+
+def suggest_column(field, columns):
+    """フィールド名のヒントから最適な入力列を推測する"""
+    for hint in FIELD_HINTS.get(field, []):
+        for col in columns:
+            if hint in col:
+                return col
+    # フォールバック：フィールド名と列名の部分一致
+    for col in columns:
+        if field in col or col in field:
+            return col
+    return ""
+
 
 # ── ユーティリティ ─────────────────────────────────────────
 def to_int(val):
@@ -572,8 +617,8 @@ def apply_custom_mapping(order_bytes, mapping_def, master, koguchi_master, encod
 def _field_config_ui(field, current, columns, pfx):
     """1フィールド分の設定UIを描画し、新しい config dict を返す"""
     col_opts = ["（未設定）"] + columns
-    c_type   = current.get("type", "empty")
-    type_idx = _TYPE_KEYS.index(c_type) if c_type in _TYPE_KEYS else 0
+    c_type   = current.get("type", "column")
+    type_idx = _TYPE_KEYS.index(c_type) if c_type in _TYPE_KEYS else _TYPE_KEYS.index("column")
 
     col_a, col_b = st.columns([2, 5])
     with col_a:
@@ -592,7 +637,7 @@ def _field_config_ui(field, current, columns, pfx):
             )
 
         elif chosen_type == "column":
-            src = current.get("source", "")
+            src = current.get("source", "") or suggest_column(field, columns)
             idx = col_opts.index(src) if src in col_opts else 0
             sel = st.selectbox("列", col_opts, index=idx,
                                key=f"{pfx}_cs_{field}", label_visibility="collapsed")
