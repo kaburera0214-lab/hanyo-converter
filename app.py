@@ -1045,7 +1045,7 @@ def main():
             for group_name, group_fields in FIELD_GROUPS:
                 with st.expander(group_name, expanded=True):
                     for field in group_fields:
-                        cur_cfg         = current_tpl.get("fields", {}).get(field, {"type": "empty"})
+                        cur_cfg         = current_tpl.get("fields", {}).get(field, {})
                         new_fields[field] = _field_config_ui(field, cur_cfg, available_columns, pfx)
 
             st.divider()
