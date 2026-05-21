@@ -683,10 +683,10 @@ def _field_config_ui(field, current, columns, pfx):
     spec = FIELD_SPECS.get(field)
     if spec:
         ftype, flimit, frule, fticket = spec
-        help_text = f"タイプ: {ftype}\n上限: {flimit}"
+        help_text = f"[タイプ] {ftype}\n[上限文字数] {flimit}"
         if frule:
-            help_text += f"\nルール: {frule}"
-        help_text += f"\n伝票項目名: {fticket}"
+            help_text += f"\n[ルール] {frule}"
+        help_text += f"\n[伝票項目名] {fticket}"
     else:
         help_text = None
 
