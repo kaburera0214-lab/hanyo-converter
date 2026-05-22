@@ -531,7 +531,7 @@ def convert_shipment(ne_bytes):
         raw_method   = row[method_col].strip()
         method       = "ネコポス" if "ネコポス" in raw_method else "ヤマト"
         tracking_raw = row[tracking_col].strip()
-        tracking     = tracking_raw.split(",")[0].strip() if tracking_raw else ""
+        tracking     = tracking_raw  # カンマ区切り複数送り状番号をそのまま保持
         rows.append({"モール注文番号": order_num, "配送方法": method, "送り状番号": tracking})
 
     buf = io.StringIO()
