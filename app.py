@@ -846,10 +846,18 @@ def main():
             if err:
                 st.error(err)
             else:
-                st.session_state["koguchi_master"] = new_km
-                km = new_km
                 total_rules = sum(len(v) for v in new_km.values())
-                st.success(f"読み込み完了：{total_rules} ルール　→ 下のボタンで保存してください")
+                with st.spinner("GitHubに保存中..."):
+                    ok, save_err = save_koguchi_to_github(new_km)
+                if ok:
+                    load_koguchi_from_file.clear()
+                    st.session_state["koguchi_master"] = new_km
+                    km = new_km
+                    st.success(f"読み込み・保存完了：{total_rules} ルール")
+                else:
+                    st.warning(f"読み込みは完了しましたが保存に失敗しました（{save_err}）。下のボタンで再試行してください。")
+                    st.session_state["koguchi_master"] = new_km
+                    km = new_km
 
         df = koguchi_to_df(km)
         edited_df = st.data_editor(
