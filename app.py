@@ -700,26 +700,28 @@ def _field_config_ui(field, current, columns, pfx):
     new_cfg = {"type": chosen_type}
 
     with col_b:
+        # label_visibility="hidden" でラベル高さ分のスペースを確保し col_a のドロップダウンと高さを揃える
         if chosen_type == "empty":
-            st.caption("—")
+            st.text_input("_", value="（空欄）", disabled=True,
+                          key=f"{pfx}_em_{field}", label_visibility="hidden")
 
         elif chosen_type == "fixed":
             new_cfg["value"] = st.text_input(
                 "固定値", value=current.get("value", ""),
-                key=f"{pfx}_fv_{field}", label_visibility="collapsed",
+                key=f"{pfx}_fv_{field}", label_visibility="hidden",
             )
 
         elif chosen_type == "column":
             src = current.get("source", "") or suggest_column(field, columns)
             idx = col_opts.index(src) if src in col_opts else 0
             sel = st.selectbox("列", col_opts, index=idx,
-                               key=f"{pfx}_cs_{field}", label_visibility="collapsed")
+                               key=f"{pfx}_cs_{field}", label_visibility="hidden")
             new_cfg["source"] = "" if sel == "（未設定）" else sel
 
         elif chosen_type == "concat":
             srcs = [s for s in current.get("sources", []) if s in columns]
             subs = st.multiselect("結合列", columns, default=srcs,
-                                  key=f"{pfx}_cc_{field}", label_visibility="collapsed")
+                                  key=f"{pfx}_cc_{field}", label_visibility="hidden")
             new_cfg["sources"] = subs
             new_cfg["sep"] = current.get("sep", "")
 
@@ -755,7 +757,7 @@ def _field_config_ui(field, current, columns, pfx):
             v1, v2 = st.columns([2, 2])
             with v1:
                 sel_label    = st.selectbox("ロジック", s_labels, index=l_idx,
-                                            key=f"{pfx}_sl_{field}", label_visibility="collapsed")
+                                            key=f"{pfx}_sl_{field}", label_visibility="hidden")
                 chosen_logic = s_keys[s_labels.index(sel_label)]
                 new_cfg["logic"] = chosen_logic
             if chosen_logic in ("order_datetime", "koguchi_note"):
@@ -763,7 +765,7 @@ def _field_config_ui(field, current, columns, pfx):
                     src = current.get("source", "")
                     idx = col_opts.index(src) if src in col_opts else 0
                     sel = st.selectbox("参照列", col_opts, index=idx,
-                                       key=f"{pfx}_sls_{field}", label_visibility="collapsed")
+                                       key=f"{pfx}_sls_{field}", label_visibility="hidden")
                     new_cfg["source"] = "" if sel == "（未設定）" else sel
     return new_cfg
 
