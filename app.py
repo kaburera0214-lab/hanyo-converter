@@ -262,7 +262,7 @@ def load_koguchi_from_file():
             if jan and lower and koguchi:
                 master.setdefault(jan, []).append((lower, upper, koguchi))
     for jan in master:
-        master[jan].sort(key=lambda x: x[0])
+        master[jan] = sorted(set(master[jan]), key=lambda x: x[0])
     return master
 
 
@@ -330,7 +330,8 @@ def load_koguchi_from_csv_bytes(file_bytes):
         if jan and lower and koguchi:
             master.setdefault(jan, []).append((lower, upper, koguchi))
     for jan in master:
-        master[jan].sort(key=lambda x: x[0])
+        # 重複行を除去してから下限昇順ソート
+        master[jan] = sorted(set(master[jan]), key=lambda x: x[0])
 
     if not master:
         return None, "有効なデータが見つかりませんでした"
@@ -346,7 +347,7 @@ def save_koguchi_to_github(master):
 
     rows = []
     for jan, entries in master.items():
-        for lower, upper, koguchi in sorted(entries):
+        for lower, upper, koguchi in sorted(entries, key=lambda x: x[0]):
             rows.append({
                 "JANコード":    jan,
                 "数量（下限）": lower,
