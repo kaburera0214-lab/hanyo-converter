@@ -908,21 +908,26 @@ def main():
 
         if st.button("🔄 変換する", type="primary", disabled=not can_convert, key="btn_convert"):
             with st.spinner("変換中..."):
-                csv_bytes, n_orders, n_rows, not_found = convert(order_file.read(), master, koguchi_master)
+                _bytes, _orders, _rows, _nf = convert(order_file.read(), master, koguchi_master)
+            st.session_state["tab1_result"] = {
+                "csv_bytes": _bytes, "n_orders": _orders,
+                "n_rows": _rows, "not_found": _nf,
+                "filename": f"hanyo_master_{datetime.now().strftime('%Y%m%d')}.csv",
+            }
 
-            if not_found:
-                st.error(f"⚠️ 商品マスタに存在しないJANコードがあります（{len(not_found)} 件）")
-                for jan, orders in not_found.items():
+        res1 = st.session_state.get("tab1_result")
+        if res1:
+            if res1["not_found"]:
+                st.error(f"⚠️ 商品マスタに存在しないJANコードがあります（{len(res1['not_found'])} 件）")
+                for jan, orders in res1["not_found"].items():
                     st.markdown(f"- **JAN: `{jan}`** → 注文番号: {', '.join(orders)}")
                 st.warning("上記の商品は入力値のまま出力されています。商品マスタを最新版に更新してください。")
                 st.divider()
-
-            st.success(f"変換完了：{n_orders} 件の注文 / {n_rows} 行")
-            today = datetime.now().strftime("%Y%m%d")
+            st.success(f"変換完了：{res1['n_orders']} 件の注文 / {res1['n_rows']} 行")
             st.download_button(
                 label="⬇️ 変換済みCSVをダウンロード",
-                data=csv_bytes,
-                file_name=f"hanyo_master_{today}.csv",
+                data=res1["csv_bytes"],
+                file_name=res1["filename"],
                 mime="text/csv",
                 key="dl_hanyo",
             )
@@ -945,24 +950,30 @@ def main():
 
         if st.button("🔄 生成する", type="primary", disabled=ne_file is None, key="btn_shipment"):
             with st.spinner("生成中..."):
-                csv_bytes, n_rows, err = convert_shipment(ne_file.read())
-            if err:
-                st.error(err)
+                _bytes2, _rows2, _err2 = convert_shipment(ne_file.read())
+            if _err2:
+                st.error(_err2)
             else:
-                st.success(f"生成完了：{n_rows} 件")
-                today = datetime.now().strftime("%Y%m%d")
-                st.download_button(
-                    label="⬇️ 出荷実績CSVをダウンロード",
-                    data=csv_bytes,
-                    file_name=f"{today}_[出荷代行]出荷実績.csv",
-                    mime="text/csv",
-                    key="dl_shipment",
-                )
-                st.link_button(
-                    "📂 格納フォルダを開く（Google Drive）",
-                    "https://drive.google.com/drive/u/2/folders/1jhsvohRf7FLg3vrj8A-8qyEzQlqsYXrJ",
-                    use_container_width=True,
-                )
+                st.session_state["tab2_result"] = {
+                    "csv_bytes": _bytes2, "n_rows": _rows2,
+                    "filename": f"{datetime.now().strftime('%Y%m%d')}_[出荷代行]出荷実績.csv",
+                }
+
+        res2 = st.session_state.get("tab2_result")
+        if res2:
+            st.success(f"生成完了：{res2['n_rows']} 件")
+            st.download_button(
+                label="⬇️ 出荷実績CSVをダウンロード",
+                data=res2["csv_bytes"],
+                file_name=res2["filename"],
+                mime="text/csv",
+                key="dl_shipment",
+            )
+            st.link_button(
+                "📂 格納フォルダを開く（Google Drive）",
+                "https://drive.google.com/drive/u/2/folders/1jhsvohRf7FLg3vrj8A-8qyEzQlqsYXrJ",
+                use_container_width=True,
+            )
 
 
     # ── Tab③ カスタム変換 ──────────────────────────────────
@@ -994,34 +1005,41 @@ def main():
 
                 if st.button("🔄 変換する", type="primary", disabled=order3 is None, key="btn_custom_convert"):
                     with st.spinner("変換中..."):
-                        csv_bytes3, n_orders3, n_rows3, not_found3, err3 = apply_custom_mapping(
+                        _b3, _o3, _r3, _nf3, _e3 = apply_custom_mapping(
                             order3.read(), mappings[sel_name],
                             master3 or {}, koguchi_master3, enc_map[enc_lbl],
                         )
-                    if err3:
-                        st.error(err3)
+                    if _e3:
+                        st.error(_e3)
                     else:
-                        if not_found3:
-                            st.error(f"⚠️ 商品マスタに存在しないJANコードがあります（{len(not_found3)} 件）")
-                            for jan, oids in not_found3.items():
-                                st.markdown(f"- **JAN: `{jan}`** → 注文番号: {', '.join(oids)}")
-                            st.warning("上記の商品は入力値のまま出力されています。")
-                            st.divider()
-                        st.success(f"変換完了：{n_orders3} 件の注文 / {n_rows3} 行")
-                        today3 = datetime.now().strftime("%Y%m%d")
-                        st.download_button(
-                            label="⬇️ 変換済みCSVをダウンロード",
-                            data=csv_bytes3,
-                            file_name=f"hanyo_master_{today3}.csv",
-                            mime="text/csv",
-                            key="dl_custom",
-                        )
-                        st.link_button("📋 ネクストエンジンに登録する →",
-                                       "https://main.next-engine.com/Usercsv",
-                                       use_container_width=True)
-                        st.link_button("📂 受注CSVフォルダ（Google Drive）",
-                                       "https://drive.google.com/drive/u/2/folders/1Xil5jgZvxk3A-3s-W-7eYrcMu4R8qvQX",
-                                       use_container_width=True)
+                        st.session_state["tab3_result"] = {
+                            "csv_bytes": _b3, "n_orders": _o3, "n_rows": _r3,
+                            "not_found": _nf3,
+                            "filename": f"hanyo_master_{datetime.now().strftime('%Y%m%d')}.csv",
+                        }
+
+                res3 = st.session_state.get("tab3_result")
+                if res3:
+                    if res3["not_found"]:
+                        st.error(f"⚠️ 商品マスタに存在しないJANコードがあります（{len(res3['not_found'])} 件）")
+                        for jan, oids in res3["not_found"].items():
+                            st.markdown(f"- **JAN: `{jan}`** → 注文番号: {', '.join(oids)}")
+                        st.warning("上記の商品は入力値のまま出力されています。")
+                        st.divider()
+                    st.success(f"変換完了：{res3['n_orders']} 件の注文 / {res3['n_rows']} 行")
+                    st.download_button(
+                        label="⬇️ 変換済みCSVをダウンロード",
+                        data=res3["csv_bytes"],
+                        file_name=res3["filename"],
+                        mime="text/csv",
+                        key="dl_custom",
+                    )
+                    st.link_button("📋 ネクストエンジンに登録する →",
+                                   "https://main.next-engine.com/Usercsv",
+                                   use_container_width=True)
+                    st.link_button("📂 受注CSVフォルダ（Google Drive）",
+                                   "https://drive.google.com/drive/u/2/folders/1Xil5jgZvxk3A-3s-W-7eYrcMu4R8qvQX",
+                                   use_container_width=True)
 
         # ── 紐づけ設定 ──────────────────────────────────
         with setup_tab:
