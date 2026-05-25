@@ -417,7 +417,15 @@ def calc_koguchi(items, koguchi_master):
 
 # ── 変換処理 ─────────────────────────────────────────────
 def convert(order_bytes, master, koguchi_master):
-    text = order_bytes.decode("shift_jis", errors="replace")
+    text = None
+    for enc in ("utf-8-sig", "utf-8", "shift_jis", "cp932"):
+        try:
+            text = order_bytes.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    if text is None:
+        text = order_bytes.decode("shift_jis", errors="replace")
     all_rows = [r for r in csv.DictReader(io.StringIO(text)) if any(r.values())]
 
     orders = OrderedDict()
