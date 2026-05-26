@@ -1117,6 +1117,10 @@ def main():
                         st.error(f"列名の取得に失敗しました: {ex}")
 
                 avail_cols_e = st.session_state.get(col_ss_key_e, [])
+                # セッションにない場合はテンプレート保存済みの列リストを自動復元
+                if not avail_cols_e and current_tpl_e.get("_columns"):
+                    avail_cols_e = current_tpl_e["_columns"]
+                    st.session_state[col_ss_key_e] = avail_cols_e
                 if avail_cols_e:
                     st.caption("検出列: " + "　".join(avail_cols_e))
                 else:
@@ -1166,6 +1170,7 @@ def main():
                 st.divider()
 
                 new_tpl_e = {
+                    "_columns":         avail_cols_e,
                     "group_key_column": "" if group_key_sel_e == "（未設定）" else group_key_sel_e,
                     "sku_column":       "" if sku_sel_e       == "（未設定）" else sku_sel_e,
                     "qty_column":       "" if qty_sel_e        == "（未設定）" else qty_sel_e,
@@ -1260,6 +1265,7 @@ def main():
             st.divider()
 
             new_tpl_n = {
+                "_columns":         avail_cols_n,
                 "group_key_column": "" if group_key_sel_n == "（未設定）" else group_key_sel_n,
                 "sku_column":       "" if sku_sel_n       == "（未設定）" else sku_sel_n,
                 "qty_column":       "" if qty_sel_n        == "（未設定）" else qty_sel_n,
