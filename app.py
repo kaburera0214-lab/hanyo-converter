@@ -772,6 +772,24 @@ def apply_custom_shipment(inputs_data, template, ne_encoding="cp932"):
                 src_val   = row.get(fd.get("source", ""), "")
                 vmap      = fd.get("map", {})
                 out[name] = vmap.get(src_val, fd.get("default", ""))
+            elif ftype == "condition":
+                result = fd.get("default", "")
+                for branch in fd.get("branches", []):
+                    col     = branch.get("if_col", "")
+                    op      = branch.get("op", "eq")
+                    val     = branch.get("if_val", "")
+                    out_val = branch.get("then", "")
+                    cell    = str(row.get(col, ""))
+                    matched = False
+                    if   op == "eq":         matched = cell == val
+                    elif op == "contains":   matched = val in cell
+                    elif op == "startswith": matched = cell.startswith(val)
+                    elif op == "endswith":   matched = cell.endswith(val)
+                    elif op == "neq":        matched = cell != val
+                    if matched:
+                        result = out_val
+                        break
+                out[name] = result
             else:
                 out[name] = ""
         output_rows.append(out)
@@ -1157,9 +1175,10 @@ def _field_config_ui(field, current, columns, pfx):
 def _ship_field_config_ui(field, current, columns, pfx):
     """出荷実績テンプレートの1フィールド分UIを描画し、新しい config dict を返す"""
     col_opts    = ["（未設定）"] + columns
-    type_labels = ["（空欄）", "固定値", "列マッピング", "日付変換", "値マッピング"]
-    type_keys   = ["empty",   "fixed",  "column",      "date",    "value_map"]
+    type_labels = ["（空欄）", "固定値", "列マッピング", "日付変換", "値マッピング", "条件分岐"]
+    type_keys   = ["empty",   "fixed",  "column",      "date",    "value_map",   "condition"]
 
+    field_hash = hashlib.md5(field.encode("utf-8")).hexdigest()[:8]
     c_type   = current.get("type", "column")
     type_idx = type_keys.index(c_type) if c_type in type_keys else 2  # default: 列マッピング
 
@@ -1214,6 +1233,88 @@ def _ship_field_config_ui(field, current, columns, pfx):
                         pts = ln.split("→", 1)
                         m[pts[0].strip()] = pts[1].strip()
                 new_cfg["map"] = m
+        elif chosen_type == "condition":
+            st.caption("↓ 条件を設定してください（上から順に評価、最初にマッチした値を出力）")
+
+    # ─── 条件分岐の詳細UI（col_b の外に展開） ───────────────────
+    if chosen_type == "condition":
+        branch_key = f"{pfx}_cnd_{field_hash}"
+
+        # 初回のみテンプレート保存値で初期化
+        if branch_key not in st.session_state:
+            saved_branches = current.get("branches", [])
+            st.session_state[branch_key] = saved_branches if saved_branches else [
+                {"if_col": "", "op": "eq", "if_val": "", "then": ""}
+            ]
+
+        op_labels = ["完全一致", "含む",     "で始まる",    "で終わる",  "一致しない"]
+        op_keys   = ["eq",       "contains", "startswith", "endswith", "neq"]
+
+        # ヘッダー
+        _h1, _h2, _h3, _h4, _h5 = st.columns([3, 2, 2, 2, 1])
+        with _h1: st.caption("🔍 条件列")
+        with _h2: st.caption("演算子")
+        with _h3: st.caption("比較値")
+        with _h4: st.caption("→ 出力値")
+        with _h5: st.caption("")
+
+        to_delete    = None
+        new_branches = []
+        for bi, branch in enumerate(st.session_state[branch_key]):
+            b1, b2, b3, b4, b5 = st.columns([3, 2, 2, 2, 1])
+            with b1:
+                ic     = branch.get("if_col", "")
+                ci     = col_opts.index(ic) if ic in col_opts else 0
+                if_col = st.selectbox(f"条件列{bi}", col_opts, index=ci,
+                                      key=f"{pfx}_cnd_col_{field_hash}_{bi}",
+                                      label_visibility="collapsed")
+            with b2:
+                op     = branch.get("op", "eq")
+                oi     = op_keys.index(op) if op in op_keys else 0
+                op_lbl = st.selectbox(f"演算子{bi}", op_labels, index=oi,
+                                      key=f"{pfx}_cnd_op_{field_hash}_{bi}",
+                                      label_visibility="collapsed")
+                op_val = op_keys[op_labels.index(op_lbl)]
+            with b3:
+                if_val = st.text_input(f"比較値{bi}", value=branch.get("if_val", ""),
+                                       key=f"{pfx}_cnd_val_{field_hash}_{bi}",
+                                       label_visibility="collapsed", placeholder="値")
+            with b4:
+                then_val = st.text_input(f"出力値{bi}", value=branch.get("then", ""),
+                                         key=f"{pfx}_cnd_then_{field_hash}_{bi}",
+                                         label_visibility="collapsed", placeholder="出力値")
+            with b5:
+                if st.button("✕", key=f"{pfx}_cnd_rm_{field_hash}_{bi}", help="この行を削除"):
+                    to_delete = bi
+            new_branches.append({
+                "if_col": "" if if_col == "（未設定）" else if_col,
+                "op":     op_val,
+                "if_val": if_val,
+                "then":   then_val,
+            })
+
+        if to_delete is not None:
+            del new_branches[to_delete]
+            st.session_state[branch_key] = new_branches
+            st.rerun()
+        else:
+            st.session_state[branch_key] = new_branches
+
+        ca, cd = st.columns([2, 3])
+        with ca:
+            if st.button("＋ 条件を追加", key=f"{pfx}_cnd_add_{field_hash}"):
+                st.session_state[branch_key].append(
+                    {"if_col": "", "op": "eq", "if_val": "", "then": ""}
+                )
+                st.rerun()
+        with cd:
+            default_val = st.text_input(
+                "デフォルト値（どの条件にも一致しない場合）",
+                value=current.get("default", ""),
+                key=f"{pfx}_cnd_def_{field_hash}",
+            )
+        new_cfg["branches"] = new_branches
+        new_cfg["default"]  = default_val
 
     return new_cfg
 
