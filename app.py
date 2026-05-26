@@ -1210,9 +1210,11 @@ def _ship_field_config_ui(field, current, columns, pfx):
             )
         elif chosen_type in ("column", "date"):
             src = current.get("source", "")
-            idx = col_opts.index(src) if src in col_opts else 0
+            # 保存済みsourceが選択肢にない場合でも末尾に追加して表示
+            _copts = col_opts + ([src] if src and src not in col_opts else [])
+            idx = _copts.index(src) if src in _copts else 0
             lbl = "日付列" if chosen_type == "date" else "参照列"
-            sel = st.selectbox(lbl, col_opts, index=idx,
+            sel = st.selectbox(lbl, _copts, index=idx,
                                key=f"{pfx}_ssc_{field}", label_visibility="hidden")
             new_cfg["source"] = "" if sel == "（未設定）" else sel
         elif chosen_type == "value_map":
@@ -1220,8 +1222,9 @@ def _ship_field_config_ui(field, current, columns, pfx):
             vm1, vm2 = st.columns([1, 2])
             with vm1:
                 src = current.get("source", "")
-                idx = col_opts.index(src) if src in col_opts else 0
-                sel = st.selectbox("元の列", col_opts, index=idx,
+                _copts = col_opts + ([src] if src and src not in col_opts else [])
+                idx = _copts.index(src) if src in _copts else 0
+                sel = st.selectbox("元の列", _copts, index=idx,
                                    key=f"{pfx}_svms_{field}")
                 new_cfg["source"]  = "" if sel == "（未設定）" else sel
                 new_cfg["default"] = st.text_input(
@@ -1273,11 +1276,12 @@ def _ship_field_config_ui(field, current, columns, pfx):
         for bi, branch in enumerate(st.session_state[branch_key]):
             b1, b2, b3, b4, b5 = st.columns([3, 2, 2, 2, 1])
             with b1:
-                ic     = branch.get("if_col", "")
-                ci     = col_opts.index(ic) if ic in col_opts else 0
-                if_col = st.selectbox(f"条件列{bi}", col_opts, index=ci,
-                                      key=f"{pfx}_cnd_col_{field_hash}_{bi}",
-                                      label_visibility="collapsed")
+                ic      = branch.get("if_col", "")
+                _copts  = col_opts + ([ic] if ic and ic not in col_opts else [])
+                ci      = _copts.index(ic) if ic in _copts else 0
+                if_col  = st.selectbox(f"条件列{bi}", _copts, index=ci,
+                                       key=f"{pfx}_cnd_col_{field_hash}_{bi}",
+                                       label_visibility="collapsed")
             with b2:
                 op     = branch.get("op", "eq")
                 oi     = op_keys.index(op) if op in op_keys else 0
@@ -1697,11 +1701,26 @@ def main():
 
                 # 列リストの表示
                 _avail_e = st.session_state.get(_e_col_key, _edit_cols)
+
+                # _columns が空の場合、保存済み output_fields の source 値から再構築
+                if not _avail_e:
+                    _recon = []
+                    for _ef in _edit_tpl.get("output_fields", []):
+                        _s = _ef.get("source", "")
+                        if _s and _s not in _recon:
+                            _recon.append(_s)
+                        for _br in _ef.get("branches", []):
+                            _ic = _br.get("if_col", "")
+                            if _ic and _ic not in _recon:
+                                _recon.append(_ic)
+                    if _recon:
+                        _avail_e = _recon
+
                 if _avail_e:
                     st.success(f"✅ 利用可能な列：{len(_avail_e)} 列")
                     st.caption("　".join(_avail_e[:12]) + ("…" if len(_avail_e) > 12 else ""))
                 else:
-                    st.info("列情報がありません。新規作成タブでテンプレートを再作成してください。")
+                    st.info("列情報がありません。下の「列リストを更新する」からCSVをアップロードしてください。")
 
                 with st.expander("▶ 列リストを更新する（オプション：インプットCSVを再アップロード）"):
                     _e_enc_map = {"Shift-JIS (cp932)": "cp932", "UTF-8": "utf-8", "UTF-8 (BOM付き)": "utf-8-sig"}
