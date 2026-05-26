@@ -492,7 +492,7 @@
     "fields": {
       "店舗伝票番号": {
         "type": "column",
-        "source": ""
+        "source": "注文ID"
       },
       "受注日": {
         "type": "special",
@@ -528,20 +528,23 @@
       },
       "発送郵便番号": {
         "type": "column",
-        "source": ""
+        "source": "配送先 郵便番号"
       },
       "発送先住所１": {
         "type": "concat",
-        "sources": [],
+        "sources": [
+          "配送先 都道府県",
+          "配送先 市区町村"
+        ],
         "sep": ""
       },
       "発送先住所２": {
         "type": "column",
-        "source": ""
+        "source": "配送先 町名番地"
       },
       "発送先名": {
         "type": "column",
-        "source": ""
+        "source": "配送先 氏名"
       },
       "発送先カナ": {
         "type": "column",
@@ -549,7 +552,7 @@
       },
       "発送電話番号": {
         "type": "column",
-        "source": ""
+        "source": "配送先 電話番号"
       },
       "支払方法": {
         "type": "fixed",
@@ -561,7 +564,7 @@
       },
       "商品計": {
         "type": "column",
-        "source": ""
+        "source": "商品合計金額"
       },
       "税金": {
         "type": "column",
@@ -585,7 +588,7 @@
       },
       "合計金額": {
         "type": "column",
-        "source": ""
+        "source": "注文合計金額"
       },
       "ギフトフラグ": {
         "type": "empty"
@@ -600,7 +603,7 @@
       },
       "作業者欄": {
         "type": "column",
-        "source": "発送可能日時"
+        "source": ""
       },
       "備考": {
         "type": "column",
@@ -616,11 +619,11 @@
       },
       "商品価格": {
         "type": "column",
-        "source": ""
+        "source": "商品単価"
       },
       "受注数量": {
         "type": "column",
-        "source": ""
+        "source": "数量"
       },
       "商品オプション": {
         "type": "column",
