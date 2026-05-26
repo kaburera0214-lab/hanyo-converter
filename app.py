@@ -1584,18 +1584,29 @@ def main():
                                 label_visibility="hidden",
                             )
                         cust_rows_key = f"ship_cust_rows_{ci}_{sel_ship_tpl}"
+                        vcol_check    = inp_cfg.get("validate_col", "").strip()
                         if c_file:
                             try:
                                 ctxt  = c_file.read().decode(c_enc, errors="replace")
                                 crows = [r for r in csv.DictReader(io.StringIO(ctxt)) if any(r.values())]
-                                st.session_state[cust_rows_key] = crows
+                                if vcol_check and crows and vcol_check not in crows[0]:
+                                    st.error(
+                                        f"⚠️ **{lbl}** のファイルに「{vcol_check}」列が見つかりません。\n\n"
+                                        f"正しいファイルをアップロードしてください。"
+                                    )
+                                else:
+                                    st.session_state[cust_rows_key] = crows
                             except Exception as cex:
                                 st.error(f"読み込みエラー ({lbl}): {cex}")
                         stored_c = st.session_state.get(cust_rows_key, [])
                         if stored_c:
-                            st.success(f"✅ {lbl}：{len(stored_c)} 行")
+                            vcol_hint = f"　（識別列：{vcol_check} ✅）" if vcol_check else ""
+                            st.success(f"✅ {lbl}：{len(stored_c)} 行{vcol_hint}")
                         else:
-                            st.info(f"{lbl} のCSVをアップロードしてください。")
+                            if vcol_check:
+                                st.info(f"{lbl} のCSVをアップロードしてください。（識別列：**{vcol_check}**）")
+                            else:
+                                st.info(f"{lbl} のCSVをアップロードしてください。")
                             all_uploaded = False
                         cust_inputs_data.append({"label": lbl, "rows": stored_c})
 
@@ -1696,6 +1707,13 @@ def main():
                         _e_lbl  = _eic.get("label", chr(65 + _ei))
                         _e_role = "プライマリ" if _eic.get("role") == "primary" else "セカンダリ"
                         st.markdown(f"**{chr(65 + _ei)}：{_e_lbl}**（{_e_role}）")
+                        st.text_input(
+                            "🔑 識別列",
+                            value=_eic.get("validate_col", ""),
+                            key=f"{_e_pfx}_vcol_{_ei}",
+                            placeholder="このファイルに必ず存在する列名（例：注文ID）",
+                            help="変換実行時、ここで指定した列が存在しない場合はエラーを表示します。",
+                        )
                 else:
                     st.caption("（インプット設定なし）")
 
@@ -1766,9 +1784,20 @@ def main():
                     if not _new_out_e:
                         st.error("出力フィールドがありません")
                     else:
+                        # _inputs の validate_col を更新して保存
+                        _upd_inputs = []
+                        for _ei, _eic in enumerate(_edit_inp_cfg):
+                            _ic = dict(_eic)
+                            _vcol = st.session_state.get(f"{_e_pfx}_vcol_{_ei}", "").strip()
+                            if _vcol:
+                                _ic["validate_col"] = _vcol
+                            else:
+                                _ic.pop("validate_col", None)
+                            _upd_inputs.append(_ic)
                         _upd = dict(_edit_tpl)
                         _upd["output_fields"] = _new_out_e
                         _upd["_columns"]      = _avail_e
+                        _upd["_inputs"]       = _upd_inputs
                         ship_tpls[_edit_sel]  = _upd
                         ok, serr = save_shipment_templates_to_github(ship_tpls)
                         if ok:
@@ -1821,8 +1850,9 @@ def main():
                 enc_setup_map = {"Shift-JIS (cp932)": "cp932", "UTF-8": "utf-8", "UTF-8 (BOM付き)": "utf-8-sig"}
 
                 for i in range(num_inputs):
-                    saved_lbl_i = saved_inp_cfg[i]["label"] if i < len(saved_inp_cfg) else chr(65 + i)
-                    default_lbl = multi_inputs[i].get("label") or saved_lbl_i or chr(65 + i)
+                    saved_lbl_i  = saved_inp_cfg[i]["label"]         if i < len(saved_inp_cfg) else chr(65 + i)
+                    saved_vcol_i = saved_inp_cfg[i].get("validate_col", "") if i < len(saved_inp_cfg) else ""
+                    default_lbl  = multi_inputs[i].get("label") or saved_lbl_i or chr(65 + i)
                     st.markdown(f"**インプット {chr(65 + i)}**")
                     ic1, ic2, ic3 = st.columns([1, 3, 1])
                     with ic1:
@@ -1841,6 +1871,13 @@ def main():
                             f"CSV {chr(65 + i)}", type="csv",
                             key=f"{pfx_ship}_inp_file_{i}", label_visibility="hidden",
                         )
+                    st.text_input(
+                        "🔑 識別列（変換実行時にファイルの正しさを検証）",
+                        value=saved_vcol_i,
+                        key=f"{pfx_ship}_inp_vcol_{i}",
+                        placeholder="このファイルに必ず存在する列名（例：注文ID）",
+                        help="変換実行時、ここで指定した列が存在しない場合はエラーを表示します。省略可。",
+                    )
                     if inp_file:
                         try:
                             raw  = inp_file.read()
@@ -2040,6 +2077,9 @@ def main():
                                 jc_i = _saved_jc[i - 1] if i - 1 < len(_saved_jc) else {}
                                 inp_cf["join_key_from"] = jc_i.get("from_col", "")
                                 inp_cf["join_key_to"]   = jc_i.get("to_col", "")
+                            vcol_i = st.session_state.get(f"{pfx_ship}_inp_vcol_{i}", "").strip()
+                            if vcol_i:
+                                inp_cf["validate_col"] = vcol_i
                             save_inp_cfg.append(inp_cf)
                         ship_tpls[save_name_s] = {
                             "_inputs":       save_inp_cfg,
