@@ -768,6 +768,10 @@ def apply_custom_shipment(inputs_data, template, ne_encoding="cp932"):
                 out[name] = row.get(fd.get("source", ""), "")
             elif ftype == "date":
                 out[name] = _format_date(row.get(fd.get("source", ""), ""))
+            elif ftype == "value_map":
+                src_val   = row.get(fd.get("source", ""), "")
+                vmap      = fd.get("map", {})
+                out[name] = vmap.get(src_val, fd.get("default", ""))
             else:
                 out[name] = ""
         output_rows.append(out)
@@ -1153,8 +1157,8 @@ def _field_config_ui(field, current, columns, pfx):
 def _ship_field_config_ui(field, current, columns, pfx):
     """出荷実績テンプレートの1フィールド分UIを描画し、新しい config dict を返す"""
     col_opts    = ["（未設定）"] + columns
-    type_labels = ["（空欄）", "固定値", "列マッピング", "日付変換"]
-    type_keys   = ["empty",   "fixed",  "column",      "date"]
+    type_labels = ["（空欄）", "固定値", "列マッピング", "日付変換", "値マッピング"]
+    type_keys   = ["empty",   "fixed",  "column",      "date",    "value_map"]
 
     c_type   = current.get("type", "column")
     type_idx = type_keys.index(c_type) if c_type in type_keys else 2  # default: 列マッピング
@@ -1175,13 +1179,41 @@ def _ship_field_config_ui(field, current, columns, pfx):
                 "固定値", value=current.get("value", ""),
                 key=f"{pfx}_sfv_{field}", label_visibility="hidden",
             )
-        else:  # column / date
+        elif chosen_type in ("column", "date"):
             src = current.get("source", "")
             idx = col_opts.index(src) if src in col_opts else 0
             lbl = "日付列" if chosen_type == "date" else "参照列"
             sel = st.selectbox(lbl, col_opts, index=idx,
                                key=f"{pfx}_ssc_{field}", label_visibility="hidden")
             new_cfg["source"] = "" if sel == "（未設定）" else sel
+        elif chosen_type == "value_map":
+            # 値マッピング：元の列を選択して「元の値 → 出力値」テーブルを設定
+            vm1, vm2 = st.columns([1, 2])
+            with vm1:
+                src = current.get("source", "")
+                idx = col_opts.index(src) if src in col_opts else 0
+                sel = st.selectbox("元の列", col_opts, index=idx,
+                                   key=f"{pfx}_svms_{field}")
+                new_cfg["source"]  = "" if sel == "（未設定）" else sel
+                new_cfg["default"] = st.text_input(
+                    "デフォルト値（一致しない場合）",
+                    value=current.get("default", ""),
+                    key=f"{pfx}_svmd_{field}",
+                )
+            with vm2:
+                existing = current.get("map", {})
+                txt = "\n".join(f"{k} → {v}" for k, v in existing.items())
+                edited = st.text_area(
+                    "変換テーブル（元の値 → 出力値、1行1ペア）",
+                    value=txt, height=100, key=f"{pfx}_svmt_{field}",
+                    help="例：\nヤマト宅配 → 宅配便\nネコポス → メール便",
+                )
+                m = {}
+                for ln in edited.strip().split("\n"):
+                    if "→" in ln:
+                        pts = ln.split("→", 1)
+                        m[pts[0].strip()] = pts[1].strip()
+                new_cfg["map"] = m
 
     return new_cfg
 
@@ -1496,355 +1528,450 @@ def main():
 
         # ── テンプレート設定 ──────────────────────────────────
         with ship_setup_tab:
-            ship_tpls     = st.session_state.get("shipment_templates", {})
+            ship_tpls = st.session_state.get("shipment_templates", {})
             st.caption("出荷実績CSVの出力フォーマットテンプレートを設定します")
 
-            tpl_options_s = ["（新規作成）"] + list(ship_tpls.keys())
-            ship_sel_s    = st.selectbox("テンプレート", tpl_options_s, key="ship_setup_sel")
+            if ship_tpls:
+                _se_tab, _sn_tab = st.tabs(["✏ テンプレートを編集", "⚙ 新規作成"])
+            else:
+                _se_tab = None
+                _sn_tab = st.container()
 
-            if ship_sel_s == "（新規作成）":
+            # ═══════════════════════════════════════════════════════
+            # ✏ 編集タブ
+            # ═══════════════════════════════════════════════════════
+            if ship_tpls:
+              with _se_tab:
+                st.caption("保存済みテンプレートを選択して設定を変更します")
+                _edit_sel     = st.selectbox("編集するテンプレート", list(ship_tpls.keys()), key="ship_edit_sel")
+                _edit_tpl     = ship_tpls.get(_edit_sel, {})
+                _edit_cols    = _edit_tpl.get("_columns", [])
+                _edit_inp_cfg = _edit_tpl.get("_inputs", [])
+                _e_pfx        = "she" + hashlib.md5(_edit_sel.encode("utf-8")).hexdigest()[:8]
+                _e_col_key    = f"ship_edit_cols_{_edit_sel}"
+
+                # 削除ボタン
+                if st.button("🗑 このテンプレートを削除", key="btn_ship_edit_del"):
+                    st.session_state["_ship_edit_confirm_del"] = True
+                if st.session_state.get("_ship_edit_confirm_del"):
+                    st.warning(f"「{_edit_sel}」を削除します。よろしいですか？")
+                    _ded1, _ded2 = st.columns(2)
+                    with _ded1:
+                        if st.button("はい、削除する", key="btn_ship_edit_del_ok"):
+                            del ship_tpls[_edit_sel]
+                            ok, derr = save_shipment_templates_to_github(ship_tpls)
+                            if ok:
+                                st.session_state["shipment_templates"] = ship_tpls
+                                st.session_state["_ship_edit_confirm_del"] = False
+                                st.success("削除しました")
+                                st.rerun()
+                            else:
+                                st.error(f"削除失敗: {derr}")
+                    with _ded2:
+                        if st.button("キャンセル", key="btn_ship_edit_del_cancel"):
+                            st.session_state["_ship_edit_confirm_del"] = False
+                            st.rerun()
+
+                st.divider()
+
+                # ── ① インプット設定（保存内容を表示） ────────────
+                st.subheader("① インプット設定（保存済み）")
+                if _edit_inp_cfg:
+                    for _ei, _eic in enumerate(_edit_inp_cfg):
+                        _e_lbl  = _eic.get("label", chr(65 + _ei))
+                        _e_role = "プライマリ" if _eic.get("role") == "primary" else "セカンダリ"
+                        st.markdown(f"**{chr(65 + _ei)}：{_e_lbl}**（{_e_role}）")
+                        if _ei > 0:
+                            _jkf = _eic.get("join_key_from") or "（未設定）"
+                            _jkt = _eic.get("join_key_to")   or "（未設定）"
+                            st.caption(f"　結合キー：プライマリ「{_jkf}」↔ セカンダリ「{_jkt}」")
+                else:
+                    st.caption("（インプット設定なし）")
+
+                # 列リストの表示
+                _avail_e = st.session_state.get(_e_col_key, _edit_cols)
+                if _avail_e:
+                    st.success(f"✅ 利用可能な列：{len(_avail_e)} 列")
+                    st.caption("　".join(_avail_e[:12]) + ("…" if len(_avail_e) > 12 else ""))
+                else:
+                    st.info("列情報がありません。新規作成タブでテンプレートを再作成してください。")
+
+                with st.expander("▶ 列リストを更新する（オプション：インプットCSVを再アップロード）"):
+                    _e_enc_map = {"Shift-JIS (cp932)": "cp932", "UTF-8": "utf-8", "UTF-8 (BOM付き)": "utf-8-sig"}
+                    _efc1, _efc2 = st.columns([3, 1])
+                    with _efc2:
+                        _e_enc = _e_enc_map[st.selectbox("文字コード", list(_e_enc_map.keys()), key=f"{_e_pfx}_enc")]
+                    with _efc1:
+                        _e_upd_file = st.file_uploader("インプットCSV（列更新用）", type="csv",
+                                                        key=f"{_e_pfx}_upd_file", label_visibility="hidden")
+                    if _e_upd_file:
+                        try:
+                            _e_rows = [r for r in csv.DictReader(
+                                io.StringIO(_e_upd_file.read().decode(_e_enc, errors="replace"))
+                            ) if any(r.values())]
+                            if _e_rows:
+                                _new_e_cols = list(_e_rows[0].keys())
+                                st.session_state[_e_col_key] = _new_e_cols
+                                _avail_e = _new_e_cols
+                                st.success(f"更新：{len(_new_e_cols)} 列")
+                        except Exception as _eex:
+                            st.error(f"読み込みエラー: {_eex}")
+
+                st.divider()
+
+                # ── ② 出力フィールドの設定 ──────────────────────
+                st.subheader("② 出力フィールドの設定")
+                st.caption("タイプや参照列を変更して「変更を保存する」を押してください。")
+
+                _e_fld_names = [f["name"] for f in _edit_tpl.get("output_fields", [])]
+                _e_fld_dict  = {f["name"]: f for f in _edit_tpl.get("output_fields", [])}
+                _new_out_e   = []
+
+                if _e_fld_names:
+                    for _efn in _e_fld_names:
+                        _cur_e = _e_fld_dict.get(_efn, {"type": "column"})
+                        _new_out_e.append(_ship_field_config_ui(_efn, _cur_e, _avail_e, _e_pfx))
+                else:
+                    st.info("出力フィールドが設定されていません。新規作成タブでテンプレートを再作成してください。")
+
+                st.divider()
+
+                if st.button("💾 変更を保存する", type="primary", key="btn_ship_edit_save"):
+                    if not _new_out_e:
+                        st.error("出力フィールドがありません")
+                    else:
+                        _upd = dict(_edit_tpl)
+                        _upd["output_fields"] = _new_out_e
+                        _upd["_columns"]      = _avail_e
+                        ship_tpls[_edit_sel]  = _upd
+                        ok, serr = save_shipment_templates_to_github(ship_tpls)
+                        if ok:
+                            st.session_state["shipment_templates"] = ship_tpls
+                            st.success(f"「{_edit_sel}」を保存しました")
+                        else:
+                            st.error(f"保存失敗: {serr}")
+
+            # ═══════════════════════════════════════════════════════
+            # ⚙ 新規作成タブ
+            # ═══════════════════════════════════════════════════════
+            with _sn_tab:
+                st.caption("新しいテンプレートを作成します")
                 ship_tpl_name_s    = st.text_input("新しいテンプレート名", key="ship_new_name")
                 current_ship_tpl_s = {}
-            else:
-                ship_tpl_name_s    = ship_sel_s
-                current_ship_tpl_s = ship_tpls.get(ship_sel_s, {})
 
-            st.divider()
-
-            # セッションキー
-            _skey             = ship_tpl_name_s or "_new"
-            ship_out_rows_key = f"ship_out_rows_{_skey}"
-            ship_out_flds_key = f"ship_out_flds_{_skey}"
-            ship_detected_key = f"ship_detected_{_skey}"
-            ship_num_key      = f"ship_num_inputs_{_skey}"
-            ship_multi_key    = f"ship_multi_inputs_{_skey}"
-            ship_join_key     = f"ship_join_config_{_skey}"
-            pfx_ship          = "sh" + hashlib.md5(_skey.encode("utf-8")).hexdigest()[:8]
-
-            # ─── ① インプットCSV ──────────────────────────────────
-            st.subheader("① インプットCSV")
-            st.caption("変換に使うCSVをアップロードします。複数ある場合は「＋ 追加」してください。")
-
-            # インプット数を初期化（既存テンプレートの _inputs から）
-            if ship_num_key not in st.session_state:
-                _saved_inp_cfg0 = current_ship_tpl_s.get("_inputs", [])
-                st.session_state[ship_num_key] = max(1, len(_saved_inp_cfg0))
-            num_inputs = st.session_state[ship_num_key]
-
-            # マルチインプットデータを初期化
-            if ship_multi_key not in st.session_state:
-                st.session_state[ship_multi_key] = [
-                    {"label": "", "rows": [], "cols": []} for _ in range(num_inputs)
-                ]
-            multi_inputs = st.session_state[ship_multi_key]
-            while len(multi_inputs) < num_inputs:
-                multi_inputs.append({"label": "", "rows": [], "cols": []})
-            st.session_state[ship_multi_key] = multi_inputs
-
-            saved_inp_cfg = current_ship_tpl_s.get("_inputs", [])
-            enc_setup_map = {"Shift-JIS (cp932)": "cp932", "UTF-8": "utf-8", "UTF-8 (BOM付き)": "utf-8-sig"}
-
-            for i in range(num_inputs):
-                saved_lbl_i = saved_inp_cfg[i]["label"] if i < len(saved_inp_cfg) else chr(65 + i)
-                default_lbl = multi_inputs[i].get("label") or saved_lbl_i or chr(65 + i)
-                st.markdown(f"**インプット {chr(65 + i)}**")
-                ic1, ic2, ic3 = st.columns([1, 3, 1])
-                with ic1:
-                    inp_lbl = st.text_input(
-                        "ラベル", value=default_lbl,
-                        key=f"{pfx_ship}_inp_lbl_{i}", placeholder=chr(65 + i),
-                    )
-                with ic3:
-                    inp_enc_lbl = st.selectbox(
-                        "文字コード", list(enc_setup_map.keys()),
-                        key=f"{pfx_ship}_inp_enc_{i}",
-                    )
-                    inp_enc = enc_setup_map[inp_enc_lbl]
-                with ic2:
-                    inp_file = st.file_uploader(
-                        f"CSV {chr(65 + i)}", type="csv",
-                        key=f"{pfx_ship}_inp_file_{i}", label_visibility="hidden",
-                    )
-                if inp_file:
-                    try:
-                        raw  = inp_file.read()
-                        txt  = raw.decode(inp_enc, errors="replace")
-                        irows = [r for r in csv.DictReader(io.StringIO(txt)) if any(r.values())]
-                        icols = list(irows[0].keys()) if irows else []
-                        multi_inputs[i] = {"label": inp_lbl or chr(65 + i), "rows": irows, "cols": icols}
-                        st.session_state[ship_multi_key] = multi_inputs
-                    except Exception as ex:
-                        st.error(f"読み込みエラー ({chr(65 + i)}): {ex}")
-
-                # インライン状態（コンパクト）
-                entry = multi_inputs[i]
-                if entry["rows"]:
-                    lbl_disp = inp_lbl or entry["label"] or chr(65 + i)
-                    cols_prev = "　".join(
-                        f"{lbl_disp}：{c}" for c in entry["cols"][:6]
-                    ) + ("…" if len(entry["cols"]) > 6 else "")
-                    st.caption(f"✅ {lbl_disp}：{len(entry['cols'])} 列 / {len(entry['rows'])} 行　　{cols_prev}")
-                else:
-                    st.caption(f"⬆️ インプット {chr(65 + i)} のCSVをアップロードしてください")
-
-                if i < num_inputs - 1:
-                    st.markdown("---")
-
-            # ＋追加 / 削除ボタン
-            bi1, bi2 = st.columns(2)
-            with bi1:
-                if st.button("＋ インプットを追加", key=f"{pfx_ship}_add_input"):
-                    st.session_state[ship_num_key] += 1
-                    multi_inputs.append({"label": "", "rows": [], "cols": []})
-                    st.session_state[ship_multi_key] = multi_inputs
-                    st.rerun()
-            with bi2:
-                if num_inputs > 1 and st.button("－ 最後を削除", key=f"{pfx_ship}_rm_input"):
-                    st.session_state[ship_num_key] -= 1
-                    multi_inputs.pop()
-                    st.session_state[ship_multi_key] = multi_inputs
-                    st.rerun()
-
-            # ── 読み込み状態サマリー（常時表示・目立つ） ──────────
-            _loaded_parts   = []
-            _unloaded_parts = []
-            for _si in range(num_inputs):
-                _se   = multi_inputs[_si]
-                _slbl = st.session_state.get(f"{pfx_ship}_inp_lbl_{_si}", "") or _se.get("label", "") or chr(65 + _si)
-                if _se.get("rows"):
-                    _loaded_parts.append(f"**{_slbl}**：{len(_se['cols'])} 列 / {len(_se['rows'])} 行")
-                else:
-                    _unloaded_parts.append(_slbl)
-            if _loaded_parts and not _unloaded_parts:
-                st.success("✅ 読み込み済み　　" + "　　|　　".join(_loaded_parts))
-            elif _loaded_parts:
-                st.warning(
-                    "⚠️ 一部未読み込み　　" + "　　|　　".join(_loaded_parts) +
-                    f"　　　　【未読み込み: {', '.join(_unloaded_parts)}】"
-                )
-            else:
-                st.info("① のCSVをアップロードしてください。（②をアップロードしても①のデータは保持されます）")
-
-            # 結合設定（インプットが2つ以上のとき）
-            if num_inputs > 1:
                 st.divider()
-                st.subheader("① 補足：結合キーの設定")
-                st.caption("セカンダリ（B以降）をプライマリ（A）のどの列で紐づけるか設定します。")
-                prim_entry = multi_inputs[0]
-                prim_lbl   = st.session_state.get(f"{pfx_ship}_inp_lbl_0", "") or prim_entry.get("label", "") or "A"
-                prim_cols  = prim_entry.get("cols", [])
-                prev_jc    = st.session_state.get(ship_join_key, [])
-                new_jc     = []
-                for i in range(1, num_inputs):
-                    sec_entry = multi_inputs[i]
-                    sec_lbl   = st.session_state.get(f"{pfx_ship}_inp_lbl_{i}", "") or sec_entry.get("label", "") or chr(65 + i)
-                    sec_cols  = sec_entry.get("cols", [])
-                    jc_prev   = prev_jc[i - 1] if i - 1 < len(prev_jc) else {}
-                    # テンプレートから既存キーを復元
-                    if not jc_prev and i < len(saved_inp_cfg):
-                        jc_prev = {
-                            "from_col": saved_inp_cfg[i].get("join_key_from", ""),
-                            "to_col":   saved_inp_cfg[i].get("join_key_to", ""),
-                        }
-                    st.markdown(f"**{sec_lbl}（セカンダリ）の結合キー**")
-                    jc1, jc2  = st.columns(2)
-                    from_opts = ["（未設定）"] + prim_cols
-                    to_opts   = ["（未設定）"] + sec_cols
-                    s_from    = jc_prev.get("from_col", "")
-                    s_to      = jc_prev.get("to_col", "")
-                    with jc1:
-                        f_idx = from_opts.index(s_from) if s_from in from_opts else 0
-                        jkf   = st.selectbox(
-                            f"{prim_lbl}（プライマリ）側の列", from_opts, index=f_idx,
-                            key=f"{pfx_ship}_jkf_{i}",
+
+                # セッションキー
+                _skey             = ship_tpl_name_s or "_new"
+                ship_out_rows_key = f"ship_out_rows_{_skey}"
+                ship_out_flds_key = f"ship_out_flds_{_skey}"
+                ship_detected_key = f"ship_detected_{_skey}"
+                ship_num_key      = f"ship_num_inputs_{_skey}"
+                ship_multi_key    = f"ship_multi_inputs_{_skey}"
+                ship_join_key     = f"ship_join_config_{_skey}"
+                pfx_ship          = "sh" + hashlib.md5(_skey.encode("utf-8")).hexdigest()[:8]
+
+                # ─── ① インプットCSV ──────────────────────────────────
+                st.subheader("① インプットCSV")
+                st.caption("変換に使うCSVをアップロードします。複数ある場合は「＋ 追加」してください。")
+
+                # インプット数を初期化（既存テンプレートの _inputs から）
+                if ship_num_key not in st.session_state:
+                    _saved_inp_cfg0 = current_ship_tpl_s.get("_inputs", [])
+                    st.session_state[ship_num_key] = max(1, len(_saved_inp_cfg0))
+                num_inputs = st.session_state[ship_num_key]
+
+                # マルチインプットデータを初期化
+                if ship_multi_key not in st.session_state:
+                    st.session_state[ship_multi_key] = [
+                        {"label": "", "rows": [], "cols": []} for _ in range(num_inputs)
+                    ]
+                multi_inputs = st.session_state[ship_multi_key]
+                while len(multi_inputs) < num_inputs:
+                    multi_inputs.append({"label": "", "rows": [], "cols": []})
+                st.session_state[ship_multi_key] = multi_inputs
+
+                saved_inp_cfg = current_ship_tpl_s.get("_inputs", [])
+                enc_setup_map = {"Shift-JIS (cp932)": "cp932", "UTF-8": "utf-8", "UTF-8 (BOM付き)": "utf-8-sig"}
+
+                for i in range(num_inputs):
+                    saved_lbl_i = saved_inp_cfg[i]["label"] if i < len(saved_inp_cfg) else chr(65 + i)
+                    default_lbl = multi_inputs[i].get("label") or saved_lbl_i or chr(65 + i)
+                    st.markdown(f"**インプット {chr(65 + i)}**")
+                    ic1, ic2, ic3 = st.columns([1, 3, 1])
+                    with ic1:
+                        inp_lbl = st.text_input(
+                            "ラベル", value=default_lbl,
+                            key=f"{pfx_ship}_inp_lbl_{i}", placeholder=chr(65 + i),
                         )
-                    with jc2:
-                        t_idx = to_opts.index(s_to) if s_to in to_opts else 0
-                        jkt   = st.selectbox(
-                            f"{sec_lbl}（セカンダリ）側の列", to_opts, index=t_idx,
-                            key=f"{pfx_ship}_jkt_{i}",
+                    with ic3:
+                        inp_enc_lbl = st.selectbox(
+                            "文字コード", list(enc_setup_map.keys()),
+                            key=f"{pfx_ship}_inp_enc_{i}",
                         )
-                    new_jc.append({
-                        "from_col": "" if jkf == "（未設定）" else jkf,
-                        "to_col":   "" if jkt == "（未設定）" else jkt,
-                    })
-                st.session_state[ship_join_key] = new_jc
+                        inp_enc = enc_setup_map[inp_enc_lbl]
+                    with ic2:
+                        inp_file = st.file_uploader(
+                            f"CSV {chr(65 + i)}", type="csv",
+                            key=f"{pfx_ship}_inp_file_{i}", label_visibility="hidden",
+                        )
+                    if inp_file:
+                        try:
+                            raw  = inp_file.read()
+                            txt  = raw.decode(inp_enc, errors="replace")
+                            irows = [r for r in csv.DictReader(io.StringIO(txt)) if any(r.values())]
+                            icols = list(irows[0].keys()) if irows else []
+                            multi_inputs[i] = {"label": inp_lbl or chr(65 + i), "rows": irows, "cols": icols}
+                            st.session_state[ship_multi_key] = multi_inputs
+                        except Exception as ex:
+                            st.error(f"読み込みエラー ({chr(65 + i)}): {ex}")
 
-            # avail_ship_cols をプレフィックス付きで構築（全角：区切り）
-            avail_ship_cols = []
-            for i, entry in enumerate(multi_inputs[:num_inputs]):
-                lbl = st.session_state.get(f"{pfx_ship}_inp_lbl_{i}", "") or entry.get("label", "") or chr(65 + i)
-                for c in entry.get("cols", []):
-                    avail_ship_cols.append(f"{lbl}：{c}")
-            # フォールバック：保存済みテンプレートの列
-            if not avail_ship_cols and current_ship_tpl_s.get("_columns"):
-                avail_ship_cols = current_ship_tpl_s["_columns"]
+                    # インライン状態（コンパクト）
+                    entry = multi_inputs[i]
+                    if entry["rows"]:
+                        lbl_disp = inp_lbl or entry["label"] or chr(65 + i)
+                        cols_prev = "　".join(
+                            f"{lbl_disp}：{c}" for c in entry["cols"][:6]
+                        ) + ("…" if len(entry["cols"]) > 6 else "")
+                        st.caption(f"✅ {lbl_disp}：{len(entry['cols'])} 列 / {len(entry['rows'])} 行　　{cols_prev}")
+                    else:
+                        st.caption(f"⬆️ インプット {chr(65 + i)} のCSVをアップロードしてください")
 
-            has_input_data = any(e.get("rows") for e in multi_inputs[:num_inputs])
+                    if i < num_inputs - 1:
+                        st.markdown("---")
 
-            st.divider()
+                # ＋追加 / 削除ボタン
+                bi1, bi2 = st.columns(2)
+                with bi1:
+                    if st.button("＋ インプットを追加", key=f"{pfx_ship}_add_input"):
+                        st.session_state[ship_num_key] += 1
+                        multi_inputs.append({"label": "", "rows": [], "cols": []})
+                        st.session_state[ship_multi_key] = multi_inputs
+                        st.rerun()
+                with bi2:
+                    if num_inputs > 1 and st.button("－ 最後を削除", key=f"{pfx_ship}_rm_input"):
+                        st.session_state[ship_num_key] -= 1
+                        multi_inputs.pop()
+                        st.session_state[ship_multi_key] = multi_inputs
+                        st.rerun()
 
-            # ─── ② アウトプット参照CSV（自動検出用） ─────────────────
-            st.subheader("② アウトプット参照CSVをアップロード")
-            st.caption("客先に渡す出荷実績CSV（実データ入り）をアップロードすると自動で紐づけを検出します。")
-
-            ship_output_csv = st.file_uploader("アウトプット参照CSV（実データ入り）", type="csv", key="ship_output_csv")
-            if ship_output_csv:
-                raw_bytes_out   = ship_output_csv.read()
-                all_output_rows = None
-                for enc_try in ("utf-8-sig", "utf-8", "shift_jis", "cp932"):
-                    try:
-                        txt      = raw_bytes_out.decode(enc_try)
-                        rows_try = [r for r in csv.DictReader(io.StringIO(txt)) if any(r.values())]
-                        if rows_try:
-                            all_output_rows = rows_try
-                            break
-                    except Exception:
-                        continue
-                if all_output_rows:
-                    st.session_state[ship_out_rows_key] = all_output_rows
-                    st.session_state[ship_out_flds_key] = list(all_output_rows[0].keys())
-                else:
-                    st.error("アウトプットCSVの読み込みに失敗しました")
-
-            stored_out_rows = st.session_state.get(ship_out_rows_key, [])
-            if stored_out_rows:
-                out_cols_disp = list(stored_out_rows[0].keys())
-                st.success(f"✅ 読み込み済み：{len(out_cols_disp)} 列 / {len(stored_out_rows)} 行")
-                st.caption("出力列: " + "　".join(out_cols_disp))
-            else:
-                st.info("アウトプット参照CSVをアップロードしてください。")
-
-            if st.button("🔍 自動検出する", type="secondary",
-                         disabled=not (has_input_data and bool(stored_out_rows)),
-                         key="btn_ship_autodetect",
-                         help="①②両方アップロード後にクリックしてください"):
-                inputs_for_detect = [
-                    {
-                        "label": st.session_state.get(f"{pfx_ship}_inp_lbl_{i}", "") or multi_inputs[i].get("label", "") or chr(65 + i),
-                        "rows":  multi_inputs[i]["rows"],
-                        "cols":  multi_inputs[i]["cols"],
-                    }
-                    for i in range(num_inputs)
-                    if multi_inputs[i].get("rows")
-                ]
-                detected_fds, det_summary = auto_detect_shipment_mapping(
-                    inputs_for_detect,
-                    st.session_state[ship_out_rows_key],
-                )
-                st.session_state[ship_detected_key] = detected_fds
-                # per-field ウィジェットをクリアして自動検出値で再描画
-                for fd in detected_fds:
-                    for sfx in ["_st_", "_se_", "_sfv_", "_ssc_"]:
-                        st.session_state.pop(f"{pfx_ship}{sfx}{fd['name']}", None)
-                fixed_cnt    = sum(1 for s in det_summary.values() if s == "fixed")
-                col_cnt      = sum(1 for s in det_summary.values() if s.startswith("column"))
-                date_cnt     = sum(1 for s in det_summary.values() if s.startswith("date"))
-                unknown_cols = [c for c, s in det_summary.items() if s == "unknown"]
-                st.info(f"✅ 検出完了：固定値 {fixed_cnt} / 列マッピング {col_cnt} / 日付変換 {date_cnt}")
-                if unknown_cols:
-                    st.warning("⚠️ 以下は自動検出できませんでした。③で手動設定してください: " +
-                               "　".join(unknown_cols))
-                st.rerun()
-
-            st.divider()
-
-            # ─── ③ 出力フィールドの設定（per-field ドロップダウン） ──
-            st.subheader("③ 出力フィールドの設定")
-            st.caption("各フィールドのタイプと参照列を設定してください。")
-
-            out_field_names = st.session_state.get(ship_out_flds_key, [])
-            if not out_field_names:
-                saved_fds = current_ship_tpl_s.get("output_fields", [])
-                out_field_names = [f["name"] for f in saved_fds]
-                if out_field_names:
-                    st.session_state[ship_out_flds_key] = out_field_names
-
-            if ship_detected_key in st.session_state:
-                field_cfg_list = st.session_state[ship_detected_key]
-            else:
-                field_cfg_list = current_ship_tpl_s.get("output_fields", [])
-            field_cfg_dict = {f["name"]: f for f in field_cfg_list}
-
-            new_output_fields = []
-            if out_field_names:
-                for fname in out_field_names:
-                    cur_cfg = field_cfg_dict.get(fname, {"type": "column"})
-                    new_output_fields.append(
-                        _ship_field_config_ui(fname, cur_cfg, avail_ship_cols, pfx_ship)
+                # ── 読み込み状態サマリー（常時表示・目立つ） ──────────
+                _loaded_parts   = []
+                _unloaded_parts = []
+                for _si in range(num_inputs):
+                    _se   = multi_inputs[_si]
+                    _slbl = st.session_state.get(f"{pfx_ship}_inp_lbl_{_si}", "") or _se.get("label", "") or chr(65 + _si)
+                    if _se.get("rows"):
+                        _loaded_parts.append(f"**{_slbl}**：{len(_se['cols'])} 列 / {len(_se['rows'])} 行")
+                    else:
+                        _unloaded_parts.append(_slbl)
+                if _loaded_parts and not _unloaded_parts:
+                    st.success("✅ 読み込み済み　　" + "　　|　　".join(_loaded_parts))
+                elif _loaded_parts:
+                    st.warning(
+                        "⚠️ 一部未読み込み　　" + "　　|　　".join(_loaded_parts) +
+                        f"　　　　【未読み込み: {', '.join(_unloaded_parts)}】"
                     )
-            else:
-                st.info("② アウトプット参照CSVをアップロードすると出力フィールドが自動表示されます。")
-                st.caption("または出力フィールド名を手動で入力（1行1フィールド）:")
-                manual_flds_txt = st.text_area("フィールド名（1行1つ）", height=120,
-                                               key=f"{pfx_ship}_manual_flds",
-                                               label_visibility="collapsed")
-                if manual_flds_txt.strip():
-                    out_field_names = [ln.strip() for ln in manual_flds_txt.strip().splitlines() if ln.strip()]
-                    st.session_state[ship_out_flds_key] = out_field_names
+                else:
+                    st.info("① のCSVをアップロードしてください。（②をアップロードしても①のデータは保持されます）")
+
+                # 結合設定（インプットが2つ以上のとき）
+                if num_inputs > 1:
+                    st.divider()
+                    st.subheader("① 補足：結合キーの設定")
+                    st.caption("セカンダリ（B以降）をプライマリ（A）のどの列で紐づけるか設定します。")
+                    prim_entry = multi_inputs[0]
+                    prim_lbl   = st.session_state.get(f"{pfx_ship}_inp_lbl_0", "") or prim_entry.get("label", "") or "A"
+                    prim_cols  = prim_entry.get("cols", [])
+                    prev_jc    = st.session_state.get(ship_join_key, [])
+                    new_jc     = []
+                    for i in range(1, num_inputs):
+                        sec_entry = multi_inputs[i]
+                        sec_lbl   = st.session_state.get(f"{pfx_ship}_inp_lbl_{i}", "") or sec_entry.get("label", "") or chr(65 + i)
+                        sec_cols  = sec_entry.get("cols", [])
+                        jc_prev   = prev_jc[i - 1] if i - 1 < len(prev_jc) else {}
+                        # テンプレートから既存キーを復元
+                        if not jc_prev and i < len(saved_inp_cfg):
+                            jc_prev = {
+                                "from_col": saved_inp_cfg[i].get("join_key_from", ""),
+                                "to_col":   saved_inp_cfg[i].get("join_key_to", ""),
+                            }
+                        st.markdown(f"**{sec_lbl}（セカンダリ）の結合キー**")
+                        jc1, jc2  = st.columns(2)
+                        from_opts = ["（未設定）"] + prim_cols
+                        to_opts   = ["（未設定）"] + sec_cols
+                        s_from    = jc_prev.get("from_col", "")
+                        s_to      = jc_prev.get("to_col", "")
+                        with jc1:
+                            f_idx = from_opts.index(s_from) if s_from in from_opts else 0
+                            jkf   = st.selectbox(
+                                f"{prim_lbl}（プライマリ）側の列", from_opts, index=f_idx,
+                                key=f"{pfx_ship}_jkf_{i}",
+                            )
+                        with jc2:
+                            t_idx = to_opts.index(s_to) if s_to in to_opts else 0
+                            jkt   = st.selectbox(
+                                f"{sec_lbl}（セカンダリ）側の列", to_opts, index=t_idx,
+                                key=f"{pfx_ship}_jkt_{i}",
+                            )
+                        new_jc.append({
+                            "from_col": "" if jkf == "（未設定）" else jkf,
+                            "to_col":   "" if jkt == "（未設定）" else jkt,
+                        })
+                    st.session_state[ship_join_key] = new_jc
+
+                # avail_ship_cols をプレフィックス付きで構築（全角：区切り）
+                avail_ship_cols = []
+                for i, entry in enumerate(multi_inputs[:num_inputs]):
+                    lbl = st.session_state.get(f"{pfx_ship}_inp_lbl_{i}", "") or entry.get("label", "") or chr(65 + i)
+                    for c in entry.get("cols", []):
+                        avail_ship_cols.append(f"{lbl}：{c}")
+                # フォールバック：保存済みテンプレートの列
+                if not avail_ship_cols and current_ship_tpl_s.get("_columns"):
+                    avail_ship_cols = current_ship_tpl_s["_columns"]
+
+                has_input_data = any(e.get("rows") for e in multi_inputs[:num_inputs])
+
+                st.divider()
+
+                # ─── ② アウトプット参照CSV（自動検出用） ─────────────────
+                st.subheader("② アウトプット参照CSVをアップロード")
+                st.caption("客先に渡す出荷実績CSV（実データ入り）をアップロードすると自動で紐づけを検出します。")
+
+                ship_output_csv = st.file_uploader("アウトプット参照CSV（実データ入り）", type="csv", key="ship_output_csv")
+                if ship_output_csv:
+                    raw_bytes_out   = ship_output_csv.read()
+                    all_output_rows = None
+                    for enc_try in ("utf-8-sig", "utf-8", "shift_jis", "cp932"):
+                        try:
+                            txt      = raw_bytes_out.decode(enc_try)
+                            rows_try = [r for r in csv.DictReader(io.StringIO(txt)) if any(r.values())]
+                            if rows_try:
+                                all_output_rows = rows_try
+                                break
+                        except Exception:
+                            continue
+                    if all_output_rows:
+                        st.session_state[ship_out_rows_key] = all_output_rows
+                        st.session_state[ship_out_flds_key] = list(all_output_rows[0].keys())
+                    else:
+                        st.error("アウトプットCSVの読み込みに失敗しました")
+
+                stored_out_rows = st.session_state.get(ship_out_rows_key, [])
+                if stored_out_rows:
+                    out_cols_disp = list(stored_out_rows[0].keys())
+                    st.success(f"✅ 読み込み済み：{len(out_cols_disp)} 列 / {len(stored_out_rows)} 行")
+                    st.caption("出力列: " + "　".join(out_cols_disp))
+                else:
+                    st.info("アウトプット参照CSVをアップロードしてください。")
+
+                if st.button("🔍 自動検出する", type="secondary",
+                             disabled=not (has_input_data and bool(stored_out_rows)),
+                             key="btn_ship_autodetect",
+                             help="①②両方アップロード後にクリックしてください"):
+                    inputs_for_detect = [
+                        {
+                            "label": st.session_state.get(f"{pfx_ship}_inp_lbl_{i}", "") or multi_inputs[i].get("label", "") or chr(65 + i),
+                            "rows":  multi_inputs[i]["rows"],
+                            "cols":  multi_inputs[i]["cols"],
+                        }
+                        for i in range(num_inputs)
+                        if multi_inputs[i].get("rows")
+                    ]
+                    detected_fds, det_summary = auto_detect_shipment_mapping(
+                        inputs_for_detect,
+                        st.session_state[ship_out_rows_key],
+                    )
+                    st.session_state[ship_detected_key] = detected_fds
+                    # per-field ウィジェットをクリアして自動検出値で再描画
+                    for fd in detected_fds:
+                        for sfx in ["_st_", "_se_", "_sfv_", "_ssc_"]:
+                            st.session_state.pop(f"{pfx_ship}{sfx}{fd['name']}", None)
+                    fixed_cnt    = sum(1 for s in det_summary.values() if s == "fixed")
+                    col_cnt      = sum(1 for s in det_summary.values() if s.startswith("column"))
+                    date_cnt     = sum(1 for s in det_summary.values() if s.startswith("date"))
+                    unknown_cols = [c for c, s in det_summary.items() if s == "unknown"]
+                    st.info(f"✅ 検出完了：固定値 {fixed_cnt} / 列マッピング {col_cnt} / 日付変換 {date_cnt}")
+                    if unknown_cols:
+                        st.warning("⚠️ 以下は自動検出できませんでした。③で手動設定してください: " +
+                                   "　".join(unknown_cols))
+                    st.rerun()
+
+                st.divider()
+
+                # ─── ③ 出力フィールドの設定（per-field ドロップダウン） ──
+                st.subheader("③ 出力フィールドの設定")
+                st.caption("各フィールドのタイプと参照列を設定してください。")
+
+                out_field_names = st.session_state.get(ship_out_flds_key, [])
+                if not out_field_names:
+                    saved_fds = current_ship_tpl_s.get("output_fields", [])
+                    out_field_names = [f["name"] for f in saved_fds]
+                    if out_field_names:
+                        st.session_state[ship_out_flds_key] = out_field_names
+
+                if ship_detected_key in st.session_state:
+                    field_cfg_list = st.session_state[ship_detected_key]
+                else:
+                    field_cfg_list = current_ship_tpl_s.get("output_fields", [])
+                field_cfg_dict = {f["name"]: f for f in field_cfg_list}
+
+                new_output_fields = []
+                if out_field_names:
                     for fname in out_field_names:
                         cur_cfg = field_cfg_dict.get(fname, {"type": "column"})
                         new_output_fields.append(
                             _ship_field_config_ui(fname, cur_cfg, avail_ship_cols, pfx_ship)
                         )
-
-            st.divider()
-
-            # 削除ボタン（既存テンプレートのみ）
-            if ship_sel_s != "（新規作成）":
-                if st.button("🗑 このテンプレートを削除", key="btn_ship_delete"):
-                    st.session_state["_ship_confirm_delete"] = True
-                if st.session_state.get("_ship_confirm_delete"):
-                    st.warning(f"「{ship_sel_s}」を削除します。よろしいですか？")
-                    sd1, sd2 = st.columns(2)
-                    with sd1:
-                        if st.button("はい、削除する", key="btn_ship_delete_confirm"):
-                            del ship_tpls[ship_sel_s]
-                            ok, derr = save_shipment_templates_to_github(ship_tpls)
-                            if ok:
-                                st.session_state["shipment_templates"] = ship_tpls
-                                st.session_state["_ship_confirm_delete"] = False
-                                st.success("削除しました")
-                                st.rerun()
-                            else:
-                                st.error(f"削除失敗: {derr}")
-                    with sd2:
-                        if st.button("キャンセル", key="btn_ship_delete_cancel"):
-                            st.session_state["_ship_confirm_delete"] = False
-                            st.rerun()
-
-            # 保存ボタン
-            save_btn_lbl_s = "💾 変更を保存する" if ship_sel_s != "（新規作成）" else "💾 新規保存する"
-            if st.button(save_btn_lbl_s, type="primary", key="btn_ship_save"):
-                save_name_s = ship_tpl_name_s.strip() if ship_sel_s == "（新規作成）" else ship_sel_s
-                if not save_name_s:
-                    st.error("テンプレート名を入力してください")
-                elif not new_output_fields:
-                    st.error("出力フィールドを1つ以上設定してください")
                 else:
-                    # _inputs config を構築
-                    _saved_jc = st.session_state.get(ship_join_key, [])
-                    save_inp_cfg = []
-                    for i in range(num_inputs):
-                        lbl_i  = st.session_state.get(f"{pfx_ship}_inp_lbl_{i}", "") or multi_inputs[i].get("label", "") or chr(65 + i)
-                        inp_cf = {"label": lbl_i, "role": "primary" if i == 0 else "secondary"}
-                        if i > 0:
-                            jc_i = _saved_jc[i - 1] if i - 1 < len(_saved_jc) else {}
-                            inp_cf["join_key_from"] = jc_i.get("from_col", "")
-                            inp_cf["join_key_to"]   = jc_i.get("to_col", "")
-                        save_inp_cfg.append(inp_cf)
-                    ship_tpls[save_name_s] = {
-                        "_inputs":       save_inp_cfg,
-                        "_columns":      avail_ship_cols,
-                        "output_fields": new_output_fields,
-                    }
-                    ok, serr = save_shipment_templates_to_github(ship_tpls)
-                    if ok:
-                        st.session_state["shipment_templates"] = ship_tpls
-                        st.session_state.pop(ship_detected_key, None)
-                        st.success(f"「{save_name_s}」を保存しました")
+                    st.info("② アウトプット参照CSVをアップロードすると出力フィールドが自動表示されます。")
+                    st.caption("または出力フィールド名を手動で入力（1行1フィールド）:")
+                    manual_flds_txt = st.text_area("フィールド名（1行1つ）", height=120,
+                                                   key=f"{pfx_ship}_manual_flds",
+                                                   label_visibility="collapsed")
+                    if manual_flds_txt.strip():
+                        out_field_names = [ln.strip() for ln in manual_flds_txt.strip().splitlines() if ln.strip()]
+                        st.session_state[ship_out_flds_key] = out_field_names
+                        for fname in out_field_names:
+                            cur_cfg = field_cfg_dict.get(fname, {"type": "column"})
+                            new_output_fields.append(
+                                _ship_field_config_ui(fname, cur_cfg, avail_ship_cols, pfx_ship)
+                            )
+
+                st.divider()
+
+                # 保存ボタン
+                save_btn_lbl_s = "💾 新規保存する"
+                if st.button(save_btn_lbl_s, type="primary", key="btn_ship_save"):
+                    save_name_s = ship_tpl_name_s.strip()
+                    if not save_name_s:
+                        st.error("テンプレート名を入力してください")
+                    elif not new_output_fields:
+                        st.error("出力フィールドを1つ以上設定してください")
                     else:
-                        st.error(f"保存失敗: {serr}")
+                        # _inputs config を構築
+                        _saved_jc = st.session_state.get(ship_join_key, [])
+                        save_inp_cfg = []
+                        for i in range(num_inputs):
+                            lbl_i  = st.session_state.get(f"{pfx_ship}_inp_lbl_{i}", "") or multi_inputs[i].get("label", "") or chr(65 + i)
+                            inp_cf = {"label": lbl_i, "role": "primary" if i == 0 else "secondary"}
+                            if i > 0:
+                                jc_i = _saved_jc[i - 1] if i - 1 < len(_saved_jc) else {}
+                                inp_cf["join_key_from"] = jc_i.get("from_col", "")
+                                inp_cf["join_key_to"]   = jc_i.get("to_col", "")
+                            save_inp_cfg.append(inp_cf)
+                        ship_tpls[save_name_s] = {
+                            "_inputs":       save_inp_cfg,
+                            "_columns":      avail_ship_cols,
+                            "output_fields": new_output_fields,
+                        }
+                        ok, serr = save_shipment_templates_to_github(ship_tpls)
+                        if ok:
+                            st.session_state["shipment_templates"] = ship_tpls
+                            st.session_state.pop(ship_detected_key, None)
+                            st.success(f"「{save_name_s}」を保存しました")
+                        else:
+                            st.error(f"保存失敗: {serr}")
 
 
     # ── Tab③ カスタム変換 ──────────────────────────────────
