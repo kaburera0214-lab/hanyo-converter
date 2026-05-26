@@ -1072,6 +1072,43 @@ def _field_config_ui(field, current, columns, pfx):
     return new_cfg
 
 
+# ── 出荷実績テンプレート：フィールド設定UI ─────────────────────
+def _ship_field_config_ui(field, current, columns, pfx):
+    """出荷実績テンプレートの1フィールド分UIを描画し、新しい config dict を返す"""
+    col_opts    = ["（未設定）"] + columns
+    type_labels = ["（空欄）", "固定値", "列マッピング", "日付変換"]
+    type_keys   = ["empty",   "fixed",  "column",      "date"]
+
+    c_type   = current.get("type", "fixed")
+    type_idx = type_keys.index(c_type) if c_type in type_keys else 1  # default: 固定値
+
+    col_a, col_b = st.columns([2, 5])
+    with col_a:
+        chosen_label = st.selectbox(field, type_labels, index=type_idx,
+                                    key=f"{pfx}_st_{field}")
+    chosen_type = type_keys[type_labels.index(chosen_label)]
+    new_cfg = {"name": field, "type": chosen_type}
+
+    with col_b:
+        if chosen_type == "empty":
+            st.text_input("_", value="（空欄）", disabled=True,
+                          key=f"{pfx}_se_{field}", label_visibility="hidden")
+        elif chosen_type == "fixed":
+            new_cfg["value"] = st.text_input(
+                "固定値", value=current.get("value", ""),
+                key=f"{pfx}_sfv_{field}", label_visibility="hidden",
+            )
+        else:  # column / date
+            src = current.get("source", "")
+            idx = col_opts.index(src) if src in col_opts else 0
+            lbl = "日付列" if chosen_type == "date" else "参照列"
+            sel = st.selectbox(lbl, col_opts, index=idx,
+                               key=f"{pfx}_ssc_{field}", label_visibility="hidden")
+            new_cfg["source"] = "" if sel == "（未設定）" else sel
+
+    return new_cfg
+
+
 # ── パスワード認証 ────────────────────────────────────────
 def check_password():
     if st.session_state.get("authenticated"):
@@ -1346,10 +1383,13 @@ def main():
             st.divider()
 
             # セッションキー
-            ship_col_ss_key   = f"ship_cols_{ship_tpl_name_s}"
-            ship_rows_ss_key  = f"ship_rows_{ship_tpl_name_s}"
-            ship_out_rows_key = f"ship_out_rows_{ship_tpl_name_s}"
-            ship_detected_key = f"ship_detected_{ship_tpl_name_s}"
+            _skey             = ship_tpl_name_s or "_new"
+            ship_col_ss_key   = f"ship_cols_{_skey}"
+            ship_rows_ss_key  = f"ship_rows_{_skey}"
+            ship_out_rows_key = f"ship_out_rows_{_skey}"
+            ship_out_flds_key = f"ship_out_flds_{_skey}"
+            ship_detected_key = f"ship_detected_{_skey}"
+            pfx_ship          = "sh" + hashlib.md5(_skey.encode("utf-8")).hexdigest()[:8]
 
             # ① インプットCSV（NE出荷完了）
             st.subheader("① インプット：NE出荷完了CSVをアップロード")
@@ -1406,6 +1446,7 @@ def main():
                         continue
                 if all_output_rows:
                     st.session_state[ship_out_rows_key] = all_output_rows
+                    st.session_state[ship_out_flds_key] = list(all_output_rows[0].keys())
                 else:
                     st.error("アウトプットCSVの読み込みに失敗しました")
 
@@ -1418,65 +1459,71 @@ def main():
             else:
                 st.info("アウトプット参照CSVをアップロードしてください。")
 
-            has_input_data  = bool(stored_in_rows)
-            has_output_data = bool(stored_out_rows)
-
             if st.button("🔍 自動検出する", type="secondary",
-                         disabled=not (has_input_data and has_output_data),
+                         disabled=not (bool(stored_in_rows) and bool(stored_out_rows)),
                          key="btn_ship_autodetect",
                          help="①②両方アップロード後にクリックしてください"):
-                in_rows_det  = st.session_state[ship_rows_ss_key]
-                out_rows_det = st.session_state[ship_out_rows_key]
-                detected_fds, det_summary = auto_detect_shipment_mapping(in_rows_det, out_rows_det)
+                detected_fds, det_summary = auto_detect_shipment_mapping(
+                    st.session_state[ship_rows_ss_key],
+                    st.session_state[ship_out_rows_key],
+                )
                 st.session_state[ship_detected_key] = detected_fds
-                # data_editor を初期化して再描画
-                st.session_state.pop("ship_field_editor", None)
-                # 検出結果サマリー表示
-                fixed_cnt   = sum(1 for s in det_summary.values() if s == "fixed")
-                col_cnt     = sum(1 for s in det_summary.values() if s.startswith("column"))
-                date_cnt    = sum(1 for s in det_summary.values() if s.startswith("date"))
+                # per-field ウィジェットをクリアして自動検出値で再描画
+                for fd in detected_fds:
+                    for sfx in ["_st_", "_se_", "_sfv_", "_ssc_"]:
+                        st.session_state.pop(f"{pfx_ship}{sfx}{fd['name']}", None)
+                fixed_cnt    = sum(1 for s in det_summary.values() if s == "fixed")
+                col_cnt      = sum(1 for s in det_summary.values() if s.startswith("column"))
+                date_cnt     = sum(1 for s in det_summary.values() if s.startswith("date"))
                 unknown_cols = [c for c, s in det_summary.items() if s == "unknown"]
-                st.info(f"✅ 検出完了：固定値 {fixed_cnt} 件 / 列マッピング {col_cnt} 件 / 日付変換 {date_cnt} 件")
+                st.info(f"✅ 検出完了：固定値 {fixed_cnt} / 列マッピング {col_cnt} / 日付変換 {date_cnt}")
                 if unknown_cols:
-                    st.warning("⚠️ 以下のフィールドは自動検出できませんでした。下のテーブルで手動設定してください:\n" +
+                    st.warning("⚠️ 以下は自動検出できませんでした。③で手動設定してください: " +
                                "　".join(unknown_cols))
                 st.rerun()
 
             st.divider()
 
-            # ③ 出力フィールドの設定（data_editor）
+            # ③ 出力フィールドの設定（per-field ドロップダウン）
             st.subheader("③ 出力フィールドの設定")
-            st.caption("自動検出の結果を確認・修正できます。行の追加・削除も可能です。")
+            st.caption("各フィールドのタイプと参照列を設定してください。")
 
-            # 優先順位: 自動検出済み > テンプレート保存済み > 空テーブル
+            # 出力フィールド名リスト（優先: session_state > 保存済みテンプレート）
+            out_field_names = st.session_state.get(ship_out_flds_key, [])
+            if not out_field_names:
+                saved_fds = current_ship_tpl_s.get("output_fields", [])
+                out_field_names = [f["name"] for f in saved_fds]
+                if out_field_names:
+                    st.session_state[ship_out_flds_key] = out_field_names
+
+            # 現在の設定（優先: 自動検出済み > 保存済みテンプレート）
             if ship_detected_key in st.session_state:
-                initial_ship_fields = st.session_state[ship_detected_key]
+                field_cfg_list = st.session_state[ship_detected_key]
             else:
-                initial_ship_fields = current_ship_tpl_s.get("output_fields", [])
+                field_cfg_list = current_ship_tpl_s.get("output_fields", [])
+            field_cfg_dict = {f["name"]: f for f in field_cfg_list}
 
-            df_ship = _ship_tpl_to_df(initial_ship_fields)
-            if df_ship.empty:
-                df_ship = pd.DataFrame([{"フィールド名": "", "タイプ": "固定値", "値/参照列": ""}])
-
-            edited_ship_df = st.data_editor(
-                df_ship,
-                num_rows="dynamic",
-                use_container_width=True,
-                column_config={
-                    "フィールド名": st.column_config.TextColumn("フィールド名", width="medium"),
-                    "タイプ": st.column_config.SelectboxColumn(
-                        "タイプ", width="medium",
-                        options=["空欄", "固定値", "列マッピング", "日付変換"],
-                    ),
-                    "値/参照列": st.column_config.TextColumn(
-                        "値 / 参照列", width="large",
-                        help="固定値 → 出力する値  /  列マッピング・日付変換 → NE CSV の列名",
-                    ),
-                },
-                key="ship_field_editor",
-            )
-            if avail_ship_cols:
-                st.caption("NE列名の一覧（「値/参照列」にコピーして使用）: " + "　".join(avail_ship_cols))
+            new_output_fields = []
+            if out_field_names:
+                for fname in out_field_names:
+                    cur_cfg = field_cfg_dict.get(fname, {"type": "fixed"})
+                    new_output_fields.append(
+                        _ship_field_config_ui(fname, cur_cfg, avail_ship_cols, pfx_ship)
+                    )
+            else:
+                st.info("② アウトプット参照CSVをアップロードすると出力フィールドが自動表示されます。")
+                st.caption("または出力フィールド名を手動で入力（1行1フィールド）:")
+                manual_flds_txt = st.text_area("フィールド名（1行1つ）", height=120,
+                                               key=f"{pfx_ship}_manual_flds",
+                                               label_visibility="collapsed")
+                if manual_flds_txt.strip():
+                    out_field_names = [ln.strip() for ln in manual_flds_txt.strip().splitlines() if ln.strip()]
+                    st.session_state[ship_out_flds_key] = out_field_names
+                    for fname in out_field_names:
+                        cur_cfg = field_cfg_dict.get(fname, {"type": "fixed"})
+                        new_output_fields.append(
+                            _ship_field_config_ui(fname, cur_cfg, avail_ship_cols, pfx_ship)
+                        )
 
             st.divider()
 
@@ -1509,23 +1556,20 @@ def main():
                 save_name_s = ship_tpl_name_s.strip() if ship_sel_s == "（新規作成）" else ship_sel_s
                 if not save_name_s:
                     st.error("テンプレート名を入力してください")
+                elif not new_output_fields:
+                    st.error("出力フィールドを1つ以上設定してください")
                 else:
-                    new_ship_fields = _df_to_ship_tpl(edited_ship_df)
-                    if not new_ship_fields:
-                        st.error("出力フィールドを1つ以上設定してください")
+                    ship_tpls[save_name_s] = {
+                        "_columns":      avail_ship_cols,
+                        "output_fields": new_output_fields,
+                    }
+                    ok, serr = save_shipment_templates_to_github(ship_tpls)
+                    if ok:
+                        st.session_state["shipment_templates"] = ship_tpls
+                        st.session_state.pop(ship_detected_key, None)
+                        st.success(f"「{save_name_s}」を保存しました")
                     else:
-                        ship_tpls[save_name_s] = {
-                            "_columns":      avail_ship_cols,
-                            "output_fields": new_ship_fields,
-                        }
-                        ok, serr = save_shipment_templates_to_github(ship_tpls)
-                        if ok:
-                            st.session_state["shipment_templates"] = ship_tpls
-                            # 自動検出キャッシュをクリア
-                            st.session_state.pop(ship_detected_key, None)
-                            st.success(f"「{save_name_s}」を保存しました")
-                        else:
-                            st.error(f"保存失敗: {serr}")
+                        st.error(f"保存失敗: {serr}")
 
 
     # ── Tab③ カスタム変換 ──────────────────────────────────
