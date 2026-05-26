@@ -601,12 +601,31 @@ def apply_custom_mapping(order_bytes, mapping_def, master, koguchi_master, encod
     if not all_rows:
         return None, 0, 0, {}, "CSVにデータが見つかりません"
 
-    group_key = mapping_def.get("group_key_column", "")
-    sku_col   = mapping_def.get("sku_column", "")
-    qty_col   = mapping_def.get("qty_column", "")
-    fields    = mapping_def.get("fields", {})
+    fields = mapping_def.get("fields", {})
 
-    # JANマスタ特殊ロジック使用時に sku_col が未設定だと検索が一切走らないため事前チェック
+    # ── グループキー：店舗伝票番号フィールドの source 列を使用（旧形式フォールバックあり）
+    den_cfg   = fields.get("店舗伝票番号", {})
+    group_key = den_cfg.get("source", "") if den_cfg.get("type") == "column" else ""
+    if not group_key:
+        group_key = mapping_def.get("group_key_column", "")
+
+    # ── SKU列：JANマスタ特殊ロジックの参照列を使用（旧形式フォールバックあり）
+    sku_col = ""
+    for fd in fields.values():
+        if fd.get("type") == "special" and fd.get("logic") in ("jan_master_name", "jan_master_code"):
+            sku_col = fd.get("source", "")
+            if sku_col:
+                break
+    if not sku_col:
+        sku_col = mapping_def.get("sku_column", "")
+
+    # ── 数量列：受注数量フィールドの source 列を使用（旧形式フォールバックあり）
+    qty_cfg = fields.get("受注数量", {})
+    qty_col = qty_cfg.get("source", "") if qty_cfg.get("type") == "column" else ""
+    if not qty_col:
+        qty_col = mapping_def.get("qty_column", "")
+
+    # JANマスタ特殊ロジック使用時に参照列が未設定なら事前エラー
     uses_jan_master = any(
         fd.get("type") == "special" and fd.get("logic") in ("jan_master_name", "jan_master_code")
         for fd in fields.values()
@@ -614,8 +633,8 @@ def apply_custom_mapping(order_bytes, mapping_def, master, koguchi_master, encod
     if uses_jan_master and not sku_col:
         return None, 0, 0, {}, (
             "「JANマスタ→商品名」または「JANマスタ→商品コード」を使用していますが、"
-            "「SKU / JANコード列」が設定されていません。\n"
-            "「テンプレートを編集」→「② 注文グルーピング・SKU列の設定」で JANコード列を選択して保存してください。"
+            "参照列が設定されていません。\n"
+            "「商品名」または「商品コード」の特殊ロジック設定で JANコード列を参照列として選択してください。"
         )
 
     orders = OrderedDict()
@@ -780,7 +799,7 @@ def _field_config_ui(field, current, columns, pfx):
                                             key=f"{pfx}_sl_{field}", label_visibility="hidden")
                 chosen_logic = s_keys[s_labels.index(sel_label)]
                 new_cfg["logic"] = chosen_logic
-            if chosen_logic in ("order_datetime", "koguchi_note"):
+            if chosen_logic in ("order_datetime", "koguchi_note", "jan_master_name", "jan_master_code"):
                 with v2:
                     src = current.get("source", "")
                     idx = col_opts.index(src) if src in col_opts else 0
@@ -1140,36 +1159,8 @@ def main():
 
                 st.divider()
 
-                # グルーピング・SKU・数量列
-                st.subheader("② 注文グルーピング・SKU列の設定")
-                col_base_e = ["（未設定）"] + avail_cols_e
-                gc1e, gc2e, gc3e = st.columns(3)
-                with gc1e:
-                    gk_cur_e = current_tpl_e.get("group_key_column", "")
-                    gk_idx_e = col_base_e.index(gk_cur_e) if gk_cur_e in col_base_e else 0
-                    group_key_sel_e = st.selectbox(
-                        "注文グループキー列", col_base_e, index=gk_idx_e, key="edit_gk",
-                        help="同一注文の複数行をまとめる列（例：注文番号）",
-                    )
-                with gc2e:
-                    sku_cur_e = current_tpl_e.get("sku_column", "")
-                    sku_idx_e = col_base_e.index(sku_cur_e) if sku_cur_e in col_base_e else 0
-                    sku_sel_e = st.selectbox(
-                        "SKU / JANコード列", col_base_e, index=sku_idx_e, key="edit_sku",
-                        help="JANマスタ検索・個口数計算に使う列",
-                    )
-                with gc3e:
-                    qty_cur_e = current_tpl_e.get("qty_column", "")
-                    qty_idx_e = col_base_e.index(qty_cur_e) if qty_cur_e in col_base_e else 0
-                    qty_sel_e = st.selectbox(
-                        "数量列", col_base_e, index=qty_idx_e, key="edit_qty",
-                        help="個口数計算に使う列",
-                    )
-
-                st.divider()
-
                 # フィールド紐づけ
-                st.subheader("③ 出力フィールドの紐づけ（全38列）")
+                st.subheader("② 出力フィールドの紐づけ（全38列）")
                 st.caption("🔴 必須　🟡 電話／メールどちらか必須　マークなし：任意　 ／　「空欄」は出力がブランクになります。")
 
                 new_fields_e = {}
@@ -1182,11 +1173,8 @@ def main():
                 st.divider()
 
                 new_tpl_e = {
-                    "_columns":         avail_cols_e,
-                    "group_key_column": "" if group_key_sel_e == "（未設定）" else group_key_sel_e,
-                    "sku_column":       "" if sku_sel_e       == "（未設定）" else sku_sel_e,
-                    "qty_column":       "" if qty_sel_e        == "（未設定）" else qty_sel_e,
-                    "fields":           new_fields_e,
+                    "_columns": avail_cols_e,
+                    "fields":   new_fields_e,
                 }
                 if st.button("💾 変更を保存する", type="primary", key="btn_save_edit"):
                     mappings[sel_edit] = new_tpl_e
@@ -1242,30 +1230,8 @@ def main():
 
             st.divider()
 
-            # グルーピング・SKU・数量列
-            st.subheader("② 注文グルーピング・SKU列の設定")
-            col_base_n = ["（未設定）"] + avail_cols_n
-            gc1n, gc2n, gc3n = st.columns(3)
-            with gc1n:
-                group_key_sel_n = st.selectbox(
-                    "注文グループキー列", col_base_n, index=0, key="new_gk",
-                    help="同一注文の複数行をまとめる列（例：注文番号）",
-                )
-            with gc2n:
-                sku_sel_n = st.selectbox(
-                    "SKU / JANコード列", col_base_n, index=0, key="new_sku",
-                    help="JANマスタ検索・個口数計算に使う列",
-                )
-            with gc3n:
-                qty_sel_n = st.selectbox(
-                    "数量列", col_base_n, index=0, key="new_qty",
-                    help="個口数計算に使う列",
-                )
-
-            st.divider()
-
             # フィールド紐づけ
-            st.subheader("③ 出力フィールドの紐づけ（全38列）")
+            st.subheader("② 出力フィールドの紐づけ（全38列）")
             st.caption("🔴 必須　🟡 電話／メールどちらか必須　マークなし：任意　 ／　「空欄」は出力がブランクになります。")
 
             new_fields_n = {}
@@ -1277,11 +1243,8 @@ def main():
             st.divider()
 
             new_tpl_n = {
-                "_columns":         avail_cols_n,
-                "group_key_column": "" if group_key_sel_n == "（未設定）" else group_key_sel_n,
-                "sku_column":       "" if sku_sel_n       == "（未設定）" else sku_sel_n,
-                "qty_column":       "" if qty_sel_n        == "（未設定）" else qty_sel_n,
-                "fields":           new_fields_n,
+                "_columns": avail_cols_n,
+                "fields":   new_fields_n,
             }
             if st.button("💾 新規保存する", type="primary", key="btn_save_new_tpl"):
                 if not tpl_name.strip():
