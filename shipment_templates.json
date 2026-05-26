@@ -188,5 +188,245 @@
         "source": ""
       }
     ]
+  },
+  "LINEギフト": {
+    "_inputs": [
+      {
+        "label": "A",
+        "role": "primary"
+      },
+      {
+        "label": "B",
+        "role": "secondary",
+        "join_key_from": "",
+        "join_key_to": ""
+      }
+    ],
+    "_columns": [
+      "A：ショップID",
+      "A：注文ID",
+      "A：注文枝番",
+      "A：注文ステータス",
+      "A：商品ID",
+      "A：商品名",
+      "A：商品コード",
+      "A：バリエーション名",
+      "A：バリエーションコード",
+      "A：JANコード",
+      "A：同梱可",
+      "A：商品単価",
+      "A：数量",
+      "A：商品合計金額",
+      "A：送料",
+      "A：注文合計金額",
+      "A：発送可能日時",
+      "A：ユーザーID",
+      "A：配送先 氏名",
+      "A：配送先 電話番号",
+      "A：配送先 郵便番号",
+      "A：配送先 都道府県",
+      "A：配送先 市区町村",
+      "A：配送先 町名番地",
+      "A：配送業者",
+      "A：配送ステータス",
+      "A：伝票番号",
+      "A：遷移元",
+      "A：遷移元名",
+      "A：贈り主の名前",
+      "A：キャンペーン情報",
+      "B：伝票番号",
+      "B：ﾋﾟｯｷﾝｸﾞ指示内容",
+      "B：受注日",
+      "B：出荷確定日",
+      "B：納品書印刷指示日",
+      "B：納品書発行日",
+      "B：状態",
+      "B：受注番号",
+      "B：店舗",
+      "B：受注担当者",
+      "B：購入者名",
+      "B：商品計",
+      "B：税金",
+      "B：発送料",
+      "B：手数料",
+      "B：他費用",
+      "B：ポイント数",
+      "B：総合計",
+      "B：送り先名",
+      "B：送り先〒",
+      "B：送り先住所",
+      "B：発送方法",
+      "B：支払方法",
+      "B：発送伝票番号",
+      "B：備考",
+      "B：重要",
+      "B：重要ﾁｪｯｸ者",
+      "B：受注分類タグ"
+    ],
+    "output_fields": [
+      {
+        "name": "ショップID",
+        "type": "column",
+        "source": "A：ショップID"
+      },
+      {
+        "name": "注文ID",
+        "type": "column",
+        "source": "A：注文ID"
+      },
+      {
+        "name": "注文枝番",
+        "type": "column",
+        "source": "A：注文枝番"
+      },
+      {
+        "name": "注文ステータス",
+        "type": "column",
+        "source": "A：注文ステータス"
+      },
+      {
+        "name": "商品ID",
+        "type": "column",
+        "source": "A：商品ID"
+      },
+      {
+        "name": "商品名",
+        "type": "column",
+        "source": "A：商品名"
+      },
+      {
+        "name": "商品コード",
+        "type": "column",
+        "source": "A：商品コード"
+      },
+      {
+        "name": "バリエーション名",
+        "type": "column",
+        "source": "A：バリエーション名"
+      },
+      {
+        "name": "バリエーションコード",
+        "type": "column",
+        "source": "A：バリエーションコード"
+      },
+      {
+        "name": "JANコード",
+        "type": "column",
+        "source": "A：JANコード"
+      },
+      {
+        "name": "同梱可",
+        "type": "column",
+        "source": "A：同梱可"
+      },
+      {
+        "name": "商品単価",
+        "type": "column",
+        "source": "A：商品単価"
+      },
+      {
+        "name": "数量",
+        "type": "column",
+        "source": "A：数量"
+      },
+      {
+        "name": "商品合計金額",
+        "type": "column",
+        "source": "A：商品合計金額"
+      },
+      {
+        "name": "送料",
+        "type": "column",
+        "source": "A：送料"
+      },
+      {
+        "name": "注文合計金額",
+        "type": "column",
+        "source": "A：注文合計金額"
+      },
+      {
+        "name": "発送可能日時",
+        "type": "column",
+        "source": "A：発送可能日時"
+      },
+      {
+        "name": "ユーザーID",
+        "type": "column",
+        "source": "A：ユーザーID"
+      },
+      {
+        "name": "配送先 氏名",
+        "type": "column",
+        "source": "A：配送先 氏名"
+      },
+      {
+        "name": "配送先 電話番号",
+        "type": "column",
+        "source": "A：配送先 電話番号"
+      },
+      {
+        "name": "配送先 郵便番号",
+        "type": "column",
+        "source": "A：配送先 郵便番号"
+      },
+      {
+        "name": "配送先 都道府県",
+        "type": "column",
+        "source": "A：配送先 都道府県"
+      },
+      {
+        "name": "配送先 市区町村",
+        "type": "column",
+        "source": "A：配送先 市区町村"
+      },
+      {
+        "name": "配送先 町名番地",
+        "type": "column",
+        "source": "A：配送先 町名番地"
+      },
+      {
+        "name": "配送業者",
+        "type": "condition",
+        "branches": [
+          {
+            "if_col": "B：発送方法",
+            "op": "eq",
+            "if_val": "ヤマト(発払い)B2v6",
+            "then": "宅急便"
+          },
+          {
+            "if_col": "B：発送方法",
+            "op": "eq",
+            "if_val": "ヤマト(ネコポス)",
+            "then": "ネコポス"
+          }
+        ],
+        "default": ""
+      },
+      {
+        "name": "配送ステータス",
+        "type": "fixed",
+        "value": "1"
+      },
+      {
+        "name": "伝票番号",
+        "type": "column",
+        "source": "B：発送伝票番号"
+      },
+      {
+        "name": "出荷日",
+        "type": "empty"
+      },
+      {
+        "name": "贈り主の名前",
+        "type": "column",
+        "source": "A：贈り主の名前"
+      },
+      {
+        "name": "キャンペーン情報",
+        "type": "column",
+        "source": "A：キャンペーン情報"
+      }
+    ]
   }
 }
