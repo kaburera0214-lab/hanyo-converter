@@ -729,6 +729,68 @@ def apply_custom_shipment(ne_bytes, template, ne_encoding="cp932"):
     return buf.getvalue().encode("utf-8-sig"), len(output_rows), None
 
 
+# ── カスタム出荷実績：自動紐づけ検出 ──────────────────────────
+def auto_detect_shipment_mapping(input_rows, output_rows):
+    """インプット・アウトプットの実データを行比較してテンプレートを自動生成する。
+    戻り値: (output_fields リスト, サマリー dict {col -> "fixed"/"column"/"date"/"unknown"})
+    """
+    if not input_rows or not output_rows:
+        return [], {}
+
+    n           = min(len(input_rows), len(output_rows))
+    input_cols  = list(input_rows[0].keys())
+    output_cols = list(output_rows[0].keys())
+
+    output_fields = []
+    summary       = {}
+
+    for out_col in output_cols:
+        out_vals = [str(output_rows[i].get(out_col, "")).strip() for i in range(n)]
+
+        # 1. 全行が空欄
+        if all(v == "" for v in out_vals):
+            output_fields.append({"name": out_col, "type": "empty"})
+            summary[out_col] = "empty"
+            continue
+
+        # 2. 全行が同じ値 → 固定値
+        if len(set(out_vals)) == 1:
+            output_fields.append({"name": out_col, "type": "fixed", "value": out_vals[0]})
+            summary[out_col] = "fixed"
+            continue
+
+        # 3. 列マッピング（完全一致）
+        matched_col = None
+        for in_col in input_cols:
+            in_vals = [str(input_rows[i].get(in_col, "")).strip() for i in range(n)]
+            if in_vals == out_vals:
+                matched_col = in_col
+                break
+        if matched_col:
+            output_fields.append({"name": out_col, "type": "column", "source": matched_col})
+            summary[out_col] = f"column:{matched_col}"
+            continue
+
+        # 4. 日付変換（_format_date 適用後に一致）
+        matched_date_col = None
+        for in_col in input_cols:
+            in_vals   = [str(input_rows[i].get(in_col, "")).strip() for i in range(n)]
+            converted = [_format_date(v) for v in in_vals]
+            if converted == out_vals and any(v for v in out_vals):
+                matched_date_col = in_col
+                break
+        if matched_date_col:
+            output_fields.append({"name": out_col, "type": "date", "source": matched_date_col})
+            summary[out_col] = f"date:{matched_date_col}"
+            continue
+
+        # 5. 判定不能 → 空欄で仮置き
+        output_fields.append({"name": out_col, "type": "empty"})
+        summary[out_col] = "unknown"
+
+    return output_fields, summary
+
+
 # ── カスタムマッピング：変換エンジン ─────────────────────────
 def apply_custom_mapping(order_bytes, mapping_def, master, koguchi_master, encoding="shift_jis"):
     try:
@@ -1283,44 +1345,103 @@ def main():
 
             st.divider()
 
-            # NE サンプル CSV で列名取得
-            st.subheader("① NE出荷完了CSVの列を取得")
-            ssc1, ssc2     = st.columns([3, 1])
+            # セッションキー
+            ship_col_ss_key   = f"ship_cols_{ship_tpl_name_s}"
+            ship_rows_ss_key  = f"ship_rows_{ship_tpl_name_s}"
+            ship_out_rows_key = f"ship_out_rows_{ship_tpl_name_s}"
+            ship_detected_key = f"ship_detected_{ship_tpl_name_s}"
+
+            # ① インプットCSV（NE出荷完了）
+            st.subheader("① インプット：NE出荷完了CSVをアップロード")
+            ssc1, ssc2 = st.columns([3, 1])
             ship_enc_setup_map = {"Shift-JIS (cp932)": "cp932", "UTF-8": "utf-8", "UTF-8 (BOM付き)": "utf-8-sig"}
             with ssc2:
                 ship_enc_setup = st.selectbox("文字コード", list(ship_enc_setup_map.keys()), key="ship_setup_enc")
             with ssc1:
-                ship_sample = st.file_uploader("サンプルCSVをアップロード（列名取得用）",
-                                               type="csv", key="ship_sample")
+                ship_input_csv = st.file_uploader("NE出荷完了CSV（実データ入り）", type="csv", key="ship_input_csv")
 
-            ship_col_ss_key = f"ship_cols_{ship_tpl_name_s}"
-            if ship_sample:
+            if ship_input_csv:
                 try:
-                    raw_text_s      = ship_sample.read().decode(ship_enc_setup_map[ship_enc_setup], errors="replace")
-                    found_ship_cols = list(csv.DictReader(io.StringIO(raw_text_s)).fieldnames or [])
-                    st.session_state[ship_col_ss_key] = found_ship_cols
-                    st.success(f"{len(found_ship_cols)} 列を検出しました")
+                    raw_text_in    = ship_input_csv.read().decode(ship_enc_setup_map[ship_enc_setup], errors="replace")
+                    all_input_rows = [r for r in csv.DictReader(io.StringIO(raw_text_in)) if any(r.values())]
+                    input_cols_fnd = list(all_input_rows[0].keys()) if all_input_rows else []
+                    st.session_state[ship_col_ss_key]  = input_cols_fnd
+                    st.session_state[ship_rows_ss_key] = all_input_rows
+                    st.success(f"{len(input_cols_fnd)} 列 / {len(all_input_rows)} 行を読み込みました")
                 except Exception as ex:
-                    st.error(f"列名の取得に失敗しました: {ex}")
+                    st.error(f"読み込みに失敗しました: {ex}")
 
             avail_ship_cols = st.session_state.get(ship_col_ss_key, [])
             if not avail_ship_cols and current_ship_tpl_s.get("_columns"):
                 avail_ship_cols = current_ship_tpl_s["_columns"]
                 st.session_state[ship_col_ss_key] = avail_ship_cols
-
             if avail_ship_cols:
                 st.caption("検出列: " + "　".join(avail_ship_cols))
-            else:
-                st.info("サンプルCSVをアップロードすると列名が選択肢に表示されます。固定値は列なしでも設定できます。")
 
             st.divider()
 
-            # 出力フィールド設定テーブル
-            st.subheader("② 出力フィールドの設定")
-            st.caption("行を追加・削除してカスタム出荷実績CSVの出力列を定義します。")
+            # ② アウトプット参照CSV（自動検出用）
+            st.subheader("② アウトプット参照CSVをアップロード")
+            st.caption("客先に渡す実際の出荷実績CSV（実データ入り）をアップロードすると自動で紐づけを検出します。")
 
-            existing_ship_fields = current_ship_tpl_s.get("output_fields", [])
-            df_ship = _ship_tpl_to_df(existing_ship_fields)
+            # アウトプットCSVの文字コードを複数試行して読み込む
+            ship_output_csv = st.file_uploader("アウトプット参照CSV（実データ入り）", type="csv", key="ship_output_csv")
+            if ship_output_csv:
+                raw_bytes_out = ship_output_csv.read()
+                all_output_rows = None
+                for enc_try in ("utf-8-sig", "utf-8", "shift_jis", "cp932"):
+                    try:
+                        txt = raw_bytes_out.decode(enc_try)
+                        rows_try = [r for r in csv.DictReader(io.StringIO(txt)) if any(r.values())]
+                        if rows_try:
+                            all_output_rows = rows_try
+                            break
+                    except Exception:
+                        continue
+                if all_output_rows:
+                    st.session_state[ship_out_rows_key] = all_output_rows
+                    out_cols_fnd = list(all_output_rows[0].keys())
+                    st.success(f"{len(out_cols_fnd)} 列 / {len(all_output_rows)} 行を読み込みました")
+                else:
+                    st.error("アウトプットCSVの読み込みに失敗しました")
+
+            has_input_data  = bool(st.session_state.get(ship_rows_ss_key))
+            has_output_data = bool(st.session_state.get(ship_out_rows_key))
+
+            if st.button("🔍 自動検出する", type="secondary",
+                         disabled=not (has_input_data and has_output_data),
+                         key="btn_ship_autodetect",
+                         help="①②両方アップロード後にクリックしてください"):
+                in_rows_det  = st.session_state[ship_rows_ss_key]
+                out_rows_det = st.session_state[ship_out_rows_key]
+                detected_fds, det_summary = auto_detect_shipment_mapping(in_rows_det, out_rows_det)
+                st.session_state[ship_detected_key] = detected_fds
+                # data_editor を初期化して再描画
+                st.session_state.pop("ship_field_editor", None)
+                # 検出結果サマリー表示
+                fixed_cnt   = sum(1 for s in det_summary.values() if s == "fixed")
+                col_cnt     = sum(1 for s in det_summary.values() if s.startswith("column"))
+                date_cnt    = sum(1 for s in det_summary.values() if s.startswith("date"))
+                unknown_cols = [c for c, s in det_summary.items() if s == "unknown"]
+                st.info(f"✅ 検出完了：固定値 {fixed_cnt} 件 / 列マッピング {col_cnt} 件 / 日付変換 {date_cnt} 件")
+                if unknown_cols:
+                    st.warning("⚠️ 以下のフィールドは自動検出できませんでした。下のテーブルで手動設定してください:\n" +
+                               "　".join(unknown_cols))
+                st.rerun()
+
+            st.divider()
+
+            # ③ 出力フィールドの設定（data_editor）
+            st.subheader("③ 出力フィールドの設定")
+            st.caption("自動検出の結果を確認・修正できます。行の追加・削除も可能です。")
+
+            # 優先順位: 自動検出済み > テンプレート保存済み > 空テーブル
+            if ship_detected_key in st.session_state:
+                initial_ship_fields = st.session_state[ship_detected_key]
+            else:
+                initial_ship_fields = current_ship_tpl_s.get("output_fields", [])
+
+            df_ship = _ship_tpl_to_df(initial_ship_fields)
             if df_ship.empty:
                 df_ship = pd.DataFrame([{"フィールド名": "", "タイプ": "固定値", "値/参照列": ""}])
 
@@ -1336,12 +1457,11 @@ def main():
                     ),
                     "値/参照列": st.column_config.TextColumn(
                         "値 / 参照列", width="large",
-                        help="固定値 → 出力する値を入力  /  列マッピング・日付変換 → NE CSV の列名を入力",
+                        help="固定値 → 出力する値  /  列マッピング・日付変換 → NE CSV の列名",
                     ),
                 },
                 key="ship_field_editor",
             )
-
             if avail_ship_cols:
                 st.caption("NE列名の一覧（「値/参照列」にコピーして使用）: " + "　".join(avail_ship_cols))
 
@@ -1388,6 +1508,8 @@ def main():
                         ok, serr = save_shipment_templates_to_github(ship_tpls)
                         if ok:
                             st.session_state["shipment_templates"] = ship_tpls
+                            # 自動検出キャッシュをクリア
+                            st.session_state.pop(ship_detected_key, None)
                             st.success(f"「{save_name_s}」を保存しました")
                         else:
                             st.error(f"保存失敗: {serr}")
