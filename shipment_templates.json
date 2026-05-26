@@ -1,0 +1,163 @@
+{
+  "LINEギフト": {
+    "_inputs": [
+      {
+        "label": "A",
+        "role": "primary"
+      }
+    ],
+    "_columns": [],
+    "output_fields": [
+      {
+        "name": "ショップID",
+        "type": "column",
+        "source": ""
+      },
+      {
+        "name": "注文ID",
+        "type": "column",
+        "source": ""
+      },
+      {
+        "name": "注文枝番",
+        "type": "column",
+        "source": ""
+      },
+      {
+        "name": "注文ステータス",
+        "type": "column",
+        "source": ""
+      },
+      {
+        "name": "商品ID",
+        "type": "column",
+        "source": ""
+      },
+      {
+        "name": "商品名",
+        "type": "column",
+        "source": ""
+      },
+      {
+        "name": "商品コード",
+        "type": "column",
+        "source": ""
+      },
+      {
+        "name": "バリエーション名",
+        "type": "column",
+        "source": ""
+      },
+      {
+        "name": "バリエーションコード",
+        "type": "column",
+        "source": ""
+      },
+      {
+        "name": "JANコード",
+        "type": "column",
+        "source": ""
+      },
+      {
+        "name": "同梱可",
+        "type": "column",
+        "source": ""
+      },
+      {
+        "name": "商品単価",
+        "type": "column",
+        "source": ""
+      },
+      {
+        "name": "数量",
+        "type": "column",
+        "source": ""
+      },
+      {
+        "name": "商品合計金額",
+        "type": "column",
+        "source": ""
+      },
+      {
+        "name": "送料",
+        "type": "column",
+        "source": ""
+      },
+      {
+        "name": "注文合計金額",
+        "type": "column",
+        "source": ""
+      },
+      {
+        "name": "発送可能日時",
+        "type": "column",
+        "source": ""
+      },
+      {
+        "name": "ユーザーID",
+        "type": "column",
+        "source": ""
+      },
+      {
+        "name": "配送先 氏名",
+        "type": "column",
+        "source": ""
+      },
+      {
+        "name": "配送先 電話番号",
+        "type": "column",
+        "source": ""
+      },
+      {
+        "name": "配送先 郵便番号",
+        "type": "column",
+        "source": ""
+      },
+      {
+        "name": "配送先 都道府県",
+        "type": "column",
+        "source": ""
+      },
+      {
+        "name": "配送先 市区町村",
+        "type": "column",
+        "source": ""
+      },
+      {
+        "name": "配送先 町名番地",
+        "type": "column",
+        "source": ""
+      },
+      {
+        "name": "配送業者",
+        "type": "column",
+        "source": ""
+      },
+      {
+        "name": "配送ステータス",
+        "type": "column",
+        "source": ""
+      },
+      {
+        "name": "伝票番号",
+        "type": "column",
+        "source": ""
+      },
+      {
+        "name": "出荷日",
+        "type": "column",
+        "source": ""
+      },
+      {
+        "name": "贈り主の名前",
+        "type": "column",
+        "source": ""
+      },
+      {
+        "name": "キャンペーン情報",
+        "type": "column",
+        "source": ""
+      }
+    ]
+  }
+}
