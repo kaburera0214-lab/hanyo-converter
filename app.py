@@ -54,8 +54,8 @@ FIELD_GROUPS = [
     ("管理情報",   ["出荷済フラグ", "顧客区分", "顧客コード", "消費税率（%）"]),
 ]
 
-_TYPE_LABELS = ["（空欄）", "固定値", "列マッピング", "列結合", "値変換", "特殊ロジック"]
-_TYPE_KEYS   = ["empty",   "fixed",  "column",      "concat", "value_map", "special"]
+_TYPE_LABELS = ["（空欄）", "固定値", "列マッピング", "列結合", "値変換", "特殊ロジック", "条件分岐"]
+_TYPE_KEYS   = ["empty",   "fixed",  "column",      "concat", "value_map", "special", "conditional"]
 
 # NEの通常テンプレートにおける必須・準必須フィールド
 REQUIRED_FIELDS = {
@@ -693,6 +693,17 @@ def apply_custom_mapping(order_bytes, mapping_def, master, koguchi_master, encod
                         val = note
                     else:
                         val = ""
+                elif ftype == "conditional":
+                    col_a_name = fd.get("col_a", "")
+                    col_b_name = fd.get("col_b", "")
+                    op         = fd.get("op", "eq")
+                    val_a      = item.get(col_a_name, "").strip()
+                    val_b      = item.get(col_b_name, "").strip()
+                    matched    = (val_a == val_b) if op == "eq" else (val_a != val_b)
+                    branch     = "true" if matched else "false"
+                    btype      = fd.get(f"{branch}_type", "fixed")
+                    bvalue     = fd.get(f"{branch}_value", "")
+                    val        = item.get(bvalue, "") if btype == "column" else bvalue
                 else:
                     val = ""
                 out_row[out_field] = val
@@ -806,6 +817,57 @@ def _field_config_ui(field, current, columns, pfx):
                     sel = st.selectbox("参照キー", col_opts, index=idx,
                                        key=f"{pfx}_sls_{field}")
                     new_cfg["source"] = "" if sel == "（未設定）" else sel
+
+        elif chosen_type == "conditional":
+            branch_type_opts = ["固定値", "列の値"]
+            branch_type_keys = ["fixed",  "column"]
+
+            # 条件設定（列A ○○ 列B）
+            c1, c2, c3 = st.columns([3, 2, 3])
+            with c1:
+                ca_src = current.get("col_a", "")
+                ca_idx = col_opts.index(ca_src) if ca_src in col_opts else 0
+                ca_val = st.selectbox("列 A", col_opts, index=ca_idx,
+                                      key=f"{pfx}_cca_{field}")
+                new_cfg["col_a"] = "" if ca_val == "（未設定）" else ca_val
+            with c2:
+                op_labels = ["と等しい", "と異なる"]
+                op_keys   = ["eq",       "ne"]
+                cur_op    = current.get("op", "eq")
+                op_idx    = op_keys.index(cur_op) if cur_op in op_keys else 0
+                op_val    = st.selectbox("条件", op_labels, index=op_idx,
+                                         key=f"{pfx}_cop_{field}")
+                new_cfg["op"] = op_keys[op_labels.index(op_val)]
+            with c3:
+                cb_src = current.get("col_b", "")
+                cb_idx = col_opts.index(cb_src) if cb_src in col_opts else 0
+                cb_val = st.selectbox("列 B", col_opts, index=cb_idx,
+                                      key=f"{pfx}_ccb_{field}")
+                new_cfg["col_b"] = "" if cb_val == "（未設定）" else cb_val
+
+            # 一致する場合 / 一致しない場合
+            for branch_label, branch_key in [("✅ 一致する場合", "true"), ("❌ 一致しない場合", "false")]:
+                b1, b2 = st.columns([2, 4])
+                with b1:
+                    cur_btype = current.get(f"{branch_key}_type", "fixed")
+                    btype_idx = branch_type_keys.index(cur_btype) if cur_btype in branch_type_keys else 0
+                    btype_val = st.selectbox(branch_label, branch_type_opts, index=btype_idx,
+                                             key=f"{pfx}_c{branch_key}t_{field}")
+                    new_cfg[f"{branch_key}_type"] = branch_type_keys[branch_type_opts.index(btype_val)]
+                with b2:
+                    cur_bval = current.get(f"{branch_key}_value", "")
+                    if new_cfg[f"{branch_key}_type"] == "fixed":
+                        bval = st.text_input("値", value=cur_bval,
+                                             key=f"{pfx}_c{branch_key}vf_{field}",
+                                             label_visibility="collapsed")
+                    else:
+                        bval_idx = col_opts.index(cur_bval) if cur_bval in col_opts else 0
+                        bval     = st.selectbox("列", col_opts, index=bval_idx,
+                                                key=f"{pfx}_c{branch_key}vc_{field}",
+                                                label_visibility="collapsed")
+                        bval = "" if bval == "（未設定）" else bval
+                    new_cfg[f"{branch_key}_value"] = bval
+
     return new_cfg
 
 
