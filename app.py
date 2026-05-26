@@ -803,8 +803,8 @@ def _field_config_ui(field, current, columns, pfx):
                 with v2:
                     src = current.get("source", "")
                     idx = col_opts.index(src) if src in col_opts else 0
-                    sel = st.selectbox("参照列", col_opts, index=idx,
-                                       key=f"{pfx}_sls_{field}", label_visibility="hidden")
+                    sel = st.selectbox("参照キー", col_opts, index=idx,
+                                       key=f"{pfx}_sls_{field}")
                     new_cfg["source"] = "" if sel == "（未設定）" else sel
     return new_cfg
 
