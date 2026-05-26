@@ -739,15 +739,15 @@ def apply_custom_shipment(inputs_data, template, ne_encoding="cp932"):
                 secondary_lookups[lbl]   = {str(r.get(jkt, "")).strip(): r for r in sec_rows}
                 secondary_from_cols[lbl] = jkf
 
-        # プレフィックス付きマージ行を生成
+        # プレフィックス付きマージ行を生成（区切り文字は全角：）
         merged_rows = []
         for pr in primary_rows:
-            merged = {f"{primary_label}:{k}": v for k, v in pr.items()}
+            merged = {f"{primary_label}：{k}": v for k, v in pr.items()}
             for sec_lbl, lookup in secondary_lookups.items():
                 from_col = secondary_from_cols.get(sec_lbl, "")
                 key_val  = str(pr.get(from_col, "")).strip()
                 sec_row  = lookup.get(key_val, {})
-                merged.update({f"{sec_lbl}:{k}": v for k, v in sec_row.items()})
+                merged.update({f"{sec_lbl}：{k}": v for k, v in sec_row.items()})
             merged_rows.append(merged)
 
     # ── 出力 CSV を生成 ───────────────────────────────────────
@@ -808,7 +808,7 @@ def auto_detect_shipment_mapping(input_data, output_rows):
                 lbl = entry["label"]
                 if i < len(entry["rows"]):
                     for k, v in entry["rows"][i].items():
-                        merged[f"{lbl}:{k}"] = v
+                        merged[f"{lbl}：{k}"] = v
             input_rows.append(merged)
 
     if not input_rows:
@@ -1576,16 +1576,16 @@ def main():
                     except Exception as ex:
                         st.error(f"読み込みエラー ({chr(65 + i)}): {ex}")
 
+                # インライン状態（コンパクト）
                 entry = multi_inputs[i]
                 if entry["rows"]:
                     lbl_disp = inp_lbl or entry["label"] or chr(65 + i)
-                    st.success(f"✅ {lbl_disp}：{len(entry['cols'])} 列 / {len(entry['rows'])} 行")
                     cols_prev = "　".join(
-                        f"{inp_lbl or chr(65 + i)}：{c}" for c in entry["cols"][:8]
-                    ) + ("…" if len(entry["cols"]) > 8 else "")
-                    st.caption(cols_prev)
+                        f"{lbl_disp}：{c}" for c in entry["cols"][:6]
+                    ) + ("…" if len(entry["cols"]) > 6 else "")
+                    st.caption(f"✅ {lbl_disp}：{len(entry['cols'])} 列 / {len(entry['rows'])} 行　　{cols_prev}")
                 else:
-                    st.info(f"インプット {chr(65 + i)} のCSVをアップロードしてください。")
+                    st.caption(f"⬆️ インプット {chr(65 + i)} のCSVをアップロードしてください")
 
                 if i < num_inputs - 1:
                     st.markdown("---")
@@ -1604,6 +1604,26 @@ def main():
                     multi_inputs.pop()
                     st.session_state[ship_multi_key] = multi_inputs
                     st.rerun()
+
+            # ── 読み込み状態サマリー（常時表示・目立つ） ──────────
+            _loaded_parts   = []
+            _unloaded_parts = []
+            for _si in range(num_inputs):
+                _se   = multi_inputs[_si]
+                _slbl = st.session_state.get(f"{pfx_ship}_inp_lbl_{_si}", "") or _se.get("label", "") or chr(65 + _si)
+                if _se.get("rows"):
+                    _loaded_parts.append(f"**{_slbl}**：{len(_se['cols'])} 列 / {len(_se['rows'])} 行")
+                else:
+                    _unloaded_parts.append(_slbl)
+            if _loaded_parts and not _unloaded_parts:
+                st.success("✅ 読み込み済み　　" + "　　|　　".join(_loaded_parts))
+            elif _loaded_parts:
+                st.warning(
+                    "⚠️ 一部未読み込み　　" + "　　|　　".join(_loaded_parts) +
+                    f"　　　　【未読み込み: {', '.join(_unloaded_parts)}】"
+                )
+            else:
+                st.info("① のCSVをアップロードしてください。（②をアップロードしても①のデータは保持されます）")
 
             # 結合設定（インプットが2つ以上のとき）
             if num_inputs > 1:
@@ -1650,12 +1670,12 @@ def main():
                     })
                 st.session_state[ship_join_key] = new_jc
 
-            # avail_ship_cols をプレフィックス付きで構築
+            # avail_ship_cols をプレフィックス付きで構築（全角：区切り）
             avail_ship_cols = []
             for i, entry in enumerate(multi_inputs[:num_inputs]):
                 lbl = st.session_state.get(f"{pfx_ship}_inp_lbl_{i}", "") or entry.get("label", "") or chr(65 + i)
                 for c in entry.get("cols", []):
-                    avail_ship_cols.append(f"{lbl}:{c}")
+                    avail_ship_cols.append(f"{lbl}：{c}")
             # フォールバック：保存済みテンプレートの列
             if not avail_ship_cols and current_ship_tpl_s.get("_columns"):
                 avail_ship_cols = current_ship_tpl_s["_columns"]
