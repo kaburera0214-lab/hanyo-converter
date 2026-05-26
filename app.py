@@ -33,7 +33,8 @@ OUT_HEADERS = [
 
 MASTER_PATH   = Path(__file__).parent / "master.csv"
 KOGUCHI_PATH  = Path(__file__).parent / "koguchimaster.csv"
-MAPPING_GITHUB_PATH = "mapping_templates.json"
+MAPPING_GITHUB_PATH           = "mapping_templates.json"
+SHIPMENT_TEMPLATE_GITHUB_PATH = "shipment_templates.json"
 
 SPECIAL_LOGICS = {
     "today":           "今日の日付",
@@ -590,6 +591,144 @@ def save_mappings_to_github(mappings):
     return False, r.json().get("message", "不明なエラー")
 
 
+# ── カスタム出荷実績：日付変換ヘルパー ────────────────────────
+def _format_date(raw):
+    """各種日時文字列 → YYYY-MM-DD（LINE ギフト出荷日フォーマット）"""
+    raw = str(raw).strip()
+    if not raw:
+        return ""
+    for fmt in ("%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M", "%Y/%m/%d",
+                "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(raw, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return raw  # フォールバック：そのまま返す
+
+
+# ── カスタム出荷実績テンプレート定数 ─────────────────────────
+_SHIP_TYPE_LABELS = ["空欄", "固定値", "列マッピング", "日付変換"]
+_SHIP_TYPE_KEYS   = ["empty", "fixed", "column", "date"]
+
+
+def _ship_tpl_to_df(output_fields):
+    """output_fields リスト → DataFrame（data_editor 用）"""
+    rows = []
+    for fd in output_fields:
+        ftype = fd.get("type", "empty")
+        label = _SHIP_TYPE_LABELS[_SHIP_TYPE_KEYS.index(ftype)] if ftype in _SHIP_TYPE_KEYS else "空欄"
+        if ftype == "fixed":
+            val = fd.get("value", "")
+        elif ftype in ("column", "date"):
+            val = fd.get("source", "")
+        else:
+            val = ""
+        rows.append({"フィールド名": fd.get("name", ""), "タイプ": label, "値/参照列": val})
+    cols = ["フィールド名", "タイプ", "値/参照列"]
+    return pd.DataFrame(rows, columns=cols) if rows else pd.DataFrame(columns=cols)
+
+
+def _df_to_ship_tpl(df):
+    """data_editor の DataFrame → output_fields リスト"""
+    fields = []
+    for _, row in df.iterrows():
+        name  = str(row.get("フィールド名", "") or "").strip()
+        label = str(row.get("タイプ",     "空欄") or "空欄").strip()
+        val   = str(row.get("値/参照列",  "") or "").strip()
+        if not name:
+            continue
+        ftype = _SHIP_TYPE_KEYS[_SHIP_TYPE_LABELS.index(label)] if label in _SHIP_TYPE_LABELS else "empty"
+        fd = {"name": name, "type": ftype}
+        if ftype == "fixed":
+            fd["value"] = val
+        elif ftype in ("column", "date"):
+            fd["source"] = val
+        fields.append(fd)
+    return fields
+
+
+# ── カスタム出荷実績テンプレート：GitHub 保存・読み込み ─────────
+def load_shipment_templates_from_github():
+    token = st.secrets.get("GITHUB_TOKEN", "")
+    repo  = st.secrets.get("GITHUB_REPO", "")
+    if not token or not repo:
+        return {}
+    url     = f"https://api.github.com/repos/{repo}/contents/{SHIPMENT_TEMPLATE_GITHUB_PATH}"
+    headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github.v3+json"}
+    r = requests.get(url, headers=headers)
+    if not r.ok:
+        return {}
+    try:
+        return json.loads(base64.b64decode(r.json()["content"]).decode("utf-8"))
+    except Exception:
+        return {}
+
+
+def save_shipment_templates_to_github(templates):
+    token = st.secrets.get("GITHUB_TOKEN", "")
+    repo  = st.secrets.get("GITHUB_REPO", "")
+    if not token or not repo:
+        return False, "GITHUB_TOKEN / GITHUB_REPO がSecretsに設定されていません"
+
+    content_bytes = json.dumps(templates, ensure_ascii=False, indent=2).encode("utf-8")
+    url     = f"https://api.github.com/repos/{repo}/contents/{SHIPMENT_TEMPLATE_GITHUB_PATH}"
+    headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github.v3+json"}
+
+    r   = requests.get(url, headers=headers)
+    sha = r.json().get("sha") if r.ok else None
+
+    payload = {"message": "Update shipment_templates.json via app",
+               "content": base64.b64encode(content_bytes).decode()}
+    if sha:
+        payload["sha"] = sha
+
+    r = requests.put(url, json=payload, headers=headers)
+    if r.ok:
+        return True, None
+    return False, r.json().get("message", "不明なエラー")
+
+
+# ── カスタム出荷実績：変換エンジン ───────────────────────────
+def apply_custom_shipment(ne_bytes, template, ne_encoding="cp932"):
+    """NE出荷完了CSV + テンプレート → カスタム出荷実績CSV（UTF-8 BOM付き）"""
+    try:
+        text = ne_bytes.decode(ne_encoding, errors="replace")
+    except Exception:
+        text = ne_bytes.decode("utf-8", errors="replace")
+
+    rows = [r for r in csv.DictReader(io.StringIO(text)) if any(r.values())]
+    if not rows:
+        return None, 0, "CSVにデータが見つかりません"
+
+    output_fields = template.get("output_fields", [])
+    if not output_fields:
+        return None, 0, "出力フィールドが設定されていません"
+
+    field_names = [f["name"] for f in output_fields]
+    output_rows = []
+
+    for row in rows:
+        out = {}
+        for fd in output_fields:
+            name  = fd["name"]
+            ftype = fd.get("type", "empty")
+            if ftype == "fixed":
+                out[name] = fd.get("value", "")
+            elif ftype == "column":
+                out[name] = row.get(fd.get("source", ""), "")
+            elif ftype == "date":
+                out[name] = _format_date(row.get(fd.get("source", ""), ""))
+            else:
+                out[name] = ""
+        output_rows.append(out)
+
+    buf = io.StringIO()
+    w   = csv.DictWriter(buf, fieldnames=field_names)
+    w.writeheader()
+    w.writerows(output_rows)
+    return buf.getvalue().encode("utf-8-sig"), len(output_rows), None
+
+
 # ── カスタムマッピング：変換エンジン ─────────────────────────
 def apply_custom_mapping(order_bytes, mapping_def, master, koguchi_master, encoding="shift_jis"):
     try:
@@ -1041,42 +1180,217 @@ def main():
             )
 
     with tab2:
-        st.caption("NEの出荷完了CSV → 先方への出荷実績CSV")
-        st.divider()
-        st.subheader("NE出荷完了CSV")
-        ne_file = st.file_uploader(
-            "ネクストエンジンからダウンロードした出荷完了CSV（Shift-JIS）",
-            type="csv",
-            key="ne_upload",
+        if "shipment_templates" not in st.session_state:
+            with st.spinner("出荷テンプレートを読み込み中..."):
+                st.session_state["shipment_templates"] = load_shipment_templates_from_github()
+
+        ship_std_tab, ship_custom_tab, ship_setup_tab = st.tabs(
+            ["▶ 標準変換（出荷代行）", "📋 カスタム出荷実績", "⚙ テンプレート設定"]
         )
-        st.divider()
 
-        if st.button("🔄 生成する", type="primary", disabled=ne_file is None, key="btn_shipment"):
-            with st.spinner("生成中..."):
-                _bytes2, _rows2, _err2 = convert_shipment(ne_file.read())
-            if _err2:
-                st.error(_err2)
+        # ── 標準変換（出荷代行） ──────────────────────────────
+        with ship_std_tab:
+            st.caption("NEの出荷完了CSV → 先方への出荷実績CSV")
+            st.divider()
+            st.subheader("NE出荷完了CSV")
+            ne_file = st.file_uploader(
+                "ネクストエンジンからダウンロードした出荷完了CSV（Shift-JIS）",
+                type="csv",
+                key="ne_upload",
+            )
+            st.divider()
+
+            if st.button("🔄 生成する", type="primary", disabled=ne_file is None, key="btn_shipment"):
+                with st.spinner("生成中..."):
+                    _bytes2, _rows2, _err2 = convert_shipment(ne_file.read())
+                if _err2:
+                    st.error(_err2)
+                else:
+                    st.session_state["tab2_result"] = {
+                        "csv_bytes": _bytes2, "n_rows": _rows2,
+                        "filename": f"{datetime.now().strftime('%Y%m%d')}_[出荷代行]出荷実績.csv",
+                    }
+
+            res2 = st.session_state.get("tab2_result")
+            if res2:
+                st.success(f"生成完了：{res2['n_rows']} 件")
+                st.download_button(
+                    label="⬇️ 出荷実績CSVをダウンロード",
+                    data=res2["csv_bytes"],
+                    file_name=res2["filename"],
+                    mime="text/csv",
+                    key="dl_shipment",
+                )
+                st.link_button(
+                    "📂 格納フォルダを開く（Google Drive）",
+                    "https://drive.google.com/drive/u/2/folders/1jhsvohRf7FLg3vrj8A-8qyEzQlqsYXrJ",
+                    use_container_width=True,
+                )
+
+        # ── カスタム出荷実績 ──────────────────────────────────
+        with ship_custom_tab:
+            ship_tpls = st.session_state.get("shipment_templates", {})
+            if not ship_tpls:
+                st.info("まず「テンプレート設定」タブでテンプレートを作成してください。")
             else:
-                st.session_state["tab2_result"] = {
-                    "csv_bytes": _bytes2, "n_rows": _rows2,
-                    "filename": f"{datetime.now().strftime('%Y%m%d')}_[出荷代行]出荷実績.csv",
-                }
+                st.caption("保存済みテンプレートを使ってカスタム出荷実績CSVを生成します")
+                sel_ship_tpl    = st.selectbox("テンプレート", list(ship_tpls.keys()), key="ship_custom_tpl_sel")
+                ship_ne_enc_map = {"Shift-JIS (cp932)": "cp932", "UTF-8": "utf-8", "UTF-8 (BOM付き)": "utf-8-sig"}
+                ship_ne_enc_lbl = st.selectbox("文字コード", list(ship_ne_enc_map.keys()), key="ship_custom_enc")
+                ship_ne_file    = st.file_uploader("NE出荷完了CSVをアップロード", type="csv", key="ship_ne_upload")
+                st.divider()
 
-        res2 = st.session_state.get("tab2_result")
-        if res2:
-            st.success(f"生成完了：{res2['n_rows']} 件")
-            st.download_button(
-                label="⬇️ 出荷実績CSVをダウンロード",
-                data=res2["csv_bytes"],
-                file_name=res2["filename"],
-                mime="text/csv",
-                key="dl_shipment",
-            )
-            st.link_button(
-                "📂 格納フォルダを開く（Google Drive）",
-                "https://drive.google.com/drive/u/2/folders/1jhsvohRf7FLg3vrj8A-8qyEzQlqsYXrJ",
+                if st.button("🔄 生成する", type="primary", disabled=ship_ne_file is None, key="btn_ship_custom"):
+                    with st.spinner("生成中..."):
+                        _sb, _sr, _se = apply_custom_shipment(
+                            ship_ne_file.read(),
+                            ship_tpls[sel_ship_tpl],
+                            ship_ne_enc_map[ship_ne_enc_lbl],
+                        )
+                    if _se:
+                        st.error(_se)
+                    else:
+                        st.session_state["tab2_custom_result"] = {
+                            "csv_bytes": _sb, "n_rows": _sr,
+                            "filename": f"{datetime.now().strftime('%Y%m%d')}_{sel_ship_tpl}_出荷実績.csv",
+                        }
+
+                res2c = st.session_state.get("tab2_custom_result")
+                if res2c:
+                    st.success(f"生成完了：{res2c['n_rows']} 件")
+                    st.download_button(
+                        label="⬇️ カスタム出荷実績CSVをダウンロード",
+                        data=res2c["csv_bytes"],
+                        file_name=res2c["filename"],
+                        mime="text/csv",
+                        key="dl_ship_custom",
+                    )
+
+        # ── テンプレート設定 ──────────────────────────────────
+        with ship_setup_tab:
+            ship_tpls     = st.session_state.get("shipment_templates", {})
+            st.caption("出荷実績CSVの出力フォーマットテンプレートを設定します")
+
+            tpl_options_s = ["（新規作成）"] + list(ship_tpls.keys())
+            ship_sel_s    = st.selectbox("テンプレート", tpl_options_s, key="ship_setup_sel")
+
+            if ship_sel_s == "（新規作成）":
+                ship_tpl_name_s    = st.text_input("新しいテンプレート名", key="ship_new_name")
+                current_ship_tpl_s = {}
+            else:
+                ship_tpl_name_s    = ship_sel_s
+                current_ship_tpl_s = ship_tpls.get(ship_sel_s, {})
+
+            st.divider()
+
+            # NE サンプル CSV で列名取得
+            st.subheader("① NE出荷完了CSVの列を取得")
+            ssc1, ssc2     = st.columns([3, 1])
+            ship_enc_setup_map = {"Shift-JIS (cp932)": "cp932", "UTF-8": "utf-8", "UTF-8 (BOM付き)": "utf-8-sig"}
+            with ssc2:
+                ship_enc_setup = st.selectbox("文字コード", list(ship_enc_setup_map.keys()), key="ship_setup_enc")
+            with ssc1:
+                ship_sample = st.file_uploader("サンプルCSVをアップロード（列名取得用）",
+                                               type="csv", key="ship_sample")
+
+            ship_col_ss_key = f"ship_cols_{ship_tpl_name_s}"
+            if ship_sample:
+                try:
+                    raw_text_s      = ship_sample.read().decode(ship_enc_setup_map[ship_enc_setup], errors="replace")
+                    found_ship_cols = list(csv.DictReader(io.StringIO(raw_text_s)).fieldnames or [])
+                    st.session_state[ship_col_ss_key] = found_ship_cols
+                    st.success(f"{len(found_ship_cols)} 列を検出しました")
+                except Exception as ex:
+                    st.error(f"列名の取得に失敗しました: {ex}")
+
+            avail_ship_cols = st.session_state.get(ship_col_ss_key, [])
+            if not avail_ship_cols and current_ship_tpl_s.get("_columns"):
+                avail_ship_cols = current_ship_tpl_s["_columns"]
+                st.session_state[ship_col_ss_key] = avail_ship_cols
+
+            if avail_ship_cols:
+                st.caption("検出列: " + "　".join(avail_ship_cols))
+            else:
+                st.info("サンプルCSVをアップロードすると列名が選択肢に表示されます。固定値は列なしでも設定できます。")
+
+            st.divider()
+
+            # 出力フィールド設定テーブル
+            st.subheader("② 出力フィールドの設定")
+            st.caption("行を追加・削除してカスタム出荷実績CSVの出力列を定義します。")
+
+            existing_ship_fields = current_ship_tpl_s.get("output_fields", [])
+            df_ship = _ship_tpl_to_df(existing_ship_fields)
+            if df_ship.empty:
+                df_ship = pd.DataFrame([{"フィールド名": "", "タイプ": "固定値", "値/参照列": ""}])
+
+            edited_ship_df = st.data_editor(
+                df_ship,
+                num_rows="dynamic",
                 use_container_width=True,
+                column_config={
+                    "フィールド名": st.column_config.TextColumn("フィールド名", width="medium"),
+                    "タイプ": st.column_config.SelectboxColumn(
+                        "タイプ", width="medium",
+                        options=["空欄", "固定値", "列マッピング", "日付変換"],
+                    ),
+                    "値/参照列": st.column_config.TextColumn(
+                        "値 / 参照列", width="large",
+                        help="固定値 → 出力する値を入力  /  列マッピング・日付変換 → NE CSV の列名を入力",
+                    ),
+                },
+                key="ship_field_editor",
             )
+
+            if avail_ship_cols:
+                st.caption("NE列名の一覧（「値/参照列」にコピーして使用）: " + "　".join(avail_ship_cols))
+
+            st.divider()
+
+            # 削除ボタン（既存テンプレートのみ）
+            if ship_sel_s != "（新規作成）":
+                if st.button("🗑 このテンプレートを削除", key="btn_ship_delete"):
+                    st.session_state["_ship_confirm_delete"] = True
+                if st.session_state.get("_ship_confirm_delete"):
+                    st.warning(f"「{ship_sel_s}」を削除します。よろしいですか？")
+                    sd1, sd2 = st.columns(2)
+                    with sd1:
+                        if st.button("はい、削除する", key="btn_ship_delete_confirm"):
+                            del ship_tpls[ship_sel_s]
+                            ok, derr = save_shipment_templates_to_github(ship_tpls)
+                            if ok:
+                                st.session_state["shipment_templates"] = ship_tpls
+                                st.session_state["_ship_confirm_delete"] = False
+                                st.success("削除しました")
+                                st.rerun()
+                            else:
+                                st.error(f"削除失敗: {derr}")
+                    with sd2:
+                        if st.button("キャンセル", key="btn_ship_delete_cancel"):
+                            st.session_state["_ship_confirm_delete"] = False
+                            st.rerun()
+
+            # 保存ボタン
+            save_btn_lbl_s = "💾 変更を保存する" if ship_sel_s != "（新規作成）" else "💾 新規保存する"
+            if st.button(save_btn_lbl_s, type="primary", key="btn_ship_save"):
+                save_name_s = ship_tpl_name_s.strip() if ship_sel_s == "（新規作成）" else ship_sel_s
+                if not save_name_s:
+                    st.error("テンプレート名を入力してください")
+                else:
+                    new_ship_fields = _df_to_ship_tpl(edited_ship_df)
+                    if not new_ship_fields:
+                        st.error("出力フィールドを1つ以上設定してください")
+                    else:
+                        ship_tpls[save_name_s] = {
+                            "_columns":      avail_ship_cols,
+                            "output_fields": new_ship_fields,
+                        }
+                        ok, serr = save_shipment_templates_to_github(ship_tpls)
+                        if ok:
+                            st.session_state["shipment_templates"] = ship_tpls
+                            st.success(f"「{save_name_s}」を保存しました")
+                        else:
+                            st.error(f"保存失敗: {serr}")
 
 
     # ── Tab③ カスタム変換 ──────────────────────────────────
