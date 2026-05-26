@@ -715,49 +715,34 @@ def apply_custom_shipment(inputs_data, template, ne_encoding="cp932"):
         if not inputs_data:
             return None, 0, "インプットデータがありません"
 
-        # プライマリラベルを決定（_inputs に role="primary" があればそれ、なければ先頭）
-        primary_label = next(
-            (c["label"] for c in _inputs_cfg if c.get("role") == "primary"),
-            inputs_data[0]["label"],
+        # プライマリのインデックスを決定（_inputs の role="primary"、なければ先頭）
+        primary_idx  = next(
+            (i for i, c in enumerate(_inputs_cfg) if c.get("role") == "primary"),
+            0,
         )
-        inputs_map    = {e["label"]: e["rows"] for e in inputs_data}
-        primary_rows  = inputs_map.get(primary_label, [])
+        primary_key  = chr(65 + primary_idx)   # "A", "B", ...（不変キー）
+        primary_rows = inputs_data[primary_idx]["rows"] if primary_idx < len(inputs_data) else []
         if not primary_rows:
-            return None, 0, f"プライマリ「{primary_label}」にデータがありません"
+            return None, 0, f"プライマリ（{primary_key}）にデータがありません"
 
-        # セカンダリの結合方式を決定：キーあり→キー結合、キーなし→行順結合
-        secondary_lookups    = {}   # label → {key_val: row}  （キー結合用）
-        secondary_from_cols  = {}   # label → primary側の結合列名
-        secondary_positional = {}   # label → [row, ...]       （行順結合用）
-        for cfg in _inputs_cfg:
-            lbl = cfg.get("label", "")
-            if cfg.get("role") == "primary" or lbl == primary_label:
+        # セカンダリは行順で合体（positional join）
+        # キーは常に位置インデックスから決定（ラベルに依存しない）
+        secondary_positional = {}   # key("B"...) → [row, ...]
+        for sec_idx, cfg in enumerate(_inputs_cfg):
+            if sec_idx == primary_idx:
                 continue
-            jkf = cfg.get("join_key_from", "")
-            jkt = cfg.get("join_key_to",   "")
-            sec_rows = inputs_map.get(lbl, [])
-            if lbl and jkt:
-                # キーが設定されている場合 → キー結合
-                secondary_lookups[lbl]   = {str(r.get(jkt, "")).strip(): r for r in sec_rows}
-                secondary_from_cols[lbl] = jkf
-            elif lbl:
-                # キーが未設定の場合 → 行順で合体（positional join）
-                secondary_positional[lbl] = sec_rows
+            sec_key  = chr(65 + sec_idx)
+            sec_rows = inputs_data[sec_idx]["rows"] if sec_idx < len(inputs_data) else []
+            secondary_positional[sec_key] = sec_rows
 
         # プレフィックス付きマージ行を生成（区切り文字は全角：）
+        # プレフィックスは常に位置キー(A/B/C...)を使用 ← ラベルを変えても影響なし
         merged_rows = []
         for idx, pr in enumerate(primary_rows):
-            merged = {f"{primary_label}：{k}": v for k, v in pr.items()}
-            # キー結合
-            for sec_lbl, lookup in secondary_lookups.items():
-                from_col = secondary_from_cols.get(sec_lbl, "")
-                key_val  = str(pr.get(from_col, "")).strip()
-                sec_row  = lookup.get(key_val, {})
-                merged.update({f"{sec_lbl}：{k}": v for k, v in sec_row.items()})
-            # 行順結合
-            for sec_lbl, sec_rows in secondary_positional.items():
+            merged = {f"{primary_key}：{k}": v for k, v in pr.items()}
+            for sec_key, sec_rows in secondary_positional.items():
                 if idx < len(sec_rows):
-                    merged.update({f"{sec_lbl}：{k}": v for k, v in sec_rows[idx].items()})
+                    merged.update({f"{sec_key}：{k}": v for k, v in sec_rows[idx].items()})
             merged_rows.append(merged)
 
     # ── 出力 CSV を生成 ───────────────────────────────────────
@@ -1567,9 +1552,10 @@ def main():
                     cust_inputs_data = []
                     all_uploaded     = True
                     for ci, inp_cfg in enumerate(tpl_inputs_cfg):
-                        lbl      = inp_cfg.get("label", chr(65 + ci))
+                        key      = chr(65 + ci)
+                        lbl      = inp_cfg.get("label", key)
                         role_str = "（プライマリ）" if inp_cfg.get("role") == "primary" else "（セカンダリ）"
-                        st.markdown(f"**{lbl} {role_str}**")
+                        st.markdown(f"**{key}：{lbl} {role_str}**")
                         cx1, cx2 = st.columns([3, 1])
                         with cx2:
                             c_enc_lbl = st.selectbox(
@@ -1704,11 +1690,11 @@ def main():
                 st.subheader("① インプット設定")
                 if _edit_inp_cfg:
                     for _ei, _eic in enumerate(_edit_inp_cfg):
-                        st.markdown(f"**インプット {_ei + 1}**")
+                        st.markdown(f"**インプット {chr(65 + _ei)}**")
                         _elc1, _elc2 = st.columns([2, 1])
                         with _elc1:
                             st.text_input(
-                                "ファイル名称",
+                                "ファイル名称（表示用）",
                                 value=_eic.get("label", ""),
                                 key=f"{_e_pfx}_lbl_{_ei}",
                                 placeholder="例：ネクストエンジンCSV",
@@ -1888,11 +1874,11 @@ def main():
                     saved_lbl_i  = saved_inp_cfg[i]["label"]         if i < len(saved_inp_cfg) else ""
                     saved_vcol_i = saved_inp_cfg[i].get("validate_col", "") if i < len(saved_inp_cfg) else ""
                     default_lbl  = multi_inputs[i].get("label") or saved_lbl_i or ""
-                    st.markdown(f"**インプット {i + 1}**")
+                    st.markdown(f"**インプット {chr(65 + i)}**")
                     ic1, ic2, ic3 = st.columns([2, 3, 1])
                     with ic1:
                         inp_lbl = st.text_input(
-                            "ファイル名称", value=default_lbl,
+                            "ファイル名称（表示用）", value=default_lbl,
                             key=f"{pfx_ship}_inp_lbl_{i}", placeholder="例：ネクストエンジンCSV",
                         )
                     with ic3:
@@ -1995,11 +1981,12 @@ def main():
                     st.info("① のCSVをアップロードしてください。（②をアップロードしても①のデータは保持されます）")
 
                 # avail_ship_cols をプレフィックス付きで構築（全角：区切り）
+                # プレフィックスは位置キー(A/B/C...)を固定使用 ← ファイル名称を変えても影響なし
                 avail_ship_cols = []
                 for i, entry in enumerate(multi_inputs[:num_inputs]):
-                    lbl = st.session_state.get(f"{pfx_ship}_inp_lbl_{i}", "") or entry.get("label", "") or chr(65 + i)
+                    key = chr(65 + i)   # A, B, C... （不変）
                     for c in entry.get("cols", []):
-                        avail_ship_cols.append(f"{lbl}：{c}")
+                        avail_ship_cols.append(f"{key}：{c}")
                 # フォールバック：保存済みテンプレートの列
                 if not avail_ship_cols and current_ship_tpl_s.get("_columns"):
                     avail_ship_cols = current_ship_tpl_s["_columns"]
