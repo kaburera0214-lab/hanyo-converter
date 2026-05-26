@@ -2,14 +2,16 @@
   "LINEギフト": {
     "_inputs": [
       {
-        "label": "A",
-        "role": "primary"
+        "label": "LINEギフトCSV",
+        "role": "primary",
+        "validate_col": "配送業者"
       },
       {
-        "label": "B",
+        "label": "NEファイル",
         "role": "secondary",
         "join_key_from": "",
-        "join_key_to": ""
+        "join_key_to": "",
+        "validate_col": "発送方法"
       }
     ],
     "_columns": [
