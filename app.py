@@ -1435,57 +1435,308 @@ def main():
                 st.error(f"保存失敗: {err}")
 
     # ── タブ ──────────────────────────────────────────────
-    tab1, tab2, tab3 = st.tabs(["① 汎用マスタCSV変換", "② 出荷実績CSV生成", "③ カスタム変換"])
+    tab1, tab2 = st.tabs(["① 汎用マスタCSV変換", "② 出荷実績CSV生成"])
 
     with tab1:
-        st.caption("先方受注CSV → ネクストエンジン汎用マスタCSV")
-        st.divider()
-        st.link_button(
-            "📂 受注CSVフォルダを開く（Google Drive）",
-            "https://drive.google.com/drive/u/2/folders/1Xil5jgZvxk3A-3s-W-7eYrcMu4R8qvQX",
-            use_container_width=True,
-        )
-        st.subheader("受注CSV")
-        order_file = st.file_uploader("先方からの受注ファイル", type="csv", key="order_upload")
-        st.divider()
+        _t1_std, _t1_custom = st.tabs(["▶ 標準変換", "🔧 カスタム変換"])
 
-        master         = st.session_state.get("master")
-        koguchi_master = st.session_state.get("koguchi_master", {})
-        can_convert    = order_file is not None and master is not None
-
-        if not master:
-            st.error("商品マスタが読み込まれていません。サイドバーからアップロードしてください。")
-
-        if st.button("🔄 変換する", type="primary", disabled=not can_convert, key="btn_convert"):
-            with st.spinner("変換中..."):
-                _bytes, _orders, _rows, _nf = convert(order_file.read(), master, koguchi_master)
-            st.session_state["tab1_result"] = {
-                "csv_bytes": _bytes, "n_orders": _orders,
-                "n_rows": _rows, "not_found": _nf,
-                "filename": f"hanyo_master_{datetime.now().strftime('%Y%m%d')}.csv",
-            }
-
-        res1 = st.session_state.get("tab1_result")
-        if res1:
-            if res1["not_found"]:
-                st.error(f"⚠️ 商品マスタに存在しないJANコードがあります（{len(res1['not_found'])} 件）")
-                for jan, orders in res1["not_found"].items():
-                    st.markdown(f"- **JAN: `{jan}`** → 注文番号: {', '.join(orders)}")
-                st.warning("上記の商品は入力値のまま出力されています。商品マスタを最新版に更新してください。")
-                st.divider()
-            st.success(f"変換完了：{res1['n_orders']} 件の注文 / {res1['n_rows']} 行")
-            st.download_button(
-                label="⬇️ 変換済みCSVをダウンロード",
-                data=res1["csv_bytes"],
-                file_name=res1["filename"],
-                mime="text/csv",
-                key="dl_hanyo",
-            )
+        with _t1_std:
+            st.caption("先方受注CSV → ネクストエンジン汎用マスタCSV")
+            st.divider()
             st.link_button(
-                "📋 ネクストエンジンに登録する →",
-                "https://main.next-engine.com/Usercsv",
+                "📂 受注CSVフォルダを開く（Google Drive）",
+                "https://drive.google.com/drive/u/2/folders/1Xil5jgZvxk3A-3s-W-7eYrcMu4R8qvQX",
                 use_container_width=True,
             )
+            st.subheader("受注CSV")
+            order_file = st.file_uploader("先方からの受注ファイル", type="csv", key="order_upload")
+            st.divider()
+    
+            master         = st.session_state.get("master")
+            koguchi_master = st.session_state.get("koguchi_master", {})
+            can_convert    = order_file is not None and master is not None
+    
+            if not master:
+                st.error("商品マスタが読み込まれていません。サイドバーからアップロードしてください。")
+    
+            if st.button("🔄 変換する", type="primary", disabled=not can_convert, key="btn_convert"):
+                with st.spinner("変換中..."):
+                    _bytes, _orders, _rows, _nf = convert(order_file.read(), master, koguchi_master)
+                st.session_state["tab1_result"] = {
+                    "csv_bytes": _bytes, "n_orders": _orders,
+                    "n_rows": _rows, "not_found": _nf,
+                    "filename": f"hanyo_master_{datetime.now().strftime('%Y%m%d')}.csv",
+                }
+    
+            res1 = st.session_state.get("tab1_result")
+            if res1:
+                if res1["not_found"]:
+                    st.error(f"⚠️ 商品マスタに存在しないJANコードがあります（{len(res1['not_found'])} 件）")
+                    for jan, orders in res1["not_found"].items():
+                        st.markdown(f"- **JAN: `{jan}`** → 注文番号: {', '.join(orders)}")
+                    st.warning("上記の商品は入力値のまま出力されています。商品マスタを最新版に更新してください。")
+                    st.divider()
+                st.success(f"変換完了：{res1['n_orders']} 件の注文 / {res1['n_rows']} 行")
+                st.download_button(
+                    label="⬇️ 変換済みCSVをダウンロード",
+                    data=res1["csv_bytes"],
+                    file_name=res1["filename"],
+                    mime="text/csv",
+                    key="dl_hanyo",
+                )
+                st.link_button(
+                    "📋 ネクストエンジンに登録する →",
+                    "https://main.next-engine.com/Usercsv",
+                    use_container_width=True,
+                )
+    
+
+        with _t1_custom:
+            if "custom_mappings" not in st.session_state:
+                with st.spinner("マッピングテンプレートを読み込み中..."):
+                    st.session_state["custom_mappings"] = load_mappings_from_github()
+    
+            mappings = st.session_state.get("custom_mappings", {})
+    
+            s_enc_map = {"Shift-JIS": "shift_jis", "UTF-8": "utf-8", "UTF-8 (BOM付き)": "utf-8-sig"}
+    
+            exec_tab, edit_tab, setup_tab = st.tabs(["▶ 変換実行", "✏ テンプレートを編集", "⚙ 新規作成"])
+    
+            # ── 変換実行 ──────────────────────────────────────
+            with exec_tab:
+                st.caption("保存済みテンプレートを使って受注CSVを変換します")
+                if not mappings:
+                    st.info("まず「新規作成」タブでテンプレートを作成してください。")
+                else:
+                    sel_name = st.selectbox("テンプレート", list(mappings.keys()), key="exec_tpl_select")
+                    enc_lbl  = st.selectbox("文字コード", list(s_enc_map.keys()), key="exec_encoding")
+                    order3   = st.file_uploader("受注CSVをアップロード", type="csv", key="order3_upload")
+                    st.divider()
+    
+                    master3         = st.session_state.get("master")
+                    koguchi_master3 = st.session_state.get("koguchi_master", {})
+                    if not master3:
+                        st.warning("商品マスタが未読み込みです。サイドバーからアップロードしてください。")
+    
+                    if st.button("🔄 変換する", type="primary", disabled=order3 is None, key="btn_custom_convert"):
+                        with st.spinner("変換中..."):
+                            _b3, _o3, _r3, _nf3, _e3 = apply_custom_mapping(
+                                order3.read(), mappings[sel_name],
+                                master3 or {}, koguchi_master3, s_enc_map[enc_lbl],
+                            )
+                        if _e3:
+                            st.error(_e3)
+                        else:
+                            st.session_state["tab3_result"] = {
+                                "csv_bytes": _b3, "n_orders": _o3, "n_rows": _r3,
+                                "not_found": _nf3,
+                                "filename": f"hanyo_master_{datetime.now().strftime('%Y%m%d')}.csv",
+                            }
+    
+                    res3 = st.session_state.get("tab3_result")
+                    if res3:
+                        if res3["not_found"]:
+                            st.error(f"⚠️ 商品が見つかりません（{len(res3['not_found'])} 件）")
+                            for jan, oids in res3["not_found"].items():
+                                st.markdown(f"- **JAN: `{jan}`** → 注文番号: {', '.join(oids)}")
+                            st.warning("上記のJANコードは商品マスタに存在しません。商品マスタを最新版に更新してください。")
+                            st.divider()
+                        st.success(f"変換完了：{res3['n_orders']} 件の注文 / {res3['n_rows']} 行")
+                        st.download_button(
+                            label="⬇️ 変換済みCSVをダウンロード",
+                            data=res3["csv_bytes"],
+                            file_name=res3["filename"],
+                            mime="text/csv",
+                            key="dl_custom",
+                        )
+                        st.link_button("📋 ネクストエンジンに登録する →",
+                                       "https://main.next-engine.com/Usercsv",
+                                       use_container_width=True)
+                        st.link_button("📂 受注CSVフォルダ（Google Drive）",
+                                       "https://drive.google.com/drive/u/2/folders/1Xil5jgZvxk3A-3s-W-7eYrcMu4R8qvQX",
+                                       use_container_width=True)
+    
+            # ── テンプレートを編集 ────────────────────────────
+            with edit_tab:
+                st.caption("既存テンプレートの紐づけを変更・保存します")
+                if not mappings:
+                    st.info("まず「新規作成」タブでテンプレートを作成してください。")
+                else:
+                    sel_edit      = st.selectbox("編集するテンプレート", list(mappings.keys()), key="edit_tpl_sel")
+                    current_tpl_e = mappings.get(sel_edit, {})
+    
+                    # 削除
+                    if st.button("🗑 このテンプレートを削除", key="btn_delete_e"):
+                        st.session_state["_confirm_delete_e"] = True
+                    if st.session_state.get("_confirm_delete_e"):
+                        st.warning(f"「{sel_edit}」を削除します。よろしいですか？")
+                        dc1e, dc2e = st.columns(2)
+                        with dc1e:
+                            if st.button("はい、削除する", key="btn_delete_confirm_e"):
+                                del mappings[sel_edit]
+                                ok, derr = save_mappings_to_github(mappings)
+                                if ok:
+                                    st.session_state["custom_mappings"] = mappings
+                                    st.session_state["_confirm_delete_e"] = False
+                                    st.success("削除しました")
+                                    st.rerun()
+                                else:
+                                    st.error(f"削除失敗: {derr}")
+                        with dc2e:
+                            if st.button("キャンセル", key="btn_delete_cancel_e"):
+                                st.session_state["_confirm_delete_e"] = False
+                                st.rerun()
+    
+                    st.divider()
+    
+                    # サンプルCSVで列名取得
+                    st.subheader("① インプットCSVの列を取得")
+                    sc1e, sc2e = st.columns([3, 1])
+                    with sc2e:
+                        e_enc_label = st.selectbox("文字コード", list(s_enc_map.keys()), key="edit_enc")
+                    with sc1e:
+                        e_sample = st.file_uploader("サンプルCSVをアップロード（列名取得用）",
+                                                    type="csv", key="edit_sample")
+    
+                    col_ss_key_e = f"edit_cols_{sel_edit}"
+                    pfx_e        = "ed" + hashlib.md5(sel_edit.encode("utf-8")).hexdigest()[:8]
+    
+                    if e_sample:
+                        try:
+                            raw_text_e   = e_sample.read().decode(s_enc_map[e_enc_label], errors="replace")
+                            found_cols_e = list(csv.DictReader(io.StringIO(raw_text_e)).fieldnames or [])
+                            prev_cols_e  = st.session_state.get(col_ss_key_e, [])
+                            if found_cols_e != prev_cols_e:
+                                saved_fields_e = current_tpl_e.get("fields", {})
+                                for _f in OUT_HEADERS:
+                                    if _f not in saved_fields_e:
+                                        suggested = suggest_column(_f, found_cols_e)
+                                        st.session_state[f"{pfx_e}_t_{_f}"] = "列マッピング"
+                                        st.session_state[f"{pfx_e}_cs_{_f}"] = (
+                                            suggested if suggested in found_cols_e else "（未設定）"
+                                        )
+                            st.session_state[col_ss_key_e] = found_cols_e
+                            st.success(f"{len(found_cols_e)} 列を検出しました")
+                        except Exception as ex:
+                            st.error(f"列名の取得に失敗しました: {ex}")
+    
+                    avail_cols_e = st.session_state.get(col_ss_key_e, [])
+                    # セッションにない場合はテンプレート保存済みの列リストを自動復元
+                    if not avail_cols_e and current_tpl_e.get("_columns"):
+                        avail_cols_e = current_tpl_e["_columns"]
+                        st.session_state[col_ss_key_e] = avail_cols_e
+                    if avail_cols_e:
+                        st.caption("検出列: " + "　".join(avail_cols_e))
+                    else:
+                        st.info("サンプルCSVをアップロードすると列名が選択肢に表示されます。固定値設定は列なしでも可能です。")
+    
+                    st.divider()
+    
+                    # フィールド紐づけ
+                    st.subheader("② 出力フィールドの紐づけ（全38列）")
+                    st.caption("🔴 必須　🟡 電話／メールどちらか必須　マークなし：任意　 ／　「空欄」は出力がブランクになります。")
+    
+                    new_fields_e = {}
+                    for group_name, group_fields in FIELD_GROUPS:
+                        with st.expander(group_name, expanded=True):
+                            for field in group_fields:
+                                cur_cfg_e = current_tpl_e.get("fields", {}).get(field, {})
+                                new_fields_e[field] = _field_config_ui(field, cur_cfg_e, avail_cols_e, pfx_e)
+    
+                    st.divider()
+    
+                    new_tpl_e = {
+                        "_columns": avail_cols_e,
+                        "fields":   new_fields_e,
+                    }
+                    if st.button("💾 変更を保存する", type="primary", key="btn_save_edit"):
+                        mappings[sel_edit] = new_tpl_e
+                        ok, serr = save_mappings_to_github(mappings)
+                        if ok:
+                            st.session_state["custom_mappings"] = mappings
+                            st.success(f"「{sel_edit}」を保存しました")
+                        else:
+                            st.error(f"保存失敗: {serr}")
+    
+            # ── 新規作成 ──────────────────────────────────────
+            with setup_tab:
+                st.caption("新しいテンプレートを作成します")
+    
+                tpl_name = st.text_input("新しいテンプレート名", key="new_tpl_name")
+    
+                st.divider()
+    
+                pfx_n        = "nw" + hashlib.md5((tpl_name or "_new").encode("utf-8")).hexdigest()[:8]
+                col_ss_key_n = f"new_cols_{tpl_name}"
+    
+                # サンプルCSVで列名取得
+                st.subheader("① インプットCSVの列を取得")
+                sc1n, sc2n = st.columns([3, 1])
+                with sc2n:
+                    n_enc_label = st.selectbox("文字コード", list(s_enc_map.keys()), key="new_enc")
+                with sc1n:
+                    n_sample = st.file_uploader("サンプルCSVをアップロード（列名取得用）",
+                                                type="csv", key="new_sample")
+    
+                if n_sample:
+                    try:
+                        raw_text_n   = n_sample.read().decode(s_enc_map[n_enc_label], errors="replace")
+                        found_cols_n = list(csv.DictReader(io.StringIO(raw_text_n)).fieldnames or [])
+                        prev_cols_n  = st.session_state.get(col_ss_key_n, [])
+                        if found_cols_n != prev_cols_n:
+                            for _f in OUT_HEADERS:
+                                suggested = suggest_column(_f, found_cols_n)
+                                st.session_state[f"{pfx_n}_t_{_f}"] = "列マッピング"
+                                st.session_state[f"{pfx_n}_cs_{_f}"] = (
+                                    suggested if suggested in found_cols_n else "（未設定）"
+                                )
+                        st.session_state[col_ss_key_n] = found_cols_n
+                        st.success(f"{len(found_cols_n)} 列を検出しました")
+                    except Exception as ex:
+                        st.error(f"列名の取得に失敗しました: {ex}")
+    
+                avail_cols_n = st.session_state.get(col_ss_key_n, [])
+                if avail_cols_n:
+                    st.caption("検出列: " + "　".join(avail_cols_n))
+                else:
+                    st.info("サンプルCSVをアップロードすると列名が選択肢に表示されます。手動入力での固定値設定は列なしでも可能です。")
+    
+                st.divider()
+    
+                # フィールド紐づけ
+                st.subheader("② 出力フィールドの紐づけ（全38列）")
+                st.caption("🔴 必須　🟡 電話／メールどちらか必須　マークなし：任意　 ／　「空欄」は出力がブランクになります。")
+    
+                new_fields_n = {}
+                for group_name, group_fields in FIELD_GROUPS:
+                    with st.expander(group_name, expanded=True):
+                        for field in group_fields:
+                            new_fields_n[field] = _field_config_ui(field, {}, avail_cols_n, pfx_n)
+    
+                st.divider()
+    
+                new_tpl_n = {
+                    "_columns": avail_cols_n,
+                    "fields":   new_fields_n,
+                }
+                if st.button("💾 新規保存する", type="primary", key="btn_save_new_tpl"):
+                    if not tpl_name.strip():
+                        st.error("テンプレート名を入力してください")
+                    elif tpl_name.strip() in mappings:
+                        st.error(
+                            f"「{tpl_name.strip()}」は既に存在します。"
+                            "「テンプレートを編集」タブから編集してください。"
+                        )
+                    else:
+                        mappings[tpl_name.strip()] = new_tpl_n
+                        ok, serr = save_mappings_to_github(mappings)
+                        if ok:
+                            st.session_state["custom_mappings"] = mappings
+                            st.success(f"「{tpl_name.strip()}」を作成しました")
+                        else:
+                            st.error(f"保存失敗: {serr}")
+    
+    
 
     with tab2:
         if "shipment_templates" not in st.session_state:
@@ -2179,253 +2430,6 @@ def main():
                             st.success(f"「{save_name_s}」を保存しました")
                         else:
                             st.error(f"保存失敗: {serr}")
-
-
-    # ── Tab③ カスタム変換 ──────────────────────────────────
-    with tab3:
-        if "custom_mappings" not in st.session_state:
-            with st.spinner("マッピングテンプレートを読み込み中..."):
-                st.session_state["custom_mappings"] = load_mappings_from_github()
-
-        mappings = st.session_state.get("custom_mappings", {})
-
-        s_enc_map = {"Shift-JIS": "shift_jis", "UTF-8": "utf-8", "UTF-8 (BOM付き)": "utf-8-sig"}
-
-        exec_tab, edit_tab, setup_tab = st.tabs(["▶ 変換実行", "✏ テンプレートを編集", "⚙ 新規作成"])
-
-        # ── 変換実行 ──────────────────────────────────────
-        with exec_tab:
-            st.caption("保存済みテンプレートを使って受注CSVを変換します")
-            if not mappings:
-                st.info("まず「新規作成」タブでテンプレートを作成してください。")
-            else:
-                sel_name = st.selectbox("テンプレート", list(mappings.keys()), key="exec_tpl_select")
-                enc_lbl  = st.selectbox("文字コード", list(s_enc_map.keys()), key="exec_encoding")
-                order3   = st.file_uploader("受注CSVをアップロード", type="csv", key="order3_upload")
-                st.divider()
-
-                master3         = st.session_state.get("master")
-                koguchi_master3 = st.session_state.get("koguchi_master", {})
-                if not master3:
-                    st.warning("商品マスタが未読み込みです。サイドバーからアップロードしてください。")
-
-                if st.button("🔄 変換する", type="primary", disabled=order3 is None, key="btn_custom_convert"):
-                    with st.spinner("変換中..."):
-                        _b3, _o3, _r3, _nf3, _e3 = apply_custom_mapping(
-                            order3.read(), mappings[sel_name],
-                            master3 or {}, koguchi_master3, s_enc_map[enc_lbl],
-                        )
-                    if _e3:
-                        st.error(_e3)
-                    else:
-                        st.session_state["tab3_result"] = {
-                            "csv_bytes": _b3, "n_orders": _o3, "n_rows": _r3,
-                            "not_found": _nf3,
-                            "filename": f"hanyo_master_{datetime.now().strftime('%Y%m%d')}.csv",
-                        }
-
-                res3 = st.session_state.get("tab3_result")
-                if res3:
-                    if res3["not_found"]:
-                        st.error(f"⚠️ 商品が見つかりません（{len(res3['not_found'])} 件）")
-                        for jan, oids in res3["not_found"].items():
-                            st.markdown(f"- **JAN: `{jan}`** → 注文番号: {', '.join(oids)}")
-                        st.warning("上記のJANコードは商品マスタに存在しません。商品マスタを最新版に更新してください。")
-                        st.divider()
-                    st.success(f"変換完了：{res3['n_orders']} 件の注文 / {res3['n_rows']} 行")
-                    st.download_button(
-                        label="⬇️ 変換済みCSVをダウンロード",
-                        data=res3["csv_bytes"],
-                        file_name=res3["filename"],
-                        mime="text/csv",
-                        key="dl_custom",
-                    )
-                    st.link_button("📋 ネクストエンジンに登録する →",
-                                   "https://main.next-engine.com/Usercsv",
-                                   use_container_width=True)
-                    st.link_button("📂 受注CSVフォルダ（Google Drive）",
-                                   "https://drive.google.com/drive/u/2/folders/1Xil5jgZvxk3A-3s-W-7eYrcMu4R8qvQX",
-                                   use_container_width=True)
-
-        # ── テンプレートを編集 ────────────────────────────
-        with edit_tab:
-            st.caption("既存テンプレートの紐づけを変更・保存します")
-            if not mappings:
-                st.info("まず「新規作成」タブでテンプレートを作成してください。")
-            else:
-                sel_edit      = st.selectbox("編集するテンプレート", list(mappings.keys()), key="edit_tpl_sel")
-                current_tpl_e = mappings.get(sel_edit, {})
-
-                # 削除
-                if st.button("🗑 このテンプレートを削除", key="btn_delete_e"):
-                    st.session_state["_confirm_delete_e"] = True
-                if st.session_state.get("_confirm_delete_e"):
-                    st.warning(f"「{sel_edit}」を削除します。よろしいですか？")
-                    dc1e, dc2e = st.columns(2)
-                    with dc1e:
-                        if st.button("はい、削除する", key="btn_delete_confirm_e"):
-                            del mappings[sel_edit]
-                            ok, derr = save_mappings_to_github(mappings)
-                            if ok:
-                                st.session_state["custom_mappings"] = mappings
-                                st.session_state["_confirm_delete_e"] = False
-                                st.success("削除しました")
-                                st.rerun()
-                            else:
-                                st.error(f"削除失敗: {derr}")
-                    with dc2e:
-                        if st.button("キャンセル", key="btn_delete_cancel_e"):
-                            st.session_state["_confirm_delete_e"] = False
-                            st.rerun()
-
-                st.divider()
-
-                # サンプルCSVで列名取得
-                st.subheader("① インプットCSVの列を取得")
-                sc1e, sc2e = st.columns([3, 1])
-                with sc2e:
-                    e_enc_label = st.selectbox("文字コード", list(s_enc_map.keys()), key="edit_enc")
-                with sc1e:
-                    e_sample = st.file_uploader("サンプルCSVをアップロード（列名取得用）",
-                                                type="csv", key="edit_sample")
-
-                col_ss_key_e = f"edit_cols_{sel_edit}"
-                pfx_e        = "ed" + hashlib.md5(sel_edit.encode("utf-8")).hexdigest()[:8]
-
-                if e_sample:
-                    try:
-                        raw_text_e   = e_sample.read().decode(s_enc_map[e_enc_label], errors="replace")
-                        found_cols_e = list(csv.DictReader(io.StringIO(raw_text_e)).fieldnames or [])
-                        prev_cols_e  = st.session_state.get(col_ss_key_e, [])
-                        if found_cols_e != prev_cols_e:
-                            saved_fields_e = current_tpl_e.get("fields", {})
-                            for _f in OUT_HEADERS:
-                                if _f not in saved_fields_e:
-                                    suggested = suggest_column(_f, found_cols_e)
-                                    st.session_state[f"{pfx_e}_t_{_f}"] = "列マッピング"
-                                    st.session_state[f"{pfx_e}_cs_{_f}"] = (
-                                        suggested if suggested in found_cols_e else "（未設定）"
-                                    )
-                        st.session_state[col_ss_key_e] = found_cols_e
-                        st.success(f"{len(found_cols_e)} 列を検出しました")
-                    except Exception as ex:
-                        st.error(f"列名の取得に失敗しました: {ex}")
-
-                avail_cols_e = st.session_state.get(col_ss_key_e, [])
-                # セッションにない場合はテンプレート保存済みの列リストを自動復元
-                if not avail_cols_e and current_tpl_e.get("_columns"):
-                    avail_cols_e = current_tpl_e["_columns"]
-                    st.session_state[col_ss_key_e] = avail_cols_e
-                if avail_cols_e:
-                    st.caption("検出列: " + "　".join(avail_cols_e))
-                else:
-                    st.info("サンプルCSVをアップロードすると列名が選択肢に表示されます。固定値設定は列なしでも可能です。")
-
-                st.divider()
-
-                # フィールド紐づけ
-                st.subheader("② 出力フィールドの紐づけ（全38列）")
-                st.caption("🔴 必須　🟡 電話／メールどちらか必須　マークなし：任意　 ／　「空欄」は出力がブランクになります。")
-
-                new_fields_e = {}
-                for group_name, group_fields in FIELD_GROUPS:
-                    with st.expander(group_name, expanded=True):
-                        for field in group_fields:
-                            cur_cfg_e = current_tpl_e.get("fields", {}).get(field, {})
-                            new_fields_e[field] = _field_config_ui(field, cur_cfg_e, avail_cols_e, pfx_e)
-
-                st.divider()
-
-                new_tpl_e = {
-                    "_columns": avail_cols_e,
-                    "fields":   new_fields_e,
-                }
-                if st.button("💾 変更を保存する", type="primary", key="btn_save_edit"):
-                    mappings[sel_edit] = new_tpl_e
-                    ok, serr = save_mappings_to_github(mappings)
-                    if ok:
-                        st.session_state["custom_mappings"] = mappings
-                        st.success(f"「{sel_edit}」を保存しました")
-                    else:
-                        st.error(f"保存失敗: {serr}")
-
-        # ── 新規作成 ──────────────────────────────────────
-        with setup_tab:
-            st.caption("新しいテンプレートを作成します")
-
-            tpl_name = st.text_input("新しいテンプレート名", key="new_tpl_name")
-
-            st.divider()
-
-            pfx_n        = "nw" + hashlib.md5((tpl_name or "_new").encode("utf-8")).hexdigest()[:8]
-            col_ss_key_n = f"new_cols_{tpl_name}"
-
-            # サンプルCSVで列名取得
-            st.subheader("① インプットCSVの列を取得")
-            sc1n, sc2n = st.columns([3, 1])
-            with sc2n:
-                n_enc_label = st.selectbox("文字コード", list(s_enc_map.keys()), key="new_enc")
-            with sc1n:
-                n_sample = st.file_uploader("サンプルCSVをアップロード（列名取得用）",
-                                            type="csv", key="new_sample")
-
-            if n_sample:
-                try:
-                    raw_text_n   = n_sample.read().decode(s_enc_map[n_enc_label], errors="replace")
-                    found_cols_n = list(csv.DictReader(io.StringIO(raw_text_n)).fieldnames or [])
-                    prev_cols_n  = st.session_state.get(col_ss_key_n, [])
-                    if found_cols_n != prev_cols_n:
-                        for _f in OUT_HEADERS:
-                            suggested = suggest_column(_f, found_cols_n)
-                            st.session_state[f"{pfx_n}_t_{_f}"] = "列マッピング"
-                            st.session_state[f"{pfx_n}_cs_{_f}"] = (
-                                suggested if suggested in found_cols_n else "（未設定）"
-                            )
-                    st.session_state[col_ss_key_n] = found_cols_n
-                    st.success(f"{len(found_cols_n)} 列を検出しました")
-                except Exception as ex:
-                    st.error(f"列名の取得に失敗しました: {ex}")
-
-            avail_cols_n = st.session_state.get(col_ss_key_n, [])
-            if avail_cols_n:
-                st.caption("検出列: " + "　".join(avail_cols_n))
-            else:
-                st.info("サンプルCSVをアップロードすると列名が選択肢に表示されます。手動入力での固定値設定は列なしでも可能です。")
-
-            st.divider()
-
-            # フィールド紐づけ
-            st.subheader("② 出力フィールドの紐づけ（全38列）")
-            st.caption("🔴 必須　🟡 電話／メールどちらか必須　マークなし：任意　 ／　「空欄」は出力がブランクになります。")
-
-            new_fields_n = {}
-            for group_name, group_fields in FIELD_GROUPS:
-                with st.expander(group_name, expanded=True):
-                    for field in group_fields:
-                        new_fields_n[field] = _field_config_ui(field, {}, avail_cols_n, pfx_n)
-
-            st.divider()
-
-            new_tpl_n = {
-                "_columns": avail_cols_n,
-                "fields":   new_fields_n,
-            }
-            if st.button("💾 新規保存する", type="primary", key="btn_save_new_tpl"):
-                if not tpl_name.strip():
-                    st.error("テンプレート名を入力してください")
-                elif tpl_name.strip() in mappings:
-                    st.error(
-                        f"「{tpl_name.strip()}」は既に存在します。"
-                        "「テンプレートを編集」タブから編集してください。"
-                    )
-                else:
-                    mappings[tpl_name.strip()] = new_tpl_n
-                    ok, serr = save_mappings_to_github(mappings)
-                    if ok:
-                        st.session_state["custom_mappings"] = mappings
-                        st.success(f"「{tpl_name.strip()}」を作成しました")
-                    else:
-                        st.error(f"保存失敗: {serr}")
 
 
 if __name__ == "__main__":
