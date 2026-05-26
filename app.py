@@ -606,6 +606,18 @@ def apply_custom_mapping(order_bytes, mapping_def, master, koguchi_master, encod
     qty_col   = mapping_def.get("qty_column", "")
     fields    = mapping_def.get("fields", {})
 
+    # JANマスタ特殊ロジック使用時に sku_col が未設定だと検索が一切走らないため事前チェック
+    uses_jan_master = any(
+        fd.get("type") == "special" and fd.get("logic") in ("jan_master_name", "jan_master_code")
+        for fd in fields.values()
+    )
+    if uses_jan_master and not sku_col:
+        return None, 0, 0, {}, (
+            "「JANマスタ→商品名」または「JANマスタ→商品コード」を使用していますが、"
+            "「SKU / JANコード列」が設定されていません。\n"
+            "「テンプレートを編集」→「② 注文グルーピング・SKU列の設定」で JANコード列を選択して保存してください。"
+        )
+
     orders = OrderedDict()
     for i, row in enumerate(all_rows):
         oid = row.get(group_key, "").strip() if group_key else str(i)
