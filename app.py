@@ -1700,19 +1700,46 @@ def main():
 
                 st.divider()
 
-                # ── ① インプット設定（保存内容を表示） ────────────
-                st.subheader("① インプット設定（保存済み）")
+                # ── ① インプット設定（保存内容を表示・編集） ────────────
+                st.subheader("① インプット設定")
                 if _edit_inp_cfg:
                     for _ei, _eic in enumerate(_edit_inp_cfg):
-                        _e_lbl  = _eic.get("label", chr(65 + _ei))
-                        _e_role = "プライマリ" if _eic.get("role") == "primary" else "セカンダリ"
-                        st.markdown(f"**{chr(65 + _ei)}：{_e_lbl}**（{_e_role}）")
+                        st.markdown(f"**インプット {_ei + 1}**")
+                        _elc1, _elc2 = st.columns([2, 1])
+                        with _elc1:
+                            st.text_input(
+                                "ファイル名称",
+                                value=_eic.get("label", ""),
+                                key=f"{_e_pfx}_lbl_{_ei}",
+                                placeholder="例：ネクストエンジンCSV",
+                            )
                         st.text_input(
                             "🔑 識別列",
                             value=_eic.get("validate_col", ""),
                             key=f"{_e_pfx}_vcol_{_ei}",
                             placeholder="このファイルに必ず存在する列名（例：注文ID）",
                             help="変換実行時、ここで指定した列が存在しない場合はエラーを表示します。",
+                        )
+                        if _ei < len(_edit_inp_cfg) - 1:
+                            st.markdown("---")
+                    # プライマリファイル選択
+                    if len(_edit_inp_cfg) > 1:
+                        _e_primary_opts = [
+                            st.session_state.get(f"{_e_pfx}_lbl_{_ei}", "")
+                            or _edit_inp_cfg[_ei].get("label", f"ファイル{_ei + 1}")
+                            for _ei in range(len(_edit_inp_cfg))
+                        ]
+                        _e_saved_primary = next(
+                            (_ei for _ei, _ec in enumerate(_edit_inp_cfg) if _ec.get("role") == "primary"),
+                            0,
+                        )
+                        st.selectbox(
+                            "📌 プライマリファイル（出力の行数の基準）",
+                            range(len(_edit_inp_cfg)),
+                            format_func=lambda x: _e_primary_opts[x],
+                            index=_e_saved_primary,
+                            key=f"{_e_pfx}_primary_idx",
+                            help="変換時にこのファイルの行数を基準にします。もう一方のファイルは行順で対応付けられます。",
                         )
                 else:
                     st.caption("（インプット設定なし）")
@@ -1784,10 +1811,18 @@ def main():
                     if not _new_out_e:
                         st.error("出力フィールドがありません")
                     else:
-                        # _inputs の validate_col を更新して保存
+                        # _inputs の ファイル名称・プライマリ・識別列 を更新して保存
+                        _e_primary_idx = int(st.session_state.get(f"{_e_pfx}_primary_idx", 0))
                         _upd_inputs = []
                         for _ei, _eic in enumerate(_edit_inp_cfg):
                             _ic = dict(_eic)
+                            # ファイル名称
+                            _new_lbl = st.session_state.get(f"{_e_pfx}_lbl_{_ei}", "").strip()
+                            if _new_lbl:
+                                _ic["label"] = _new_lbl
+                            # プライマリ／セカンダリ
+                            _ic["role"] = "primary" if _ei == _e_primary_idx else "secondary"
+                            # 識別列
                             _vcol = st.session_state.get(f"{_e_pfx}_vcol_{_ei}", "").strip()
                             if _vcol:
                                 _ic["validate_col"] = _vcol
@@ -1850,15 +1885,15 @@ def main():
                 enc_setup_map = {"Shift-JIS (cp932)": "cp932", "UTF-8": "utf-8", "UTF-8 (BOM付き)": "utf-8-sig"}
 
                 for i in range(num_inputs):
-                    saved_lbl_i  = saved_inp_cfg[i]["label"]         if i < len(saved_inp_cfg) else chr(65 + i)
+                    saved_lbl_i  = saved_inp_cfg[i]["label"]         if i < len(saved_inp_cfg) else ""
                     saved_vcol_i = saved_inp_cfg[i].get("validate_col", "") if i < len(saved_inp_cfg) else ""
-                    default_lbl  = multi_inputs[i].get("label") or saved_lbl_i or chr(65 + i)
-                    st.markdown(f"**インプット {chr(65 + i)}**")
-                    ic1, ic2, ic3 = st.columns([1, 3, 1])
+                    default_lbl  = multi_inputs[i].get("label") or saved_lbl_i or ""
+                    st.markdown(f"**インプット {i + 1}**")
+                    ic1, ic2, ic3 = st.columns([2, 3, 1])
                     with ic1:
                         inp_lbl = st.text_input(
-                            "ラベル", value=default_lbl,
-                            key=f"{pfx_ship}_inp_lbl_{i}", placeholder=chr(65 + i),
+                            "ファイル名称", value=default_lbl,
+                            key=f"{pfx_ship}_inp_lbl_{i}", placeholder="例：ネクストエンジンCSV",
                         )
                     with ic3:
                         inp_enc_lbl = st.selectbox(
@@ -1868,7 +1903,7 @@ def main():
                         inp_enc = enc_setup_map[inp_enc_lbl]
                     with ic2:
                         inp_file = st.file_uploader(
-                            f"CSV {chr(65 + i)}", type="csv",
+                            f"CSV {i + 1}", type="csv",
                             key=f"{pfx_ship}_inp_file_{i}", label_visibility="hidden",
                         )
                     st.text_input(
@@ -1884,24 +1919,45 @@ def main():
                             txt  = raw.decode(inp_enc, errors="replace")
                             irows = [r for r in csv.DictReader(io.StringIO(txt)) if any(r.values())]
                             icols = list(irows[0].keys()) if irows else []
-                            multi_inputs[i] = {"label": inp_lbl or chr(65 + i), "rows": irows, "cols": icols}
+                            multi_inputs[i] = {"label": inp_lbl or f"ファイル{i + 1}", "rows": irows, "cols": icols}
                             st.session_state[ship_multi_key] = multi_inputs
                         except Exception as ex:
-                            st.error(f"読み込みエラー ({chr(65 + i)}): {ex}")
+                            st.error(f"読み込みエラー (インプット{i + 1}): {ex}")
 
                     # インライン状態（コンパクト）
                     entry = multi_inputs[i]
                     if entry["rows"]:
-                        lbl_disp = inp_lbl or entry["label"] or chr(65 + i)
+                        lbl_disp = inp_lbl or entry["label"] or f"ファイル{i + 1}"
                         cols_prev = "　".join(
                             f"{lbl_disp}：{c}" for c in entry["cols"][:6]
                         ) + ("…" if len(entry["cols"]) > 6 else "")
                         st.caption(f"✅ {lbl_disp}：{len(entry['cols'])} 列 / {len(entry['rows'])} 行　　{cols_prev}")
                     else:
-                        st.caption(f"⬆️ インプット {chr(65 + i)} のCSVをアップロードしてください")
+                        st.caption(f"⬆️ インプット {i + 1} のCSVをアップロードしてください")
 
                     if i < num_inputs - 1:
                         st.markdown("---")
+
+                # プライマリファイルの選択（複数インプットの場合）
+                if num_inputs > 1:
+                    _primary_name_opts = [
+                        st.session_state.get(f"{pfx_ship}_inp_lbl_{_pi}", "")
+                        or multi_inputs[_pi].get("label", "")
+                        or f"ファイル{_pi + 1}"
+                        for _pi in range(num_inputs)
+                    ]
+                    _saved_primary_idx = next(
+                        (_pi for _pi, _sc in enumerate(saved_inp_cfg) if _sc.get("role") == "primary"),
+                        0,
+                    )
+                    st.selectbox(
+                        "📌 プライマリファイル（出力の行数の基準）",
+                        range(num_inputs),
+                        format_func=lambda x: _primary_name_opts[x],
+                        index=_saved_primary_idx,
+                        key=f"{pfx_ship}_primary_idx",
+                        help="変換時にこのファイルの行数を基準にします。もう一方のファイルは行順で対応付けられます。",
+                    )
 
                 # ＋追加 / 削除ボタン
                 bi1, bi2 = st.columns(2)
@@ -1923,7 +1979,7 @@ def main():
                 _unloaded_parts = []
                 for _si in range(num_inputs):
                     _se   = multi_inputs[_si]
-                    _slbl = st.session_state.get(f"{pfx_ship}_inp_lbl_{_si}", "") or _se.get("label", "") or chr(65 + _si)
+                    _slbl = st.session_state.get(f"{pfx_ship}_inp_lbl_{_si}", "") or _se.get("label", "") or f"ファイル{_si + 1}"
                     if _se.get("rows"):
                         _loaded_parts.append(f"**{_slbl}**：{len(_se['cols'])} 列 / {len(_se['rows'])} 行")
                     else:
@@ -2068,11 +2124,12 @@ def main():
                         st.error("出力フィールドを1つ以上設定してください")
                     else:
                         # _inputs config を構築
-                        _saved_jc = st.session_state.get(ship_join_key, [])
+                        _saved_jc    = st.session_state.get(ship_join_key, [])
+                        _primary_idx = int(st.session_state.get(f"{pfx_ship}_primary_idx", 0))
                         save_inp_cfg = []
                         for i in range(num_inputs):
-                            lbl_i  = st.session_state.get(f"{pfx_ship}_inp_lbl_{i}", "") or multi_inputs[i].get("label", "") or chr(65 + i)
-                            inp_cf = {"label": lbl_i, "role": "primary" if i == 0 else "secondary"}
+                            lbl_i  = st.session_state.get(f"{pfx_ship}_inp_lbl_{i}", "") or multi_inputs[i].get("label", "") or f"ファイル{i + 1}"
+                            inp_cf = {"label": lbl_i, "role": "primary" if i == _primary_idx else "secondary"}
                             if i > 0:
                                 jc_i = _saved_jc[i - 1] if i - 1 < len(_saved_jc) else {}
                                 inp_cf["join_key_from"] = jc_i.get("from_col", "")
