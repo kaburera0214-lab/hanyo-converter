@@ -1637,6 +1637,12 @@ def main():
                         mime="text/csv",
                         key="dl_ship_custom",
                     )
+                    _tpl_upload_url = sel_tpl_data.get("upload_url", "").strip()
+                    if _tpl_upload_url:
+                        st.link_button(
+                            "🌐 アップロードページを開く",
+                            url=_tpl_upload_url,
+                        )
 
         # ── テンプレート設定 ──────────────────────────────────
         with ship_setup_tab:
@@ -1793,6 +1799,19 @@ def main():
 
                 st.divider()
 
+                # アップロード先URL
+                st.subheader("アップロード先URL（任意）")
+                st.caption("生成後に開くアップロードページのURLを設定します。省略可。")
+                st.text_input(
+                    "アップロードURL",
+                    value=_edit_tpl.get("upload_url", ""),
+                    key=f"{_e_pfx}_upload_url",
+                    placeholder="https://...",
+                    label_visibility="collapsed",
+                )
+
+                st.divider()
+
                 if st.button("💾 変更を保存する", type="primary", key="btn_ship_edit_save"):
                     if not _new_out_e:
                         st.error("出力フィールドがありません")
@@ -1819,6 +1838,11 @@ def main():
                         _upd["output_fields"] = _new_out_e
                         _upd["_columns"]      = _avail_e
                         _upd["_inputs"]       = _upd_inputs
+                        _e_upload_url = st.session_state.get(f"{_e_pfx}_upload_url", "").strip()
+                        if _e_upload_url:
+                            _upd["upload_url"] = _e_upload_url
+                        else:
+                            _upd.pop("upload_url", None)
                         ship_tpls[_edit_sel]  = _upd
                         ok, serr = save_shipment_templates_to_github(ship_tpls)
                         if ok:
@@ -2101,6 +2125,20 @@ def main():
 
                 st.divider()
 
+                # ─── ④ アップロード先URL（任意） ──────────────────────
+                st.subheader("④ アップロード先URL（任意）")
+                st.caption("生成後に開くアップロードページのURLを設定します。省略可。")
+                _saved_upload_url = current_ship_tpl_s.get("upload_url", "")
+                st.text_input(
+                    "アップロードURL",
+                    value=_saved_upload_url,
+                    key=f"{pfx_ship}_upload_url",
+                    placeholder="https://...",
+                    label_visibility="collapsed",
+                )
+
+                st.divider()
+
                 # 保存ボタン
                 save_btn_lbl_s = "💾 新規保存する"
                 if st.button(save_btn_lbl_s, type="primary", key="btn_ship_save"):
@@ -2125,11 +2163,15 @@ def main():
                             if vcol_i:
                                 inp_cf["validate_col"] = vcol_i
                             save_inp_cfg.append(inp_cf)
-                        ship_tpls[save_name_s] = {
+                        _upload_url_s = st.session_state.get(f"{pfx_ship}_upload_url", "").strip()
+                        _tpl_body = {
                             "_inputs":       save_inp_cfg,
                             "_columns":      avail_ship_cols,
                             "output_fields": new_output_fields,
                         }
+                        if _upload_url_s:
+                            _tpl_body["upload_url"] = _upload_url_s
+                        ship_tpls[save_name_s] = _tpl_body
                         ok, serr = save_shipment_templates_to_github(ship_tpls)
                         if ok:
                             st.session_state["shipment_templates"] = ship_tpls
