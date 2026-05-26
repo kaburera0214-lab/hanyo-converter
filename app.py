@@ -994,17 +994,18 @@ def main():
 
         mappings = st.session_state.get("custom_mappings", {})
 
-        exec_tab, setup_tab = st.tabs(["▶ 変換実行", "⚙ 紐づけ設定"])
+        s_enc_map = {"Shift-JIS": "shift_jis", "UTF-8": "utf-8", "UTF-8 (BOM付き)": "utf-8-sig"}
+
+        exec_tab, edit_tab, setup_tab = st.tabs(["▶ 変換実行", "✏ テンプレートを編集", "⚙ 新規作成"])
 
         # ── 変換実行 ──────────────────────────────────────
         with exec_tab:
             st.caption("保存済みテンプレートを使って受注CSVを変換します")
             if not mappings:
-                st.info("まず「紐づけ設定」タブでテンプレートを作成してください。")
+                st.info("まず「新規作成」タブでテンプレートを作成してください。")
             else:
                 sel_name = st.selectbox("テンプレート", list(mappings.keys()), key="exec_tpl_select")
-                enc_map  = {"Shift-JIS": "shift_jis", "UTF-8": "utf-8", "UTF-8 (BOM付き)": "utf-8-sig"}
-                enc_lbl  = st.selectbox("文字コード", list(enc_map.keys()), key="exec_encoding")
+                enc_lbl  = st.selectbox("文字コード", list(s_enc_map.keys()), key="exec_encoding")
                 order3   = st.file_uploader("受注CSVをアップロード", type="csv", key="order3_upload")
                 st.divider()
 
@@ -1017,7 +1018,7 @@ def main():
                     with st.spinner("変換中..."):
                         _b3, _o3, _r3, _nf3, _e3 = apply_custom_mapping(
                             order3.read(), mappings[sel_name],
-                            master3 or {}, koguchi_master3, enc_map[enc_lbl],
+                            master3 or {}, koguchi_master3, s_enc_map[enc_lbl],
                         )
                     if _e3:
                         st.error(_e3)
@@ -1031,10 +1032,10 @@ def main():
                 res3 = st.session_state.get("tab3_result")
                 if res3:
                     if res3["not_found"]:
-                        st.error(f"⚠️ 商品マスタに存在しないJANコードがあります（{len(res3['not_found'])} 件）")
+                        st.error(f"⚠️ 商品が見つかりません（{len(res3['not_found'])} 件）")
                         for jan, oids in res3["not_found"].items():
                             st.markdown(f"- **JAN: `{jan}`** → 注文番号: {', '.join(oids)}")
-                        st.warning("上記の商品は入力値のまま出力されています。")
+                        st.warning("上記のJANコードは商品マスタに存在しません。商品マスタを最新版に更新してください。")
                         st.divider()
                     st.success(f"変換完了：{res3['n_orders']} 件の注文 / {res3['n_rows']} 行")
                     st.download_button(
@@ -1051,141 +1052,233 @@ def main():
                                    "https://drive.google.com/drive/u/2/folders/1Xil5jgZvxk3A-3s-W-7eYrcMu4R8qvQX",
                                    use_container_width=True)
 
-        # ── 紐づけ設定 ──────────────────────────────────
-        with setup_tab:
-            st.caption("インプットCSVの列と出力フィールドの対応を定義し、テンプレートとして保存します")
-
-            # ── テンプレート選択 ──────────────────────────
-            tpl_options = ["＋ 新規作成"] + list(mappings.keys())
-            sel_tpl     = st.selectbox("テンプレートを選択・新規作成", tpl_options, key="setup_tpl_select")
-            is_new      = (sel_tpl == "＋ 新規作成")
-
-            if is_new:
-                tpl_name   = st.text_input("新しいテンプレート名", key="new_tpl_name")
-                current_tpl = {}
+        # ── テンプレートを編集 ────────────────────────────
+        with edit_tab:
+            st.caption("既存テンプレートの紐づけを変更・保存します")
+            if not mappings:
+                st.info("まず「新規作成」タブでテンプレートを作成してください。")
             else:
-                tpl_name    = sel_tpl
-                current_tpl = mappings.get(sel_tpl, {})
-                if st.button("🗑 このテンプレートを削除", key="btn_delete_tpl"):
-                    st.session_state["_confirm_delete"] = True
-                if st.session_state.get("_confirm_delete"):
-                    st.warning(f"「{sel_tpl}」を削除します。よろしいですか？")
-                    dc1, dc2 = st.columns(2)
-                    with dc1:
-                        if st.button("はい、削除する", key="btn_delete_confirm"):
-                            del mappings[sel_tpl]
+                sel_edit      = st.selectbox("編集するテンプレート", list(mappings.keys()), key="edit_tpl_sel")
+                current_tpl_e = mappings.get(sel_edit, {})
+
+                # 削除
+                if st.button("🗑 このテンプレートを削除", key="btn_delete_e"):
+                    st.session_state["_confirm_delete_e"] = True
+                if st.session_state.get("_confirm_delete_e"):
+                    st.warning(f"「{sel_edit}」を削除します。よろしいですか？")
+                    dc1e, dc2e = st.columns(2)
+                    with dc1e:
+                        if st.button("はい、削除する", key="btn_delete_confirm_e"):
+                            del mappings[sel_edit]
                             ok, derr = save_mappings_to_github(mappings)
                             if ok:
                                 st.session_state["custom_mappings"] = mappings
-                                st.session_state["_confirm_delete"] = False
+                                st.session_state["_confirm_delete_e"] = False
                                 st.success("削除しました")
                                 st.rerun()
                             else:
                                 st.error(f"削除失敗: {derr}")
-                    with dc2:
-                        if st.button("キャンセル", key="btn_delete_cancel"):
-                            st.session_state["_confirm_delete"] = False
+                    with dc2e:
+                        if st.button("キャンセル", key="btn_delete_cancel_e"):
+                            st.session_state["_confirm_delete_e"] = False
                             st.rerun()
+
+                st.divider()
+
+                # サンプルCSVで列名取得
+                st.subheader("① インプットCSVの列を取得")
+                sc1e, sc2e = st.columns([3, 1])
+                with sc2e:
+                    e_enc_label = st.selectbox("文字コード", list(s_enc_map.keys()), key="edit_enc")
+                with sc1e:
+                    e_sample = st.file_uploader("サンプルCSVをアップロード（列名取得用）",
+                                                type="csv", key="edit_sample")
+
+                col_ss_key_e = f"edit_cols_{sel_edit}"
+                pfx_e        = "ed" + hashlib.md5(sel_edit.encode("utf-8")).hexdigest()[:8]
+
+                if e_sample:
+                    try:
+                        raw_text_e   = e_sample.read().decode(s_enc_map[e_enc_label], errors="replace")
+                        found_cols_e = list(csv.DictReader(io.StringIO(raw_text_e)).fieldnames or [])
+                        prev_cols_e  = st.session_state.get(col_ss_key_e, [])
+                        if found_cols_e != prev_cols_e:
+                            saved_fields_e = current_tpl_e.get("fields", {})
+                            for _f in OUT_HEADERS:
+                                if _f not in saved_fields_e:
+                                    suggested = suggest_column(_f, found_cols_e)
+                                    st.session_state[f"{pfx_e}_t_{_f}"] = "列マッピング"
+                                    st.session_state[f"{pfx_e}_cs_{_f}"] = (
+                                        suggested if suggested in found_cols_e else "（未設定）"
+                                    )
+                        st.session_state[col_ss_key_e] = found_cols_e
+                        st.success(f"{len(found_cols_e)} 列を検出しました")
+                    except Exception as ex:
+                        st.error(f"列名の取得に失敗しました: {ex}")
+
+                avail_cols_e = st.session_state.get(col_ss_key_e, [])
+                if avail_cols_e:
+                    st.caption("検出列: " + "　".join(avail_cols_e))
+                else:
+                    st.info("サンプルCSVをアップロードすると列名が選択肢に表示されます。固定値設定は列なしでも可能です。")
+
+                st.divider()
+
+                # グルーピング・SKU・数量列
+                st.subheader("② 注文グルーピング・SKU列の設定")
+                col_base_e = ["（未設定）"] + avail_cols_e
+                gc1e, gc2e, gc3e = st.columns(3)
+                with gc1e:
+                    gk_cur_e = current_tpl_e.get("group_key_column", "")
+                    gk_idx_e = col_base_e.index(gk_cur_e) if gk_cur_e in col_base_e else 0
+                    group_key_sel_e = st.selectbox(
+                        "注文グループキー列", col_base_e, index=gk_idx_e, key="edit_gk",
+                        help="同一注文の複数行をまとめる列（例：注文番号）",
+                    )
+                with gc2e:
+                    sku_cur_e = current_tpl_e.get("sku_column", "")
+                    sku_idx_e = col_base_e.index(sku_cur_e) if sku_cur_e in col_base_e else 0
+                    sku_sel_e = st.selectbox(
+                        "SKU / JANコード列", col_base_e, index=sku_idx_e, key="edit_sku",
+                        help="JANマスタ検索・個口数計算に使う列",
+                    )
+                with gc3e:
+                    qty_cur_e = current_tpl_e.get("qty_column", "")
+                    qty_idx_e = col_base_e.index(qty_cur_e) if qty_cur_e in col_base_e else 0
+                    qty_sel_e = st.selectbox(
+                        "数量列", col_base_e, index=qty_idx_e, key="edit_qty",
+                        help="個口数計算に使う列",
+                    )
+
+                st.divider()
+
+                # フィールド紐づけ
+                st.subheader("③ 出力フィールドの紐づけ（全38列）")
+                st.caption("🔴 必須　🟡 電話／メールどちらか必須　マークなし：任意　 ／　「空欄」は出力がブランクになります。")
+
+                new_fields_e = {}
+                for group_name, group_fields in FIELD_GROUPS:
+                    with st.expander(group_name, expanded=True):
+                        for field in group_fields:
+                            cur_cfg_e = current_tpl_e.get("fields", {}).get(field, {})
+                            new_fields_e[field] = _field_config_ui(field, cur_cfg_e, avail_cols_e, pfx_e)
+
+                st.divider()
+
+                new_tpl_e = {
+                    "group_key_column": "" if group_key_sel_e == "（未設定）" else group_key_sel_e,
+                    "sku_column":       "" if sku_sel_e       == "（未設定）" else sku_sel_e,
+                    "qty_column":       "" if qty_sel_e        == "（未設定）" else qty_sel_e,
+                    "fields":           new_fields_e,
+                }
+                if st.button("💾 変更を保存する", type="primary", key="btn_save_edit"):
+                    mappings[sel_edit] = new_tpl_e
+                    ok, serr = save_mappings_to_github(mappings)
+                    if ok:
+                        st.session_state["custom_mappings"] = mappings
+                        st.success(f"「{sel_edit}」を保存しました")
+                    else:
+                        st.error(f"保存失敗: {serr}")
+
+        # ── 新規作成 ──────────────────────────────────────
+        with setup_tab:
+            st.caption("新しいテンプレートを作成します")
+
+            tpl_name = st.text_input("新しいテンプレート名", key="new_tpl_name")
 
             st.divider()
 
-            # ── サンプルCSVで列名取得 ──────────────────────
-            st.subheader("① インプットCSVの列を取得")
-            sc1, sc2 = st.columns([3, 1])
-            with sc2:
-                s_enc_map   = {"Shift-JIS": "shift_jis", "UTF-8": "utf-8", "UTF-8 (BOM付き)": "utf-8-sig"}
-                s_enc_label = st.selectbox("文字コード", list(s_enc_map.keys()), key="setup_enc")
-            with sc1:
-                sample_file = st.file_uploader("サンプルCSVをアップロード（列名取得用）",
-                                               type="csv", key="setup_sample")
+            pfx_n        = "nw" + hashlib.md5((tpl_name or "_new").encode("utf-8")).hexdigest()[:8]
+            col_ss_key_n = f"new_cols_{tpl_name}"
 
-            col_ss_key = f"setup_cols_{sel_tpl}"
-            # hash() はプロセス起動ごとに変わるため hashlib で安定した pfx を生成
-            pfx        = "e" + hashlib.md5(sel_tpl.encode("utf-8")).hexdigest()[:8]
-            if sample_file:
+            # サンプルCSVで列名取得
+            st.subheader("① インプットCSVの列を取得")
+            sc1n, sc2n = st.columns([3, 1])
+            with sc2n:
+                n_enc_label = st.selectbox("文字コード", list(s_enc_map.keys()), key="new_enc")
+            with sc1n:
+                n_sample = st.file_uploader("サンプルCSVをアップロード（列名取得用）",
+                                            type="csv", key="new_sample")
+
+            if n_sample:
                 try:
-                    raw_text   = sample_file.read().decode(s_enc_map[s_enc_label], errors="replace")
-                    found_cols = list(csv.DictReader(io.StringIO(raw_text)).fieldnames or [])
-                    prev_cols  = st.session_state.get(col_ss_key, [])
-                    if found_cols != prev_cols:
-                        # 列が変わったら、未保存フィールドに推測値をセッションに直接書き込む
-                        saved_fields = current_tpl.get("fields", {})
+                    raw_text_n   = n_sample.read().decode(s_enc_map[n_enc_label], errors="replace")
+                    found_cols_n = list(csv.DictReader(io.StringIO(raw_text_n)).fieldnames or [])
+                    prev_cols_n  = st.session_state.get(col_ss_key_n, [])
+                    if found_cols_n != prev_cols_n:
                         for _f in OUT_HEADERS:
-                            if _f not in saved_fields:
-                                suggested = suggest_column(_f, found_cols)
-                                st.session_state[f"{pfx}_t_{_f}"] = "列マッピング"
-                                st.session_state[f"{pfx}_cs_{_f}"] = suggested if suggested in found_cols else "（未設定）"
-                    st.session_state[col_ss_key] = found_cols
-                    st.success(f"{len(found_cols)} 列を検出しました")
+                            suggested = suggest_column(_f, found_cols_n)
+                            st.session_state[f"{pfx_n}_t_{_f}"] = "列マッピング"
+                            st.session_state[f"{pfx_n}_cs_{_f}"] = (
+                                suggested if suggested in found_cols_n else "（未設定）"
+                            )
+                    st.session_state[col_ss_key_n] = found_cols_n
+                    st.success(f"{len(found_cols_n)} 列を検出しました")
                 except Exception as ex:
                     st.error(f"列名の取得に失敗しました: {ex}")
 
-            available_columns = st.session_state.get(col_ss_key, [])
-            if available_columns:
-                st.caption("検出列: " + "　".join(available_columns))
+            avail_cols_n = st.session_state.get(col_ss_key_n, [])
+            if avail_cols_n:
+                st.caption("検出列: " + "　".join(avail_cols_n))
             else:
                 st.info("サンプルCSVをアップロードすると列名が選択肢に表示されます。手動入力での固定値設定は列なしでも可能です。")
 
             st.divider()
 
-            # ── グルーピング・SKU・数量列 ───────────────────
+            # グルーピング・SKU・数量列
             st.subheader("② 注文グルーピング・SKU列の設定")
-            col_base = ["（未設定）"] + available_columns
-            gc1, gc2, gc3 = st.columns(3)
-            with gc1:
-                gk_cur = current_tpl.get("group_key_column", "")
-                gk_idx = col_base.index(gk_cur) if gk_cur in col_base else 0
-                group_key_sel = st.selectbox(
-                    "注文グループキー列", col_base, index=gk_idx, key="setup_gk",
+            col_base_n = ["（未設定）"] + avail_cols_n
+            gc1n, gc2n, gc3n = st.columns(3)
+            with gc1n:
+                group_key_sel_n = st.selectbox(
+                    "注文グループキー列", col_base_n, index=0, key="new_gk",
                     help="同一注文の複数行をまとめる列（例：注文番号）",
                 )
-            with gc2:
-                sku_cur = current_tpl.get("sku_column", "")
-                sku_idx = col_base.index(sku_cur) if sku_cur in col_base else 0
-                sku_sel = st.selectbox(
-                    "SKU / JANコード列", col_base, index=sku_idx, key="setup_sku",
+            with gc2n:
+                sku_sel_n = st.selectbox(
+                    "SKU / JANコード列", col_base_n, index=0, key="new_sku",
                     help="JANマスタ検索・個口数計算に使う列",
                 )
-            with gc3:
-                qty_cur = current_tpl.get("qty_column", "")
-                qty_idx = col_base.index(qty_cur) if qty_cur in col_base else 0
-                qty_sel = st.selectbox(
-                    "数量列", col_base, index=qty_idx, key="setup_qty",
+            with gc3n:
+                qty_sel_n = st.selectbox(
+                    "数量列", col_base_n, index=0, key="new_qty",
                     help="個口数計算に使う列",
                 )
 
             st.divider()
 
-            # ── フィールド紐づけ ────────────────────────────
+            # フィールド紐づけ
             st.subheader("③ 出力フィールドの紐づけ（全38列）")
             st.caption("🔴 必須　🟡 電話／メールどちらか必須　マークなし：任意　 ／　「空欄」は出力がブランクになります。")
 
-            new_fields = {}
+            new_fields_n = {}
             for group_name, group_fields in FIELD_GROUPS:
                 with st.expander(group_name, expanded=True):
                     for field in group_fields:
-                        cur_cfg         = current_tpl.get("fields", {}).get(field, {})
-                        new_fields[field] = _field_config_ui(field, cur_cfg, available_columns, pfx)
+                        new_fields_n[field] = _field_config_ui(field, {}, avail_cols_n, pfx_n)
 
             st.divider()
 
-            # ── 保存 ────────────────────────────────────────
-            new_tpl = {
-                "group_key_column": "" if group_key_sel == "（未設定）" else group_key_sel,
-                "sku_column":       "" if sku_sel       == "（未設定）" else sku_sel,
-                "qty_column":       "" if qty_sel        == "（未設定）" else qty_sel,
-                "fields":           new_fields,
+            new_tpl_n = {
+                "group_key_column": "" if group_key_sel_n == "（未設定）" else group_key_sel_n,
+                "sku_column":       "" if sku_sel_n       == "（未設定）" else sku_sel_n,
+                "qty_column":       "" if qty_sel_n        == "（未設定）" else qty_sel_n,
+                "fields":           new_fields_n,
             }
-            btn_label = "💾 新規保存する" if is_new else "💾 変更を保存する"
-            if st.button(btn_label, type="primary", key="btn_save_tpl"):
+            if st.button("💾 新規保存する", type="primary", key="btn_save_new_tpl"):
                 if not tpl_name.strip():
                     st.error("テンプレート名を入力してください")
+                elif tpl_name.strip() in mappings:
+                    st.error(
+                        f"「{tpl_name.strip()}」は既に存在します。"
+                        "「テンプレートを編集」タブから編集してください。"
+                    )
                 else:
-                    mappings[tpl_name.strip()] = new_tpl
+                    mappings[tpl_name.strip()] = new_tpl_n
                     ok, serr = save_mappings_to_github(mappings)
                     if ok:
                         st.session_state["custom_mappings"] = mappings
-                        st.success(f"「{tpl_name.strip()}」を保存しました")
+                        st.success(f"「{tpl_name.strip()}」を作成しました")
                     else:
                         st.error(f"保存失敗: {serr}")
 
