@@ -1367,31 +1367,37 @@ def main():
                     input_cols_fnd = list(all_input_rows[0].keys()) if all_input_rows else []
                     st.session_state[ship_col_ss_key]  = input_cols_fnd
                     st.session_state[ship_rows_ss_key] = all_input_rows
-                    st.success(f"{len(input_cols_fnd)} 列 / {len(all_input_rows)} 行を読み込みました")
                 except Exception as ex:
                     st.error(f"読み込みに失敗しました: {ex}")
 
-            avail_ship_cols = st.session_state.get(ship_col_ss_key, [])
+            # ① の読み込み状態を常時表示（ファイル選択が消えてもデータは保持される）
+            avail_ship_cols  = st.session_state.get(ship_col_ss_key, [])
+            stored_in_rows   = st.session_state.get(ship_rows_ss_key, [])
             if not avail_ship_cols and current_ship_tpl_s.get("_columns"):
                 avail_ship_cols = current_ship_tpl_s["_columns"]
                 st.session_state[ship_col_ss_key] = avail_ship_cols
-            if avail_ship_cols:
+            if stored_in_rows:
+                st.success(f"✅ 読み込み済み：{len(avail_ship_cols)} 列 / {len(stored_in_rows)} 行（②をアップロードしても①のデータは保持されます）")
                 st.caption("検出列: " + "　".join(avail_ship_cols))
+            elif avail_ship_cols:
+                st.caption("検出列: " + "　".join(avail_ship_cols))
+            else:
+                st.info("NE出荷完了CSVをアップロードしてください。")
 
             st.divider()
 
             # ② アウトプット参照CSV（自動検出用）
             st.subheader("② アウトプット参照CSVをアップロード")
-            st.caption("客先に渡す実際の出荷実績CSV（実データ入り）をアップロードすると自動で紐づけを検出します。")
+            st.caption("客先に渡す出荷実績CSV（実データ入り）をアップロードすると自動で紐づけを検出します。")
 
             # アウトプットCSVの文字コードを複数試行して読み込む
             ship_output_csv = st.file_uploader("アウトプット参照CSV（実データ入り）", type="csv", key="ship_output_csv")
             if ship_output_csv:
-                raw_bytes_out = ship_output_csv.read()
+                raw_bytes_out   = ship_output_csv.read()
                 all_output_rows = None
                 for enc_try in ("utf-8-sig", "utf-8", "shift_jis", "cp932"):
                     try:
-                        txt = raw_bytes_out.decode(enc_try)
+                        txt      = raw_bytes_out.decode(enc_try)
                         rows_try = [r for r in csv.DictReader(io.StringIO(txt)) if any(r.values())]
                         if rows_try:
                             all_output_rows = rows_try
@@ -1400,13 +1406,20 @@ def main():
                         continue
                 if all_output_rows:
                     st.session_state[ship_out_rows_key] = all_output_rows
-                    out_cols_fnd = list(all_output_rows[0].keys())
-                    st.success(f"{len(out_cols_fnd)} 列 / {len(all_output_rows)} 行を読み込みました")
                 else:
                     st.error("アウトプットCSVの読み込みに失敗しました")
 
-            has_input_data  = bool(st.session_state.get(ship_rows_ss_key))
-            has_output_data = bool(st.session_state.get(ship_out_rows_key))
+            # ② の読み込み状態を常時表示
+            stored_out_rows = st.session_state.get(ship_out_rows_key, [])
+            if stored_out_rows:
+                out_cols_disp = list(stored_out_rows[0].keys())
+                st.success(f"✅ 読み込み済み：{len(out_cols_disp)} 列 / {len(stored_out_rows)} 行")
+                st.caption("出力列: " + "　".join(out_cols_disp))
+            else:
+                st.info("アウトプット参照CSVをアップロードしてください。")
+
+            has_input_data  = bool(stored_in_rows)
+            has_output_data = bool(stored_out_rows)
 
             if st.button("🔍 自動検出する", type="secondary",
                          disabled=not (has_input_data and has_output_data),
