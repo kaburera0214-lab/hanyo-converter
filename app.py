@@ -725,29 +725,39 @@ def apply_custom_shipment(inputs_data, template, ne_encoding="cp932"):
         if not primary_rows:
             return None, 0, f"プライマリ「{primary_label}」にデータがありません"
 
-        # セカンダリ結合辞書を構築  {label: {結合キー値: row}}
-        secondary_lookups   = {}
-        secondary_from_cols = {}  # label → primary 側の結合列名
+        # セカンダリの結合方式を決定：キーあり→キー結合、キーなし→行順結合
+        secondary_lookups    = {}   # label → {key_val: row}  （キー結合用）
+        secondary_from_cols  = {}   # label → primary側の結合列名
+        secondary_positional = {}   # label → [row, ...]       （行順結合用）
         for cfg in _inputs_cfg:
             lbl = cfg.get("label", "")
             if cfg.get("role") == "primary" or lbl == primary_label:
                 continue
-            jkf = cfg.get("join_key_from", "")  # primary 側列名
-            jkt = cfg.get("join_key_to",   "")  # secondary 側列名
+            jkf = cfg.get("join_key_from", "")
+            jkt = cfg.get("join_key_to",   "")
+            sec_rows = inputs_map.get(lbl, [])
             if lbl and jkt:
-                sec_rows = inputs_map.get(lbl, [])
+                # キーが設定されている場合 → キー結合
                 secondary_lookups[lbl]   = {str(r.get(jkt, "")).strip(): r for r in sec_rows}
                 secondary_from_cols[lbl] = jkf
+            elif lbl:
+                # キーが未設定の場合 → 行順で合体（positional join）
+                secondary_positional[lbl] = sec_rows
 
         # プレフィックス付きマージ行を生成（区切り文字は全角：）
         merged_rows = []
-        for pr in primary_rows:
+        for idx, pr in enumerate(primary_rows):
             merged = {f"{primary_label}：{k}": v for k, v in pr.items()}
+            # キー結合
             for sec_lbl, lookup in secondary_lookups.items():
                 from_col = secondary_from_cols.get(sec_lbl, "")
                 key_val  = str(pr.get(from_col, "")).strip()
                 sec_row  = lookup.get(key_val, {})
                 merged.update({f"{sec_lbl}：{k}": v for k, v in sec_row.items()})
+            # 行順結合
+            for sec_lbl, sec_rows in secondary_positional.items():
+                if idx < len(sec_rows):
+                    merged.update({f"{sec_lbl}：{k}": v for k, v in sec_rows[idx].items()})
             merged_rows.append(merged)
 
     # ── 出力 CSV を生成 ───────────────────────────────────────
@@ -1682,10 +1692,6 @@ def main():
                         _e_lbl  = _eic.get("label", chr(65 + _ei))
                         _e_role = "プライマリ" if _eic.get("role") == "primary" else "セカンダリ"
                         st.markdown(f"**{chr(65 + _ei)}：{_e_lbl}**（{_e_role}）")
-                        if _ei > 0:
-                            _jkf = _eic.get("join_key_from") or "（未設定）"
-                            _jkt = _eic.get("join_key_to")   or "（未設定）"
-                            st.caption(f"　結合キー：プライマリ「{_jkf}」↔ セカンダリ「{_jkt}」")
                 else:
                     st.caption("（インプット設定なし）")
 
@@ -1875,51 +1881,6 @@ def main():
                     )
                 else:
                     st.info("① のCSVをアップロードしてください。（②をアップロードしても①のデータは保持されます）")
-
-                # 結合設定（インプットが2つ以上のとき）
-                if num_inputs > 1:
-                    st.divider()
-                    st.subheader("① 補足：結合キーの設定")
-                    st.caption("セカンダリ（B以降）をプライマリ（A）のどの列で紐づけるか設定します。")
-                    prim_entry = multi_inputs[0]
-                    prim_lbl   = st.session_state.get(f"{pfx_ship}_inp_lbl_0", "") or prim_entry.get("label", "") or "A"
-                    prim_cols  = prim_entry.get("cols", [])
-                    prev_jc    = st.session_state.get(ship_join_key, [])
-                    new_jc     = []
-                    for i in range(1, num_inputs):
-                        sec_entry = multi_inputs[i]
-                        sec_lbl   = st.session_state.get(f"{pfx_ship}_inp_lbl_{i}", "") or sec_entry.get("label", "") or chr(65 + i)
-                        sec_cols  = sec_entry.get("cols", [])
-                        jc_prev   = prev_jc[i - 1] if i - 1 < len(prev_jc) else {}
-                        # テンプレートから既存キーを復元
-                        if not jc_prev and i < len(saved_inp_cfg):
-                            jc_prev = {
-                                "from_col": saved_inp_cfg[i].get("join_key_from", ""),
-                                "to_col":   saved_inp_cfg[i].get("join_key_to", ""),
-                            }
-                        st.markdown(f"**{sec_lbl}（セカンダリ）の結合キー**")
-                        jc1, jc2  = st.columns(2)
-                        from_opts = ["（未設定）"] + prim_cols
-                        to_opts   = ["（未設定）"] + sec_cols
-                        s_from    = jc_prev.get("from_col", "")
-                        s_to      = jc_prev.get("to_col", "")
-                        with jc1:
-                            f_idx = from_opts.index(s_from) if s_from in from_opts else 0
-                            jkf   = st.selectbox(
-                                f"{prim_lbl}（プライマリ）側の列", from_opts, index=f_idx,
-                                key=f"{pfx_ship}_jkf_{i}",
-                            )
-                        with jc2:
-                            t_idx = to_opts.index(s_to) if s_to in to_opts else 0
-                            jkt   = st.selectbox(
-                                f"{sec_lbl}（セカンダリ）側の列", to_opts, index=t_idx,
-                                key=f"{pfx_ship}_jkt_{i}",
-                            )
-                        new_jc.append({
-                            "from_col": "" if jkf == "（未設定）" else jkf,
-                            "to_col":   "" if jkt == "（未設定）" else jkt,
-                        })
-                    st.session_state[ship_join_key] = new_jc
 
                 # avail_ship_cols をプレフィックス付きで構築（全角：区切り）
                 avail_ship_cols = []
