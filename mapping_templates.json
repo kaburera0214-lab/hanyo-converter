@@ -603,7 +603,7 @@
       },
       "作業者欄": {
         "type": "column",
-        "source": ""
+        "source": "発送可能日時"
       },
       "備考": {
         "type": "column",
