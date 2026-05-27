@@ -240,6 +240,6 @@
         "source": "A：キャンペーン情報"
       }
     ],
-    "upload_url": "https://gift-shop-cms.line.biz/shops/838791/orders/delivery"
+    "upload_url": "https://gift-shop-cms.line.biz/shops/838791/orders/delivery?encode=utf8"
   }
 }
