@@ -217,8 +217,16 @@
       },
       {
         "name": "配送ステータス",
-        "type": "fixed",
-        "value": "1"
+        "type": "condition",
+        "branches": [
+          {
+            "if_col": "B：発送伝票番号",
+            "op": "eq",
+            "if_val": "",
+            "then": "0"
+          }
+        ],
+        "default": "1"
       },
       {
         "name": "伝票番号",
