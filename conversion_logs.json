@@ -1,0 +1,11 @@
+[
+  {
+    "ts": "2026-05-28T07:16:07",
+    "func": "shipment_custom",
+    "template": "LINEギフト",
+    "orders": 5,
+    "rows": 5,
+    "error": null,
+    "unknown_jan": 0
+  }
+]
