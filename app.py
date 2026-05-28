@@ -4,7 +4,7 @@ import hashlib
 import io
 import json
 from collections import OrderedDict
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -688,6 +688,67 @@ def save_shipment_templates_to_github(templates):
     return False, r.json().get("message", "不明なエラー")
 
 
+# ── 変換ログ：GitHub 保存・読み込み ─────────────────────────────
+CONVERSION_LOGS_PATH = "conversion_logs.json"
+
+
+def load_logs_from_github():
+    """GitHubから変換ログを読み込む"""
+    token = st.secrets.get("GITHUB_TOKEN", "")
+    repo  = st.secrets.get("GITHUB_REPO", "")
+    if not token or not repo:
+        return []
+    url     = f"https://api.github.com/repos/{repo}/contents/{CONVERSION_LOGS_PATH}"
+    headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github.v3+json"}
+    r = requests.get(url, headers=headers)
+    if not r.ok:
+        return []
+    try:
+        return json.loads(base64.b64decode(r.json()["content"]).decode("utf-8"))
+    except Exception:
+        return []
+
+
+def save_logs_to_github(logs):
+    """ログをGitHubに保存（エラーは無視）"""
+    token = st.secrets.get("GITHUB_TOKEN", "")
+    repo  = st.secrets.get("GITHUB_REPO", "")
+    if not token or not repo:
+        return
+    content_bytes = json.dumps(logs, ensure_ascii=False, indent=2).encode("utf-8")
+    url     = f"https://api.github.com/repos/{repo}/contents/{CONVERSION_LOGS_PATH}"
+    headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github.v3+json"}
+    r   = requests.get(url, headers=headers)
+    sha = r.json().get("sha") if r.ok else None
+    payload = {
+        "message": "update: 変換ログ追記",
+        "content": base64.b64encode(content_bytes).decode(),
+    }
+    if sha:
+        payload["sha"] = sha
+    try:
+        requests.put(url, json=payload, headers=headers, timeout=10)
+    except Exception:
+        pass
+
+
+def append_conversion_log(func, template=None, orders=0, rows=0, error=None, unknown_jan=0):
+    """変換ログに1件追記してGitHubに非同期保存"""
+    if "conversion_logs" not in st.session_state:
+        st.session_state["conversion_logs"] = []
+    entry = {
+        "ts":          datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+        "func":        func,        # "hanyo" / "shipment_std" / "shipment_custom"
+        "template":    template,    # カスタム変換のテンプレート名
+        "orders":      orders,      # 注文/出荷件数
+        "rows":        rows,        # 出力行数
+        "error":       error,       # None or エラー文字列
+        "unknown_jan": unknown_jan, # 不明JAN件数（汎用マスタのみ）
+    }
+    st.session_state["conversion_logs"].append(entry)
+    save_logs_to_github(st.session_state["conversion_logs"])
+
+
 # ── カスタム出荷実績：変換エンジン ───────────────────────────
 def apply_custom_shipment(inputs_data, template, ne_encoding="cp932"):
     """カスタム出荷実績CSV を生成する。
@@ -1361,81 +1422,120 @@ def main():
 
     # ── サイドバー ────────────────────────────────────────
     with st.sidebar:
-        # 商品マスタ
-        st.header("⚙️ 商品マスタ")
-        if st.session_state.get("master"):
-            st.success(st.session_state.get("master_info", "読み込み済み"))
-        else:
-            st.error("マスタ未読み込み")
-        st.caption("マスタを更新する場合のみアップロード")
-        new_master = st.file_uploader("新しい商品マスタCSV（Shift-JIS）", type="csv", key="up_master")
-        if new_master:
-            master, err = load_master_from_upload(new_master.read())
-            if err:
-                st.error(err)
-            else:
-                st.session_state["master"] = master
-                st.session_state["master_info"] = f"{len(master):,} 件（今回アップロード）"
-                st.success(f"更新しました：{len(master):,} 件")
+        # ── ダッシュボード KPI（常時表示） ────────────────────
+        st.markdown("### 📊 ダッシュボード")
+        if "conversion_logs" not in st.session_state:
+            with st.spinner("ログ読み込み中..."):
+                st.session_state["conversion_logs"] = load_logs_from_github()
+        _logs  = st.session_state.get("conversion_logs", [])
+        _today = datetime.now().strftime("%Y-%m-%d")
+        _month = datetime.now().strftime("%Y-%m")
+
+        def _cnt(l):
+            return l.get("orders", 0) or l.get("rows", 0)
+
+        _today_cnt = sum(_cnt(l) for l in _logs if l["ts"].startswith(_today) and not l.get("error"))
+        _month_cnt = sum(_cnt(l) for l in _logs if l["ts"].startswith(_month) and not l.get("error"))
+        _err_cnt   = sum(1 for l in _logs if l.get("error"))
+        _total_ex  = len(_logs)
+        _err_rate  = f"{_err_cnt / _total_ex * 100:.1f}%" if _total_ex > 0 else "0%"
+
+        _sb_c1, _sb_c2 = st.columns(2)
+        _sb_c1.metric("今日", f"{_today_cnt:,}件")
+        _sb_c2.metric("今月", f"{_month_cnt:,}件")
+        _sb_c3, _sb_c4 = st.columns(2)
+        _sb_c3.metric("エラー率", _err_rate)
+        _sb_c4.metric("累計実行", f"{_total_ex}回")
+
+        if _logs:
+            _log_buf = io.StringIO()
+            _log_w   = csv.DictWriter(
+                _log_buf,
+                fieldnames=["ts", "func", "template", "orders", "rows", "error", "unknown_jan"],
+            )
+            _log_w.writeheader()
+            _log_w.writerows(_logs)
+            st.download_button(
+                "⬇️ ログCSVをダウンロード",
+                data=_log_buf.getvalue().encode("utf-8-sig"),
+                file_name=f"conversion_logs_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv",
+                key="dl_logs_sb",
+                use_container_width=True,
+            )
 
         st.divider()
 
-        # 個口数マスタ
-        st.header("📦 個口数マスタ")
-        km = st.session_state.get("koguchi_master", {})
-        rule_count = sum(len(v) for v in km.values())
-        st.caption(f"現在 {rule_count} ルール登録済み")
-
-        koguchi_csv = st.file_uploader(
-            "CSVで一括更新",
-            type="csv",
-            key="up_koguchi",
-            help="JANコード・数量（下限）・数量（上限）・個口数 の列を含むCSV",
-        )
-        if koguchi_csv:
-            new_km, err = load_koguchi_from_csv_bytes(koguchi_csv.read())
-            if err:
-                st.error(err)
+        # ── 商品マスタ（折りたたみ） ──────────────────────────
+        with st.expander("⚙️ 商品マスタ", expanded=False):
+            if st.session_state.get("master"):
+                st.success(st.session_state.get("master_info", "読み込み済み"))
             else:
-                total_rules = sum(len(v) for v in new_km.values())
-                with st.spinner("GitHubに保存中..."):
-                    ok, save_err = save_koguchi_to_github(new_km)
-                if ok:
-                    load_koguchi_from_file.clear()
-                    st.session_state["koguchi_master"] = new_km
-                    km = new_km
-                    st.success(f"読み込み・保存完了：{total_rules} ルール")
+                st.error("マスタ未読み込み")
+            st.caption("マスタを更新する場合のみアップロード")
+            new_master = st.file_uploader("新しい商品マスタCSV（Shift-JIS）", type="csv", key="up_master")
+            if new_master:
+                master, err = load_master_from_upload(new_master.read())
+                if err:
+                    st.error(err)
                 else:
-                    st.warning(f"読み込みは完了しましたが保存に失敗しました（{save_err}）。下のボタンで再試行してください。")
+                    st.session_state["master"] = master
+                    st.session_state["master_info"] = f"{len(master):,} 件（今回アップロード）"
+                    st.success(f"更新しました：{len(master):,} 件")
+
+        # ── 個口数マスタ（折りたたみ） ────────────────────────
+        with st.expander("📦 個口数マスタ", expanded=False):
+            km = st.session_state.get("koguchi_master", {})
+            rule_count = sum(len(v) for v in km.values())
+            st.caption(f"現在 {rule_count} ルール登録済み")
+            koguchi_csv = st.file_uploader(
+                "CSVで一括更新",
+                type="csv",
+                key="up_koguchi",
+                help="JANコード・数量（下限）・数量（上限）・個口数 の列を含むCSV",
+            )
+            if koguchi_csv:
+                new_km, err = load_koguchi_from_csv_bytes(koguchi_csv.read())
+                if err:
+                    st.error(err)
+                else:
+                    total_rules = sum(len(v) for v in new_km.values())
+                    with st.spinner("GitHubに保存中..."):
+                        ok, save_err = save_koguchi_to_github(new_km)
+                    if ok:
+                        load_koguchi_from_file.clear()
+                        st.session_state["koguchi_master"] = new_km
+                        km = new_km
+                        st.success(f"読み込み・保存完了：{total_rules} ルール")
+                    else:
+                        st.warning(f"読み込みは完了しましたが保存に失敗しました（{save_err}）。下のボタンで再試行してください。")
+                        st.session_state["koguchi_master"] = new_km
+                        km = new_km
+            df = koguchi_to_df(km)
+            edited_df = st.data_editor(
+                df,
+                num_rows="dynamic",
+                use_container_width=True,
+                column_config={
+                    "JANコード":    st.column_config.TextColumn("JANコード",    width="small"),
+                    "数量（下限）": st.column_config.NumberColumn("数量（下限）", width="small", min_value=1, step=1),
+                    "数量（上限）": st.column_config.NumberColumn("数量（上限）", width="small", min_value=0, step=1,
+                                    help="空白 or 0 = 上限なし"),
+                    "個口数":       st.column_config.TextColumn("個口数",        width="small", help="数字 or 宅配"),
+                },
+                key="koguchi_editor",
+            )
+            if st.button("💾 GitHubに保存", type="primary", use_container_width=True):
+                new_km = df_to_koguchi(edited_df)
+                ok, err = save_koguchi_to_github(new_km)
+                if ok:
                     st.session_state["koguchi_master"] = new_km
-                    km = new_km
-
-        df = koguchi_to_df(km)
-        edited_df = st.data_editor(
-            df,
-            num_rows="dynamic",
-            use_container_width=True,
-            column_config={
-                "JANコード":    st.column_config.TextColumn("JANコード",    width="small"),
-                "数量（下限）": st.column_config.NumberColumn("数量（下限）", width="small", min_value=1, step=1),
-                "数量（上限）": st.column_config.NumberColumn("数量（上限）", width="small", min_value=0, step=1,
-                                help="空白 or 0 = 上限なし"),
-                "個口数":       st.column_config.TextColumn("個口数",        width="small", help="数字 or 宅配"),
-            },
-            key="koguchi_editor",
-        )
-
-        if st.button("💾 GitHubに保存", type="primary", use_container_width=True):
-            new_km = df_to_koguchi(edited_df)
-            ok, err = save_koguchi_to_github(new_km)
-            if ok:
-                st.session_state["koguchi_master"] = new_km
-                st.success("保存しました")
-            else:
-                st.error(f"保存失敗: {err}")
+                    st.success("保存しました")
+                else:
+                    st.error(f"保存失敗: {err}")
 
     # ── タブ ──────────────────────────────────────────────
-    tab1, tab2 = st.tabs(["① 汎用マスタCSV変換", "② 出荷実績CSV生成"])
+    tab1, tab2, tab_dash = st.tabs(["① 汎用マスタCSV変換", "② 出荷実績CSV生成", "③ ダッシュボード"])
 
     with tab1:
         _t1_std, _t1_custom = st.tabs(["▶ 標準変換", "🔧 カスタム変換"])
@@ -1467,7 +1567,14 @@ def main():
                     "n_rows": _rows, "not_found": _nf,
                     "filename": f"hanyo_master_{datetime.now().strftime('%Y%m%d')}.csv",
                 }
-    
+                append_conversion_log(
+                    "hanyo",
+                    orders=_orders,
+                    rows=_rows,
+                    error=f"不明JAN: {len(_nf)}件" if _nf else None,
+                    unknown_jan=len(_nf),
+                )
+
             res1 = st.session_state.get("tab1_result")
             if res1:
                 if res1["not_found"]:
@@ -1764,11 +1871,13 @@ def main():
                     _bytes2, _rows2, _err2 = convert_shipment(ne_file.read())
                 if _err2:
                     st.error(_err2)
+                    append_conversion_log("shipment_std", error=_err2)
                 else:
                     st.session_state["tab2_result"] = {
                         "csv_bytes": _bytes2, "n_rows": _rows2,
                         "filename": f"{datetime.now().strftime('%Y%m%d')}_[出荷代行]出荷実績.csv",
                     }
+                    append_conversion_log("shipment_std", rows=_rows2, orders=_rows2)
 
             res2 = st.session_state.get("tab2_result")
             if res2:
@@ -1857,11 +1966,22 @@ def main():
                                 _sb, _sr, _se = apply_custom_shipment(cust_inputs_data, sel_tpl_data)
                             if _se:
                                 st.error(_se)
+                                append_conversion_log(
+                                    "shipment_custom",
+                                    template=sel_ship_tpl,
+                                    error=_se,
+                                )
                             else:
                                 st.session_state["tab2_custom_result"] = {
                                     "csv_bytes": _sb, "n_rows": _sr,
                                     "filename": f"{datetime.now().strftime('%Y%m%d')}_{sel_ship_tpl}_出荷実績.csv",
                                 }
+                                append_conversion_log(
+                                    "shipment_custom",
+                                    template=sel_ship_tpl,
+                                    rows=_sr,
+                                    orders=_sr,
+                                )
                     else:
                         # ── 旧来シングル入力モード ────────────────────────
                         ship_ne_enc_lbl = st.selectbox("文字コード", list(cust_enc_map.keys()), key="ship_custom_enc")
@@ -1876,12 +1996,23 @@ def main():
                                 )
                             if _se:
                                 st.error(_se)
+                                append_conversion_log(
+                                    "shipment_custom",
+                                    template=sel_ship_tpl,
+                                    error=_se,
+                                )
                             else:
                                 st.session_state["tab2_custom_result"] = {
                                     "csv_bytes": _sb, "n_rows": _sr,
                                     "filename": f"{datetime.now().strftime('%Y%m%d')}_{sel_ship_tpl}_出荷実績.csv",
                                 }
-    
+                                append_conversion_log(
+                                    "shipment_custom",
+                                    template=sel_ship_tpl,
+                                    rows=_sr,
+                                    orders=_sr,
+                                )
+
                     res2c = st.session_state.get("tab2_custom_result")
                     if res2c:
                         st.success(f"生成完了：{res2c['n_rows']} 件")
@@ -2421,6 +2552,135 @@ def main():
                             st.success(f"「{save_name_s}」を保存しました")
                         else:
                             st.error(f"保存失敗: {serr}")
+
+
+    # ── Tab③ ダッシュボード ────────────────────────────────
+    with tab_dash:
+        st.header("📊 変換実績ダッシュボード")
+
+        _dlogs = st.session_state.get("conversion_logs", [])
+        if not _dlogs:
+            st.info("まだ変換ログがありません。変換を実行するとここに集計されます。")
+        else:
+            # 期間フィルター
+            _d_period = st.selectbox(
+                "集計期間",
+                ["今日", "今週", "今月", "全期間"],
+                key="dash_period",
+            )
+            _now = datetime.now()
+            if _d_period == "今日":
+                _d_filtered = [l for l in _dlogs if l["ts"].startswith(_now.strftime("%Y-%m-%d"))]
+            elif _d_period == "今週":
+                _week_start = (_now - timedelta(days=_now.weekday())).strftime("%Y-%m-%d")
+                _d_filtered = [l for l in _dlogs if l["ts"] >= _week_start]
+            elif _d_period == "今月":
+                _d_filtered = [l for l in _dlogs if l["ts"].startswith(_now.strftime("%Y-%m"))]
+            else:
+                _d_filtered = _dlogs
+
+            # KPI行
+            def _d_cnt(l):
+                return l.get("orders", 0) or l.get("rows", 0)
+
+            _d_total  = sum(_d_cnt(l) for l in _d_filtered if not l.get("error"))
+            _d_execs  = len(_d_filtered)
+            _d_errors = sum(1 for l in _d_filtered if l.get("error"))
+            _d_unk    = sum(l.get("unknown_jan", 0) for l in _d_filtered)
+
+            _dc1, _dc2, _dc3, _dc4 = st.columns(4)
+            _dc1.metric("変換件数合計", f"{_d_total:,}件")
+            _dc2.metric("実行回数",     f"{_d_execs}回")
+            _dc3.metric("エラー回数",   f"{_d_errors}回")
+            _dc4.metric("不明JAN合計",  f"{_d_unk}件")
+
+            st.divider()
+
+            # チャート
+            _d_df = pd.DataFrame(_d_filtered)
+            _d_df["dt"]    = pd.to_datetime(_d_df["ts"])
+            _d_df["date"]  = _d_df["dt"].dt.strftime("%m/%d")
+            _d_df["hour"]  = _d_df["dt"].dt.hour
+            _d_df["count"] = _d_df.apply(_d_cnt, axis=1)
+            _func_label = {"hanyo": "①汎用マスタ変換", "shipment_std": "②標準出荷", "shipment_custom": "②カスタム出荷"}
+            _d_df["func_label"] = _d_df["func"].map(_func_label).fillna(_d_df["func"])
+
+            _ch1, _ch2 = st.columns(2)
+            with _ch1:
+                st.subheader("日別 変換件数")
+                _daily = _d_df.groupby("date")["count"].sum().reset_index().set_index("date")
+                st.bar_chart(_daily)
+            with _ch2:
+                st.subheader("時間帯別 変換件数（0〜23時）")
+                _hourly = _d_df.groupby("hour")["count"].sum().reindex(range(24), fill_value=0)
+                _hourly.index = [f"{h}時" for h in _hourly.index]
+                st.bar_chart(_hourly)
+
+            _ch3, _ch4 = st.columns(2)
+            with _ch3:
+                st.subheader("機能別 実行回数")
+                _func_cnt = _d_df["func_label"].value_counts()
+                st.bar_chart(_func_cnt)
+            with _ch4:
+                st.subheader("テンプレート別 利用回数")
+                _tpl_df = _d_df[_d_df["template"].notna() & (_d_df["template"] != "")]
+                if not _tpl_df.empty:
+                    st.bar_chart(_tpl_df["template"].value_counts())
+                else:
+                    st.caption("テンプレート利用ログなし")
+
+            st.divider()
+
+            # エラーログ
+            st.subheader("エラーログ")
+            _err_df = _d_df[_d_df["error"].notna() & (_d_df["error"] != "")]
+            if not _err_df.empty:
+                st.dataframe(
+                    _err_df[["ts", "func_label", "template", "error"]].rename(columns={
+                        "ts": "日時", "func_label": "機能", "template": "テンプレート", "error": "エラー内容"
+                    }),
+                    use_container_width=True,
+                )
+            else:
+                st.success("✅ エラーなし")
+
+            st.divider()
+
+            # ダウンロード
+            st.subheader("データダウンロード")
+            _dl_c1, _dl_c2 = st.columns(2)
+            with _dl_c1:
+                _dl_buf = io.StringIO()
+                _dl_w   = csv.DictWriter(
+                    _dl_buf,
+                    fieldnames=["ts", "func", "template", "orders", "rows", "error", "unknown_jan"],
+                )
+                _dl_w.writeheader()
+                _dl_w.writerows(_d_filtered)
+                st.download_button(
+                    f"⬇️ 絞り込み中のログ（{len(_d_filtered)}件）",
+                    data=_dl_buf.getvalue().encode("utf-8-sig"),
+                    file_name=f"conversion_logs_{_d_period}_{datetime.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv",
+                    key="dl_dash_filtered",
+                    use_container_width=True,
+                )
+            with _dl_c2:
+                _all_buf = io.StringIO()
+                _all_w   = csv.DictWriter(
+                    _all_buf,
+                    fieldnames=["ts", "func", "template", "orders", "rows", "error", "unknown_jan"],
+                )
+                _all_w.writeheader()
+                _all_w.writerows(_dlogs)
+                st.download_button(
+                    f"⬇️ 全ログ（{len(_dlogs)}件）",
+                    data=_all_buf.getvalue().encode("utf-8-sig"),
+                    file_name=f"conversion_logs_all_{datetime.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv",
+                    key="dl_dash_all",
+                    use_container_width=True,
+                )
 
 
 if __name__ == "__main__":
