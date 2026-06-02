@@ -97,7 +97,20 @@ else:
         with st.expander(label):
             st.markdown(f"**質問内容：** {q['質問本文']}")
             if q["画像URL"]:
-                st.markdown(f"**画像：** [Google Driveで開く]({q['画像URL']})")
+                st.markdown("**画像：**")
+                urls = q["画像URL"].split("\n")
+                cols = st.columns(min(len(urls), 3))
+                for i, url in enumerate(urls):
+                    if url.strip():
+                        # Google DriveのURLをダイレクト表示用に変換
+                        if "drive.google.com/file/d/" in url:
+                            file_id = url.split("/file/d/")[1].split("/")[0]
+                            img_url = f"https://drive.google.com/thumbnail?id={file_id}&sz=w400"
+                        else:
+                            img_url = url
+                        with cols[i % 3]:
+                            st.image(img_url, use_container_width=True)
+                            st.caption(f"[拡大表示]({url})")
             if q["タグ"]:
                 st.markdown(f"**タグ：** {', '.join(q['タグ'])}")
             st.divider()

@@ -87,18 +87,7 @@ if submitted:
         st.error("タイトルと質問内容は必須です")
     else:
         with st.spinner("送信中..."):
-            # 画像をGoogle Driveにアップロード
-            画像URLs = []
-            if 画像ファイル:
-                today = datetime.now().strftime("%Y%m%d")
-                for f in 画像ファイル:
-                    compressed = compress_image(f.read())
-                    unique_id = str(uuid.uuid4())[:8]
-                    filename = f"{today}_{unique_id}.jpg"
-                    url = upload_to_drive(compressed, filename)
-                    画像URLs.append(url)
-
-            # Notionに保存
+            # 先にNotionにページを作成してIDを取得
             client = Client(auth=NOTION_API_KEY)
             props = {
                 "質問タイトル": {"title": [{"text": {"content": タイトル}}]},
@@ -108,13 +97,33 @@ if submitted:
                 "質問日時": {"date": {"start": datetime.now().isoformat()}},
                 "タグ": {"multi_select": [{"name": t} for t in タグ]},
             }
-            if 画像URLs:
-                props["画像URL"] = {"rich_text": [{"text": {"content": "\n".join(画像URLs)}}]}
-
-            client.pages.create(**{
+            page = client.pages.create(**{
                 "parent": {"database_id": DATABASE_ID},
                 "properties": props
             })
+            page_id = page["id"]
+
+            # 採番IDを取得
+            page_detail = client.pages.retrieve(page_id=page_id)
+            unique_num = page_detail["properties"].get("ID", {}).get("unique_id", {}).get("number", 0)
+
+            # 画像をGoogle Driveにアップロード（採番ID使用）
+            画像URLs = []
+            if 画像ファイル:
+                today = datetime.now().strftime("%Y%m%d")
+                for i, f in enumerate(画像ファイル, start=1):
+                    compressed = compress_image(f.read())
+                    filename = f"{today}_{unique_num:04d}_{i:02d}.jpg"
+                    url = upload_to_drive(compressed, filename)
+                    画像URLs.append(url)
+
+                # 画像URLをNotionに更新
+                client.pages.update(
+                    page_id=page_id,
+                    properties={
+                        "画像URL": {"rich_text": [{"text": {"content": "\n".join(画像URLs)}}]}
+                    }
+                )
 
         msg = "質問を送信しました！"
         if 画像URLs:
