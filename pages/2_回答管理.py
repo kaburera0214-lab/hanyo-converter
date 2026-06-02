@@ -17,10 +17,10 @@ def get_text(prop):
 
 def get_questions():
     client = Client(auth=NOTION_API_KEY)
-    res = client.databases.query(
-        database_id=DATABASE_ID,
-        sorts=[{"property": "質問日時", "direction": "descending"}]
-    )
+    res = client.databases.query(**{
+        "database_id": DATABASE_ID,
+        "sorts": [{"property": "質問日時", "direction": "descending"}]
+    })
     questions = []
     for page in res["results"]:
         p = page["properties"]

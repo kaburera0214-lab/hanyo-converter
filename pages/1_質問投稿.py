@@ -2,7 +2,7 @@ import streamlit as st
 from notion_client import Client
 from datetime import datetime
 
-notion = Client(auth=st.secrets["NOTION_API_KEY"])
+NOTION_API_KEY = st.secrets["NOTION_API_KEY"]
 DATABASE_ID = st.secrets["NOTION_DATABASE_ID"]
 
 TAGS = ["デザイン", "納期", "仕様変更", "費用", "その他"]
@@ -20,9 +20,10 @@ if submitted:
     if not タイトル or not 質問本文:
         st.error("タイトルと質問内容は必須です")
     else:
-        notion.pages.create(
-            parent={"database_id": DATABASE_ID},
-            properties={
+        client = Client(auth=NOTION_API_KEY)
+        client.pages.create(**{
+            "parent": {"database_id": DATABASE_ID},
+            "properties": {
                 "質問タイトル": {"title": [{"text": {"content": タイトル}}]},
                 "質問本文": {"rich_text": [{"text": {"content": 質問本文}}]},
                 "ステータス": {"select": {"name": "未回答"}},
@@ -30,5 +31,5 @@ if submitted:
                 "質問日時": {"date": {"start": datetime.now().isoformat()}},
                 "タグ": {"multi_select": [{"name": t} for t in タグ]},
             }
-        )
+        })
         st.success("質問を送信しました。回答をお待ちください。")
