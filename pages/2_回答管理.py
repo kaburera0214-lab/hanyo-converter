@@ -20,6 +20,21 @@ def get_database_id():
 DATABASE_ID = get_database_id()
 ANTHROPIC_API_KEY = st.secrets.get("ANTHROPIC_API_KEY", "")
 
+# 画像URLプロパティが未存在なら自動追加
+def ensure_properties():
+    try:
+        client = Client(auth=NOTION_API_KEY)
+        db = client.databases.retrieve(database_id=DATABASE_ID)
+        if "画像URL" not in db["properties"]:
+            client.databases.update(
+                database_id=DATABASE_ID,
+                properties={"画像URL": {"rich_text": {}}}
+            )
+    except Exception:
+        pass
+
+ensure_properties()
+
 REASON_CATEGORIES = ["スピード優先", "品質優先", "コスト優先", "顧客対応", "社内ルール", "その他"]
 
 def get_text(prop):
