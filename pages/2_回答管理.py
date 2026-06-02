@@ -6,8 +6,18 @@ st.set_page_config(page_title="回答管理", layout="wide")
 st.title("✅ 回答・管理（パピー用）")
 
 NOTION_API_KEY = "".join(c for c in st.secrets["NOTION_API_KEY"] if c.isprintable() and ord(c) < 128)
-DATABASE_ID = st.secrets["NOTION_DATABASE_ID"]
+PAGE_ID = "37384fb235d780b88a46eb8d619a19ad"  # ページID（固定）
 ANTHROPIC_API_KEY = st.secrets.get("ANTHROPIC_API_KEY", "")
+
+def get_database_id():
+    client = Client(auth=NOTION_API_KEY)
+    children = client.blocks.children.list(block_id=PAGE_ID)
+    for block in children["results"]:
+        if block["type"] == "child_database":
+            return block["id"]
+    return PAGE_ID
+
+DATABASE_ID = get_database_id()
 
 # 画像URLプロパティが未存在なら自動追加
 def ensure_properties():
