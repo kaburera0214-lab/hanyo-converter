@@ -7,7 +7,7 @@ st.title("✅ 回答・管理（パピー用）")
 
 NOTION_API_KEY = "".join(c for c in st.secrets["NOTION_API_KEY"] if c.isprintable() and ord(c) < 128)
 PAGE_ID = "37384fb235d780b88a46eb8d619a19ad"  # ページID（固定）
-ANTHROPIC_API_KEY = st.secrets.get("ANTHROPIC_API_KEY", "")
+GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", "")
 
 def get_database_id():
     client = Client(auth=NOTION_API_KEY)
@@ -65,22 +65,26 @@ def get_questions():
     return questions
 
 def generate_draft(question, questions):
-    if not ANTHROPIC_API_KEY:
-        return "（Claude APIキーが未設定のためドラフト生成できません）"
-    import anthropic
+    if not GEMINI_API_KEY:
+        return "（Gemini APIキーが未設定のためドラフト生成できません）"
+    import google.generativeai as genai
     knowledge = [q for q in questions if q["ステータス"] == "回答済"]
     knowledge_text = "\n\n".join([
         f"【事例】\n質問: {q['質問本文']}\n回答: {q['回答本文']}\n判断理由: {', '.join(q['判断理由カテゴリ'])} / {q['判断理由詳細']}"
         for q in knowledge
     ]) or "（まだ蓄積データがありません）"
-    ac = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-    message = ac.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=1024,
-        system=f"あなたはパピー社のナレッジアシスタントです。過去の判断事例をもとに回答ドラフトを作成してください。\n\n【過去の判断事例】\n{knowledge_text}",
-        messages=[{"role": "user", "content": f"質問: {question['質問本文']}"}]
-    )
-    return message.content[0].text
+    genai.configure(api_key=GEMINI_API_KEY)
+    model = genai.GenerativeModel("gemini-1.5-flash")
+    prompt = f"""あなたはパピー社のナレッジアシスタントです。過去の判断事例をもとに回答ドラフトを作成してください。
+
+【過去の判断事例】
+{knowledge_text}
+
+質問: {question['質問本文']}
+
+上記の質問に対する回答ドラフトを作成してください。"""
+    response = model.generate_content(prompt)
+    return response.text
 
 if st.button("🔄 最新の質問を読み込む"):
     st.rerun()
