@@ -16,7 +16,6 @@ def get_text(prop):
     items = prop.get("rich_text", [])
     return items[0]["plain_text"] if items else ""
 
-@st.cache_data(ttl=30)
 def get_questions():
     res = notion.databases.query(
         database_id=DATABASE_ID,
