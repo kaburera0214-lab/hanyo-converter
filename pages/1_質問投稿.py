@@ -12,7 +12,13 @@ NOTION_API_KEY = "".join(c for c in st.secrets["NOTION_API_KEY"] if c.isprintabl
 PAGE_ID = "37384fb235d780b88a46eb8d619a19ad"  # ページID（固定）
 GDRIVE_FOLDER_ID = "1z7yCYxDGO3lVVKrBmG8mL1apH6Pfl4Xu"
 
-TAGS = ["デザイン", "納期", "仕様変更", "費用", "その他"]
+def get_tags():
+    client = Client(auth=NOTION_API_KEY)
+    db = client.databases.retrieve(database_id=DATABASE_ID)
+    options = db["properties"].get("タグ", {}).get("multi_select", {}).get("options", [])
+    return [o["name"] for o in options]
+
+TAGS = get_tags()
 MAX_FILE_SIZE = 4.5 * 1024 * 1024  # 4.5MB
 
 def get_database_id():
@@ -79,14 +85,17 @@ with st.form("question_form"):
     タイトル = st.text_input("質問タイトル *", placeholder="例：ヘッダーの色変更について")
     質問本文 = st.text_area("質問内容 *", height=150, placeholder="詳しい内容を記入してください")
     画像ファイル = st.file_uploader("画像（複数可）", type=["png", "jpg", "jpeg", "gif", "webp"], accept_multiple_files=True)
-    タグ = st.multiselect("タグ（任意）", TAGS)
+    タグ = st.multiselect("タグ（必須）*", TAGS)
     submitted = st.form_submit_button("質問を送信する")
 
 if submitted:
     if not タイトル or not 質問本文:
         st.error("タイトルと質問内容は必須です")
+    elif not タグ:
+        st.error("タグを選択してください")
     else:
         with st.spinner("送信中..."):
+
             # 先にNotionにページを作成してIDを取得
             client = Client(auth=NOTION_API_KEY)
             props = {
