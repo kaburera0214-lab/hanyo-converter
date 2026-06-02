@@ -6,7 +6,18 @@ from PIL import Image
 import io
 
 NOTION_API_KEY = "".join(c for c in st.secrets["NOTION_API_KEY"] if c.isprintable() and ord(c) < 128)
-DATABASE_ID = st.secrets["NOTION_DATABASE_ID"]
+PAGE_ID = st.secrets["NOTION_DATABASE_ID"]
+
+def get_database_id():
+    from notion_client import Client as _Client
+    client = _Client(auth=NOTION_API_KEY)
+    children = client.blocks.children.list(block_id=PAGE_ID)
+    for block in children["results"]:
+        if block["type"] == "child_database":
+            return block["id"]
+    return PAGE_ID
+
+DATABASE_ID = get_database_id()
 
 TAGS = ["デザイン", "納期", "仕様変更", "費用", "その他"]
 MAX_FILE_SIZE = 4.5 * 1024 * 1024  # 4.5MB（余裕を持って5MB未満に）
