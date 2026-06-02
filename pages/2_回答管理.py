@@ -6,7 +6,18 @@ st.set_page_config(page_title="回答管理", layout="wide")
 st.title("✅ 回答・管理（パピー用）")
 
 NOTION_API_KEY = "".join(c for c in st.secrets["NOTION_API_KEY"] if c.isprintable() and ord(c) < 128)
-DATABASE_ID = st.secrets["NOTION_DATABASE_ID"]
+PAGE_ID = st.secrets["NOTION_DATABASE_ID"]
+
+# ページ内のデータベースIDを検索
+def get_database_id():
+    client = Client(auth=NOTION_API_KEY)
+    children = client.blocks.children.list(block_id=PAGE_ID)
+    for block in children["results"]:
+        if block["type"] == "child_database":
+            return block["id"]
+    return PAGE_ID  # フォールバック
+
+DATABASE_ID = get_database_id()
 ANTHROPIC_API_KEY = st.secrets.get("ANTHROPIC_API_KEY", "")
 
 REASON_CATEGORIES = ["スピード優先", "品質優先", "コスト優先", "顧客対応", "社内ルール", "その他"]
