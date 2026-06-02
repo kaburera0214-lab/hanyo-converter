@@ -46,6 +46,7 @@ def get_questions():
             "判断理由詳細": get_text(p["判断理由詳細"]),
             "タグ": [s["name"] for s in p["タグ"]["multi_select"]],
             "質問日時": p["質問日時"]["date"]["start"] if p["質問日時"]["date"] else "",
+            "画像URL": get_text(p.get("画像URL", {})),
         })
     return questions
 
@@ -81,6 +82,8 @@ else:
         label = f"{emoji} {q['タイトル']}　（{q['ステータス']}）　{q['質問日時'][:10] if q['質問日時'] else ''}"
         with st.expander(label):
             st.markdown(f"**質問内容：** {q['質問本文']}")
+            if q["画像URL"]:
+                st.markdown(f"**画像：** [Google Driveで開く]({q['画像URL']})")
             if q["タグ"]:
                 st.markdown(f"**タグ：** {', '.join(q['タグ'])}")
             st.divider()

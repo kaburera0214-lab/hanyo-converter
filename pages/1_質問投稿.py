@@ -13,6 +13,7 @@ st.title("📝 質問を送る（インハナさん用）")
 with st.form("question_form"):
     タイトル = st.text_input("質問タイトル *", placeholder="例：ヘッダーの色変更について")
     質問本文 = st.text_area("質問内容 *", height=150, placeholder="詳しい内容を記入してください")
+    画像URL = st.text_input("画像URL（Google Drive）", placeholder="https://drive.google.com/...")
     タグ = st.multiselect("タグ（任意）", TAGS)
     submitted = st.form_submit_button("質問を送信する")
 
@@ -21,15 +22,19 @@ if submitted:
         st.error("タイトルと質問内容は必須です")
     else:
         client = Client(auth=NOTION_API_KEY)
+        props = {
+            "質問タイトル": {"title": [{"text": {"content": タイトル}}]},
+            "質問本文": {"rich_text": [{"text": {"content": 質問本文}}]},
+            "ステータス": {"select": {"name": "未回答"}},
+            "質問者": {"select": {"name": "インハナ"}},
+            "質問日時": {"date": {"start": datetime.now().isoformat()}},
+            "タグ": {"multi_select": [{"name": t} for t in タグ]},
+        }
+        if 画像URL.strip():
+            props["画像URL"] = {"rich_text": [{"text": {"content": 画像URL.strip()}}]}
+
         client.pages.create(**{
             "parent": {"database_id": DATABASE_ID},
-            "properties": {
-                "質問タイトル": {"title": [{"text": {"content": タイトル}}]},
-                "質問本文": {"rich_text": [{"text": {"content": 質問本文}}]},
-                "ステータス": {"select": {"name": "未回答"}},
-                "質問者": {"select": {"name": "インハナ"}},
-                "質問日時": {"date": {"start": datetime.now().isoformat()}},
-                "タグ": {"multi_select": [{"name": t} for t in タグ]},
-            }
+            "properties": props
         })
         st.success("質問を送信しました。回答をお待ちください。")
