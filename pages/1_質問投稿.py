@@ -132,32 +132,23 @@ if submitted:
                         upload_url = upload_data.get("upload_url")
 
                         # ファイル本体を送信
-                        put_res = requests.put(
+                        requests.put(
                             upload_url,
                             headers={"Authorization": f"Bearer {NOTION_API_KEY}"},
                             files={"file": (filename, io.BytesIO(compressed), "image/jpeg")}
                         )
 
-                        # アップロード完了を確認
-                        if put_res.status_code == 200:
-                            import time
-                            time.sleep(1)  # 完了待ち
-                            status_res = requests.get(
-                                f"https://api.notion.com/v1/file_uploads/{upload_id}",
-                                headers={
-                                    "Authorization": f"Bearer {NOTION_API_KEY}",
-                                    "Notion-Version": "2022-06-28"
-                                }
-                            )
-                            if status_res.status_code == 200 and status_res.json().get("status") == "uploaded":
-                                children.append({
-                                    "object": "block",
-                                    "type": "image",
-                                    "image": {
-                                        "type": "file_upload",
-                                        "file_upload": {"id": upload_id}
-                                    }
-                                })
+                        import time
+                        time.sleep(2)  # アップロード完了待ち
+
+                        children.append({
+                            "object": "block",
+                            "type": "image",
+                            "image": {
+                                "type": "file_upload",
+                                "file_upload": {"id": upload_id}
+                            }
+                        })
 
                 if children:
                     client.blocks.children.append(
