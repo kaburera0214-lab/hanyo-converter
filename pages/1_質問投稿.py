@@ -2,8 +2,7 @@ import streamlit as st
 from notion_client import Client
 from datetime import datetime
 
-_raw_key = "".join(c for c in st.secrets["NOTION_API_KEY"] if c.isprintable() and ord(c) < 128)
-NOTION_API_KEY = _raw_key if _raw_key.startswith("secret_") else f"secret_{_raw_key}"
+NOTION_API_KEY = "".join(c for c in st.secrets["NOTION_API_KEY"] if c.isprintable() and ord(c) < 128)
 DATABASE_ID = st.secrets["NOTION_DATABASE_ID"]
 
 TAGS = ["デザイン", "納期", "仕様変更", "費用", "その他"]

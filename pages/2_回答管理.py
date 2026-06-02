@@ -5,8 +5,7 @@ from datetime import datetime
 st.set_page_config(page_title="回答管理", layout="wide")
 st.title("✅ 回答・管理（パピー用）")
 
-_raw_key = "".join(c for c in st.secrets["NOTION_API_KEY"] if c.isprintable() and ord(c) < 128)
-NOTION_API_KEY = _raw_key if _raw_key.startswith("secret_") else f"secret_{_raw_key}"
+NOTION_API_KEY = "".join(c for c in st.secrets["NOTION_API_KEY"] if c.isprintable() and ord(c) < 128)
 DATABASE_ID = st.secrets["NOTION_DATABASE_ID"]
 ANTHROPIC_API_KEY = st.secrets.get("ANTHROPIC_API_KEY", "")
 
