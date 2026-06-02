@@ -20,6 +20,8 @@ def get_database_id():
 DATABASE_ID = get_database_id()
 ANTHROPIC_API_KEY = st.secrets.get("ANTHROPIC_API_KEY", "")
 
+st.caption(f"🔧 DB ID: `{DATABASE_ID}`")
+
 # 画像URLプロパティが未存在なら自動追加
 def ensure_properties():
     try:
