@@ -37,7 +37,7 @@ def get_questions():
         p = page["properties"]
         questions.append({
             "id": page["id"],
-            "タイトル": p["質問タイトル"]["title"][0]["plain_text"] if p["質問タイトル"]["title"] else "",
+            "タイトル": p["質問タイトル"]["title"][0]["plain_text"] if p.get("質問タイトル", {}).get("title") else "",
             "質問本文": get_text(p["質問本文"]),
             "ステータス": p["ステータス"]["select"]["name"] if p["ステータス"]["select"] else "未回答",
             "回答本文": get_text(p["回答本文"]),
