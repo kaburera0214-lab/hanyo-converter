@@ -3,3 +3,5 @@ pandas>=2.0.0
 requests>=2.31.0
 notion-client==2.2.1
 anthropic
+google-api-python-client
+google-auth
