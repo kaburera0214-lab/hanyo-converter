@@ -29,7 +29,8 @@ def upload_to_drive(file_bytes, filename, mimetype):
     file = service.files().create(
         body=file_metadata,
         media_body=media,
-        fields="id"
+        fields="id",
+        supportsAllDrives=True
     ).execute()
     file_id = file.get("id")
     # 閲覧リンクを公開
