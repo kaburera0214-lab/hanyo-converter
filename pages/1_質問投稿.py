@@ -12,13 +12,6 @@ NOTION_API_KEY = "".join(c for c in st.secrets["NOTION_API_KEY"] if c.isprintabl
 PAGE_ID = "37384fb235d780b88a46eb8d619a19ad"  # ページID（固定）
 GDRIVE_FOLDER_ID = "1z7yCYxDGO3lVVKrBmG8mL1apH6Pfl4Xu"
 
-def get_tags():
-    client = Client(auth=NOTION_API_KEY)
-    db = client.databases.retrieve(database_id=DATABASE_ID)
-    options = db["properties"].get("タグ", {}).get("multi_select", {}).get("options", [])
-    return [o["name"] for o in options]
-
-TAGS = get_tags()
 MAX_FILE_SIZE = 4.5 * 1024 * 1024  # 4.5MB
 
 def get_database_id():
@@ -30,6 +23,14 @@ def get_database_id():
     return PAGE_ID
 
 DATABASE_ID = get_database_id()
+
+def get_tags():
+    client = Client(auth=NOTION_API_KEY)
+    db = client.databases.retrieve(database_id=DATABASE_ID)
+    options = db["properties"].get("タグ", {}).get("multi_select", {}).get("options", [])
+    return [o["name"] for o in options]
+
+TAGS = get_tags()
 
 def compress_image(file_bytes):
     img = Image.open(io.BytesIO(file_bytes))
