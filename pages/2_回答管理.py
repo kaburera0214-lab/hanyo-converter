@@ -1,23 +1,23 @@
 import streamlit as st
 from notion_client import Client
-import anthropic
 from datetime import datetime
 
-notion = Client(auth=st.secrets["NOTION_API_KEY"])
+st.set_page_config(page_title="回答管理", layout="wide")
+st.title("✅ 回答・管理（パピー用）")
+
+NOTION_API_KEY = st.secrets["NOTION_API_KEY"]
 DATABASE_ID = st.secrets["NOTION_DATABASE_ID"]
 ANTHROPIC_API_KEY = st.secrets.get("ANTHROPIC_API_KEY", "")
 
 REASON_CATEGORIES = ["スピード優先", "品質優先", "コスト優先", "顧客対応", "社内ルール", "その他"]
-
-st.set_page_config(page_title="回答管理", layout="wide")
-st.title("✅ 回答・管理（パピー用）")
 
 def get_text(prop):
     items = prop.get("rich_text", [])
     return items[0]["plain_text"] if items else ""
 
 def get_questions():
-    res = notion.databases.query(
+    client = Client(auth=NOTION_API_KEY)
+    res = client.databases.query(
         database_id=DATABASE_ID,
         sorts=[{"property": "質問日時", "direction": "descending"}]
     )
@@ -41,13 +41,14 @@ def get_questions():
 def generate_draft(question, questions):
     if not ANTHROPIC_API_KEY:
         return "（Claude APIキーが未設定のためドラフト生成できません）"
+    import anthropic
     knowledge = [q for q in questions if q["ステータス"] == "回答済"]
     knowledge_text = "\n\n".join([
         f"【事例】\n質問: {q['質問本文']}\n回答: {q['回答本文']}\n判断理由: {', '.join(q['判断理由カテゴリ'])} / {q['判断理由詳細']}"
         for q in knowledge
     ]) or "（まだ蓄積データがありません）"
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-    message = client.messages.create(
+    ac = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    message = ac.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=1024,
         system=f"あなたはパピー社のナレッジアシスタントです。過去の判断事例をもとに回答ドラフトを作成してください。\n\n【過去の判断事例】\n{knowledge_text}",
@@ -56,7 +57,6 @@ def generate_draft(question, questions):
     return message.content[0].text
 
 if st.button("🔄 最新の質問を読み込む"):
-    st.cache_data.clear()
     st.rerun()
 
 questions = get_questions()
@@ -78,14 +78,14 @@ else:
                 if st.button("AIドラフトを生成する", key=f"draft_{q['id']}"):
                     with st.spinner("AIが回答を考えています..."):
                         draft = generate_draft(q, questions)
-                        notion.pages.update(
+                        c = Client(auth=NOTION_API_KEY)
+                        c.pages.update(
                             page_id=q["id"],
                             properties={
                                 "AI生成ドラフト": {"rich_text": [{"text": {"content": draft}}]},
                                 "ステータス": {"select": {"name": "ドラフト生成済"}},
                             }
                         )
-                        st.cache_data.clear()
                         st.success("ドラフトを生成しました。")
                         st.rerun()
 
@@ -109,18 +109,18 @@ else:
                         elif not 回答本文.strip():
                             st.error("回答内容を入力してください")
                         else:
-                            notion.pages.update(
+                            c = Client(auth=NOTION_API_KEY)
+                            c.pages.update(
                                 page_id=q["id"],
                                 properties={
                                     "回答本文": {"rich_text": [{"text": {"content": 回答本文}}]},
-                                    "判断理由カテゴリ": {"multi_select": [{"name": c} for c in 選択カテゴリ]},
+                                    "判断理由カテゴリ": {"multi_select": [{"name": c2} for c2 in 選択カテゴリ]},
                                     "判断理由詳細": {"rich_text": [{"text": {"content": 理由詳細}}]},
                                     "ステータス": {"select": {"name": "回答済"}},
                                     "回答日時": {"date": {"start": datetime.now().isoformat()}},
                                     "AI学習済": {"checkbox": True},
                                 }
                             )
-                            st.cache_data.clear()
                             st.success("送信しました！")
                             st.rerun()
 
