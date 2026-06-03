@@ -31,8 +31,8 @@ OUT_HEADERS = [
     "出荷済フラグ", "顧客区分", "顧客コード", "消費税率（%）",
 ]
 
-MASTER_PATH   = Path(__file__).parent / "master.csv"
-KOGUCHI_PATH  = Path(__file__).parent / "koguchimaster.csv"
+MASTER_PATH   = Path(__file__).parent.parent / "master.csv"
+KOGUCHI_PATH  = Path(__file__).parent.parent / "koguchimaster.csv"
 MAPPING_GITHUB_PATH           = "mapping_templates.json"
 SHIPMENT_TEMPLATE_GITHUB_PATH = "shipment_templates.json"
 
