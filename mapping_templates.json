@@ -241,44 +241,29 @@
         "logic": "today"
       },
       "受注郵便番号": {
-        "type": "column",
-        "source": "配送　郵便番号"
+        "type": "fixed",
+        "value": "347-0015"
       },
       "受注住所１": {
-        "type": "concat",
-        "sources": [
-          "配送　都道府県",
-          "配送　住所１"
-        ],
-        "sep": ""
+        "type": "fixed",
+        "value": "埼玉県加須市南大桑464-1"
       },
       "受注住所２": {
-        "type": "column",
-        "source": "配送　住所２"
+        "type": "empty"
       },
       "受注名": {
-        "type": "concat",
-        "sources": [
-          "配送　姓",
-          "配送　名"
-        ],
-        "sep": ""
+        "type": "fixed",
+        "value": "株式会社パピー"
       },
       "受注名カナ": {
-        "type": "concat",
-        "sources": [
-          "配送　せい",
-          "配送　めい"
-        ],
-        "sep": ""
+        "type": "empty"
       },
       "受注電話番号": {
-        "type": "column",
-        "source": "配送　電話番号"
+        "type": "fixed",
+        "value": "0480-65-8802"
       },
       "受注メールアドレス": {
-        "type": "column",
-        "source": ""
+        "type": "empty"
       },
       "発送郵便番号": {
         "type": "column",
