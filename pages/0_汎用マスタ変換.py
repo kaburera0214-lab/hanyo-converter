@@ -1553,7 +1553,6 @@ def main():
                             st.info(f"📁 Drive保存: {result}")
                         else:
                             st.warning(f"Drive保存失敗: {result}")
-                        st.session_state["up_master"] = None
                         st.rerun()
 
         # ── 個口数マスタ（折りたたみ） ────────────────────────
@@ -1592,7 +1591,6 @@ def main():
                             st.warning(f"読み込みは完了しましたが保存に失敗しました（{save_err}）。下のボタンで再試行してください。")
                             st.session_state["koguchi_master"] = new_km
                             km = new_km
-                        st.session_state["up_koguchi"] = None
                         st.rerun()
             df = koguchi_to_df(km)
             edited_df = st.data_editor(
