@@ -227,7 +227,14 @@ def load_master_from_file():
 
 
 def load_master_from_upload(file_bytes):
-    text = file_bytes.decode("shift_jis", errors="replace")
+    for enc in ("utf-8-sig", "utf-8", "shift_jis", "cp932"):
+        try:
+            text = file_bytes.decode(enc)
+            break
+        except Exception:
+            continue
+    else:
+        text = file_bytes.decode("shift_jis", errors="replace")
     reader = csv.DictReader(io.StringIO(text))
     cols = reader.fieldnames or []
     jan_col  = next((c for c in cols if "JAN" in c or "ＪＡＮ" in c), None)
