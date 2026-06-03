@@ -11,6 +11,63 @@ import pandas as pd
 import requests
 import streamlit as st
 
+MASTER_BACKUP_FOLDER_ID = "1pQJgn7tYX0KF4x70WY6mlOiruZWPInd-"
+
+def _get_drive_service():
+    try:
+        from google.oauth2.credentials import Credentials
+        from googleapiclient.discovery import build
+        creds = Credentials(
+            token=None,
+            refresh_token=st.secrets.get("GOOGLE_REFRESH_TOKEN", ""),
+            client_id=st.secrets.get("GOOGLE_CLIENT_ID", ""),
+            client_secret=st.secrets.get("GOOGLE_CLIENT_SECRET", ""),
+            token_uri="https://oauth2.googleapis.com/token"
+        )
+        return build("drive", "v3", credentials=creds)
+    except Exception:
+        return None
+
+def _get_next_version(service, folder_id, base_name):
+    """フォルダ内の同名ファイルの最新版数を取得して次の版数を返す"""
+    try:
+        res = service.files().list(
+            q=f"'{folder_id}' in parents and name contains '{base_name}' and trashed=false",
+            fields="files(name)",
+            orderBy="name desc"
+        ).execute()
+        files = res.get("files", [])
+        if not files:
+            return 1
+        # ファイル名から版数を抽出（例: master_20260602_003.csv → 3）
+        versions = []
+        for f in files:
+            parts = f["name"].replace(".csv", "").split("_")
+            try:
+                versions.append(int(parts[-1]))
+            except (ValueError, IndexError):
+                pass
+        return max(versions) + 1 if versions else 1
+    except Exception:
+        return 1
+
+def backup_to_drive(file_bytes, base_name, filename_prefix):
+    """Google Driveにバックアップ（版数管理付き）"""
+    service = _get_drive_service()
+    if not service:
+        return False, "Google Drive接続に失敗しました"
+    try:
+        from googleapiclient.http import MediaIoBaseUpload
+        today = datetime.now().strftime("%Y%m%d")
+        version = _get_next_version(service, MASTER_BACKUP_FOLDER_ID, f"{filename_prefix}_{today}")
+        filename = f"{filename_prefix}_{today}_{version:03d}.csv"
+        file_metadata = {"name": filename, "parents": [MASTER_BACKUP_FOLDER_ID]}
+        media = MediaIoBaseUpload(io.BytesIO(file_bytes), mimetype="text/csv")
+        service.files().create(body=file_metadata, media_body=media, fields="id").execute()
+        return True, filename
+    except Exception as e:
+        return False, str(e)
+
 # ── Team-EC 固定受注者情報 ────────────────────────────────
 TEAMEC = {
     "郵便番号": "192-0052",
@@ -1482,13 +1539,21 @@ def main():
             st.caption("マスタを更新する場合のみアップロード")
             new_master = st.file_uploader("新しい商品マスタCSV（Shift-JIS）", type="csv", key="up_master")
             if new_master:
-                master, err = load_master_from_upload(new_master.read())
+                file_bytes = new_master.read()
+                master, err = load_master_from_upload(file_bytes)
                 if err:
                     st.error(err)
                 else:
                     st.session_state["master"] = master
                     st.session_state["master_info"] = f"{len(master):,} 件（今回アップロード）"
                     st.success(f"更新しました：{len(master):,} 件")
+                    # Google Driveにバックアップ
+                    with st.spinner("Google Driveにバックアップ中..."):
+                        ok, result = backup_to_drive(file_bytes, "商品マスタ", "master")
+                    if ok:
+                        st.info(f"📁 Drive保存: {result}")
+                    else:
+                        st.warning(f"Drive保存失敗: {result}")
 
         # ── 個口数マスタ（折りたたみ） ────────────────────────
         with st.expander("📦 個口数マスタ", expanded=False):
@@ -1502,7 +1567,8 @@ def main():
                 help="JANコード・数量（下限）・数量（上限）・個口数 の列を含むCSV",
             )
             if koguchi_csv:
-                new_km, err = load_koguchi_from_csv_bytes(koguchi_csv.read())
+                koguchi_bytes = koguchi_csv.read()
+                new_km, err = load_koguchi_from_csv_bytes(koguchi_bytes)
                 if err:
                     st.error(err)
                 else:
@@ -1514,6 +1580,13 @@ def main():
                         st.session_state["koguchi_master"] = new_km
                         km = new_km
                         st.success(f"読み込み・保存完了：{total_rules} ルール")
+                        # Google Driveにバックアップ
+                        with st.spinner("Google Driveにバックアップ中..."):
+                            ok2, result2 = backup_to_drive(koguchi_bytes, "個口数マスタ", "koguchimaster")
+                        if ok2:
+                            st.info(f"📁 Drive保存: {result2}")
+                        else:
+                            st.warning(f"Drive保存失敗: {result2}")
                     else:
                         st.warning(f"読み込みは完了しましたが保存に失敗しました（{save_err}）。下のボタンで再試行してください。")
                         st.session_state["koguchi_master"] = new_km
