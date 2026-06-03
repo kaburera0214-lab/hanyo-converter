@@ -28,18 +28,17 @@ def _get_drive_service():
     except Exception:
         return None
 
-def _get_next_version(service, folder_id, base_name):
-    """フォルダ内の同名ファイルの最新版数を取得して次の版数を返す"""
+def _get_next_version(service, folder_id, filename_prefix, today):
+    """フォルダ内の同日・同プレフィックスの最新版数を取得して次の版数を返す"""
     try:
+        search_name = f"{filename_prefix}_{today}"
         res = service.files().list(
-            q=f"'{folder_id}' in parents and name contains '{base_name}' and trashed=false",
-            fields="files(name)",
-            orderBy="name desc"
+            q=f"'{folder_id}' in parents and name contains '{search_name}' and trashed=false",
+            fields="files(name)"
         ).execute()
         files = res.get("files", [])
         if not files:
             return 1
-        # ファイル名から版数を抽出（例: master_20260602_003.csv → 3）
         versions = []
         for f in files:
             parts = f["name"].replace(".csv", "").split("_")
@@ -59,7 +58,7 @@ def backup_to_drive(file_bytes, base_name, filename_prefix):
     try:
         from googleapiclient.http import MediaIoBaseUpload
         today = datetime.now().strftime("%Y%m%d")
-        version = _get_next_version(service, MASTER_BACKUP_FOLDER_ID, f"{filename_prefix}_{today}")
+        version = _get_next_version(service, MASTER_BACKUP_FOLDER_ID, filename_prefix, today)
         filename = f"{filename_prefix}_{today}_{version:03d}.csv"
         file_metadata = {"name": filename, "parents": [MASTER_BACKUP_FOLDER_ID]}
         media = MediaIoBaseUpload(io.BytesIO(file_bytes), mimetype="text/csv")
