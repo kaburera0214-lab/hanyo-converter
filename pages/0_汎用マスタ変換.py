@@ -2605,6 +2605,9 @@ def main():
 
             # チャート
             _d_df = pd.DataFrame(_d_filtered)
+            if "ts" not in _d_df.columns:
+                st.info("ログデータが古い形式です。変換を実行するとグラフが表示されます。")
+                st.stop()
             _d_df["dt"]    = pd.to_datetime(_d_df["ts"])
             _d_df["date"]  = _d_df["dt"].dt.strftime("%m/%d")
             _d_df["hour"]  = _d_df["dt"].dt.hour
