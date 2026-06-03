@@ -1536,7 +1536,8 @@ def main():
             else:
                 st.error("マスタ未読み込み")
             st.caption("マスタを更新する場合のみアップロード")
-            new_master = st.file_uploader("新しい商品マスタCSV（Shift-JIS）", type="csv", key="up_master")
+            master_uploader_key = f"up_master_{st.session_state.get('master_upload_count', 0)}"
+            new_master = st.file_uploader("新しい商品マスタCSV（Shift-JIS）", type="csv", key=master_uploader_key)
             if new_master:
                 if st.button("📥 商品マスタを更新する", key="btn_master_update", type="primary"):
                     file_bytes = new_master.read()
@@ -1553,6 +1554,7 @@ def main():
                             st.info(f"📁 Drive保存: {result}")
                         else:
                             st.warning(f"Drive保存失敗: {result}")
+                        st.session_state["master_upload_count"] = st.session_state.get("master_upload_count", 0) + 1
                         st.rerun()
 
         # ── 個口数マスタ（折りたたみ） ────────────────────────
@@ -1560,10 +1562,11 @@ def main():
             km = st.session_state.get("koguchi_master", {})
             rule_count = sum(len(v) for v in km.values())
             st.caption(f"現在 {rule_count} ルール登録済み")
+            koguchi_uploader_key = f"up_koguchi_{st.session_state.get('koguchi_upload_count', 0)}"
             koguchi_csv = st.file_uploader(
                 "CSVで一括更新",
                 type="csv",
-                key="up_koguchi",
+                key=koguchi_uploader_key,
                 help="JANコード・数量（下限）・数量（上限）・個口数 の列を含むCSV",
             )
             if koguchi_csv:
@@ -1591,6 +1594,7 @@ def main():
                             st.warning(f"読み込みは完了しましたが保存に失敗しました（{save_err}）。下のボタンで再試行してください。")
                             st.session_state["koguchi_master"] = new_km
                             km = new_km
+                        st.session_state["koguchi_upload_count"] = st.session_state.get("koguchi_upload_count", 0) + 1
                         st.rerun()
             df = koguchi_to_df(km)
             edited_df = st.data_editor(
@@ -1612,6 +1616,23 @@ def main():
                 if ok:
                     st.session_state["koguchi_master"] = new_km
                     st.success("保存しました")
+                    # Google Driveにバックアップ
+                    rows = []
+                    for jan, entries in new_km.items():
+                        for lower, upper, koguchi in sorted(entries, key=lambda x: x[0]):
+                            rows.append({"JANコード": jan, "数量（下限）": lower, "数量（上限）": upper if upper else "", "個口数": koguchi})
+                    buf = io.StringIO()
+                    import csv as _csv
+                    writer = _csv.DictWriter(buf, fieldnames=["JANコード", "数量（下限）", "数量（上限）", "個口数"])
+                    writer.writeheader()
+                    writer.writerows(rows)
+                    koguchi_bytes = buf.getvalue().encode("utf-8")
+                    with st.spinner("Google Driveにバックアップ中..."):
+                        ok2, result2 = backup_to_drive(koguchi_bytes, "個口数マスタ", "koguchimaster")
+                    if ok2:
+                        st.info(f"📁 Drive保存: {result2}")
+                    else:
+                        st.warning(f"Drive保存失敗: {result2}")
                 else:
                     st.error(f"保存失敗: {err}")
 
