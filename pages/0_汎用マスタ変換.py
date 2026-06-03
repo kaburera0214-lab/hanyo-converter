@@ -1538,21 +1538,23 @@ def main():
             st.caption("マスタを更新する場合のみアップロード")
             new_master = st.file_uploader("新しい商品マスタCSV（Shift-JIS）", type="csv", key="up_master")
             if new_master:
-                file_bytes = new_master.read()
-                master, err = load_master_from_upload(file_bytes)
-                if err:
-                    st.error(err)
-                else:
-                    st.session_state["master"] = master
-                    st.session_state["master_info"] = f"{len(master):,} 件（今回アップロード）"
-                    st.success(f"更新しました：{len(master):,} 件")
-                    # Google Driveにバックアップ
-                    with st.spinner("Google Driveにバックアップ中..."):
-                        ok, result = backup_to_drive(file_bytes, "商品マスタ", "master")
-                    if ok:
-                        st.info(f"📁 Drive保存: {result}")
+                if st.button("📥 商品マスタを更新する", key="btn_master_update", type="primary"):
+                    file_bytes = new_master.read()
+                    master, err = load_master_from_upload(file_bytes)
+                    if err:
+                        st.error(err)
                     else:
-                        st.warning(f"Drive保存失敗: {result}")
+                        st.session_state["master"] = master
+                        st.session_state["master_info"] = f"{len(master):,} 件（今回アップロード）"
+                        st.success(f"更新しました：{len(master):,} 件")
+                        with st.spinner("Google Driveにバックアップ中..."):
+                            ok, result = backup_to_drive(file_bytes, "商品マスタ", "master")
+                        if ok:
+                            st.info(f"📁 Drive保存: {result}")
+                        else:
+                            st.warning(f"Drive保存失敗: {result}")
+                        st.session_state["up_master"] = None
+                        st.rerun()
 
         # ── 個口数マスタ（折りたたみ） ────────────────────────
         with st.expander("📦 個口数マスタ", expanded=False):
@@ -1566,30 +1568,32 @@ def main():
                 help="JANコード・数量（下限）・数量（上限）・個口数 の列を含むCSV",
             )
             if koguchi_csv:
-                koguchi_bytes = koguchi_csv.read()
-                new_km, err = load_koguchi_from_csv_bytes(koguchi_bytes)
-                if err:
-                    st.error(err)
-                else:
-                    total_rules = sum(len(v) for v in new_km.values())
-                    with st.spinner("GitHubに保存中..."):
-                        ok, save_err = save_koguchi_to_github(new_km)
-                    if ok:
-                        load_koguchi_from_file.clear()
-                        st.session_state["koguchi_master"] = new_km
-                        km = new_km
-                        st.success(f"読み込み・保存完了：{total_rules} ルール")
-                        # Google Driveにバックアップ
-                        with st.spinner("Google Driveにバックアップ中..."):
-                            ok2, result2 = backup_to_drive(koguchi_bytes, "個口数マスタ", "koguchimaster")
-                        if ok2:
-                            st.info(f"📁 Drive保存: {result2}")
-                        else:
-                            st.warning(f"Drive保存失敗: {result2}")
+                if st.button("📥 個口数マスタを更新する", key="btn_koguchi_update", type="primary"):
+                    koguchi_bytes = koguchi_csv.read()
+                    new_km, err = load_koguchi_from_csv_bytes(koguchi_bytes)
+                    if err:
+                        st.error(err)
                     else:
-                        st.warning(f"読み込みは完了しましたが保存に失敗しました（{save_err}）。下のボタンで再試行してください。")
-                        st.session_state["koguchi_master"] = new_km
-                        km = new_km
+                        total_rules = sum(len(v) for v in new_km.values())
+                        with st.spinner("GitHubに保存中..."):
+                            ok, save_err = save_koguchi_to_github(new_km)
+                        if ok:
+                            load_koguchi_from_file.clear()
+                            st.session_state["koguchi_master"] = new_km
+                            km = new_km
+                            st.success(f"読み込み・保存完了：{total_rules} ルール")
+                            with st.spinner("Google Driveにバックアップ中..."):
+                                ok2, result2 = backup_to_drive(koguchi_bytes, "個口数マスタ", "koguchimaster")
+                            if ok2:
+                                st.info(f"📁 Drive保存: {result2}")
+                            else:
+                                st.warning(f"Drive保存失敗: {result2}")
+                        else:
+                            st.warning(f"読み込みは完了しましたが保存に失敗しました（{save_err}）。下のボタンで再試行してください。")
+                            st.session_state["koguchi_master"] = new_km
+                            km = new_km
+                        st.session_state["up_koguchi"] = None
+                        st.rerun()
             df = koguchi_to_df(km)
             edited_df = st.data_editor(
                 df,
