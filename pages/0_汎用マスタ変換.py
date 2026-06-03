@@ -1529,6 +1529,12 @@ def main():
 
         st.divider()
 
+        st.link_button(
+            "📁 マスタバックアップフォルダを開く",
+            "https://drive.google.com/drive/u/2/folders/1pQJgn7tYX0KF4x70WY6mlOiruZWPInd-",
+            use_container_width=True,
+        )
+
         # ── 商品マスタ（折りたたみ） ──────────────────────────
         with st.expander("⚙️ 商品マスタ", expanded=False):
             if st.session_state.get("master"):
