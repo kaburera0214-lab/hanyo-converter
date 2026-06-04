@@ -24,6 +24,29 @@ def get_database_id():
 
 DATABASE_ID = get_database_id()
 
+def ensure_status_option():
+    """ステータスに「編集中」選択肢がなければ追加する"""
+    try:
+        client = Client(auth=NOTION_API_KEY)
+        db = client.databases.retrieve(database_id=DATABASE_ID)
+        options = db["properties"].get("ステータス", {}).get("select", {}).get("options", [])
+        names = [o["name"] for o in options]
+        if "編集中" not in names:
+            client.databases.update(
+                database_id=DATABASE_ID,
+                properties={
+                    "ステータス": {
+                        "select": {
+                            "options": options + [{"name": "編集中", "color": "yellow"}]
+                        }
+                    }
+                }
+            )
+    except Exception:
+        pass
+
+ensure_status_option()
+
 def get_tags():
     client = Client(auth=NOTION_API_KEY)
     db = client.databases.retrieve(database_id=DATABASE_ID)
