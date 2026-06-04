@@ -116,10 +116,13 @@ def generate_draft(question, questions):
     except Exception as e:
         return f"（AIドラフト生成に失敗しました。APIキーを確認してください。エラー: {type(e).__name__}）"
 
-PASSWORDS = {
-    st.secrets.get("PAPY_PASSWORD", ""): "パピー",
-    st.secrets.get("INHA_PASSWORD", ""): "インハナ",
-}
+# EDITOR_1_NAME / EDITOR_1_PASSWORD 〜 EDITOR_10_NAME / EDITOR_10_PASSWORD で定義
+PASSWORDS = {}
+for i in range(1, 11):
+    name = st.secrets.get(f"EDITOR_{i}_NAME", "")
+    pw = st.secrets.get(f"EDITOR_{i}_PASSWORD", "")
+    if name and pw:
+        PASSWORDS[pw] = name
 
 if st.button("🔄 最新の質問を読み込む"):
     st.rerun()
