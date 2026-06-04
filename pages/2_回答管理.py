@@ -116,18 +116,21 @@ def generate_draft(question, questions):
     except Exception as e:
         return f"（AIドラフト生成に失敗しました。APIキーを確認してください。エラー: {type(e).__name__}）"
 
-# ── 操作者をセッション開始時に一度だけ選択・ロック ──────────────────
+# ── パスワード認証（セッション内で一度だけ）────────────────────────
+PASSWORDS = {
+    st.secrets.get("PAPY_PASSWORD", ""): "パピー",
+    st.secrets.get("INHA_PASSWORD", ""): "インハナ",
+}
+
 if "operator" not in st.session_state:
-    st.info("このセッションでの操作者を選択してください。選択後は変更できません。")
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("👤 パピー として作業する", use_container_width=True, type="primary"):
-            st.session_state["operator"] = "パピー"
+    st.markdown("### パスワードを入力してください")
+    pw = st.text_input("パスワード", type="password", key="pw_input")
+    if st.button("ログイン", type="primary"):
+        if pw and pw in PASSWORDS:
+            st.session_state["operator"] = PASSWORDS[pw]
             st.rerun()
-    with col2:
-        if st.button("👤 インハナ として作業する", use_container_width=True):
-            st.session_state["operator"] = "インハナ"
-            st.rerun()
+        else:
+            st.error("パスワードが正しくありません")
     st.stop()
 
 editor_name = st.session_state["operator"]
