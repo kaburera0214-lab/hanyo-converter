@@ -170,10 +170,8 @@ else:
                 st.error(f"**追加質問：** {q['追加質問']}")
                 st.divider()
 
-                # 追加質問への回答
-                add_ans_value = q["AI生成ドラフト"] if not q["回答本文"] else q["回答本文"]
-                add_ans_height = max(150, add_ans_value.count("\n") * 22 + 100)
-                add_answer = st.text_area("追加質問への回答", value="", height=add_ans_height, key=f"add_ans_{q['id']}")
+                # 追加質問への回答（高さは固定150px）
+                add_answer = st.text_area("追加質問への回答", value="", height=150, key=f"add_ans_{q['id']}")
                 選択カテゴリ = st.multiselect("判断理由カテゴリ", REASON_CATEGORIES, key=f"add_cat_{q['id']}")
                 理由詳細 = st.text_area("判断理由の詳細", height=80, key=f"add_reason_{q['id']}")
 
@@ -270,19 +268,64 @@ else:
                 is_answer_editing = st.session_state.get(edit_key, False)
 
                 if not is_answer_editing:
-                    st.markdown("**回答内容：**")
-                    st.text_area("", value=answer_text, height=answer_height, key=f"view_{q['id']}", label_visibility="collapsed")
+                    # 会話ログがあれば全会話を表示、なければ通常の回答表示
+                    if q["会話ログ"]:
+                        st.markdown("**会話の流れ：**")
+                        conv_height = max(200, q["会話ログ"].count("\n") * 22 + 100)
+                        st.text_area("", value=q["会話ログ"], height=conv_height, disabled=True, label_visibility="collapsed")
+                    else:
+                        st.markdown("**回答内容：**")
+                        st.text_area("", value=answer_text, height=answer_height, key=f"view_{q['id']}", label_visibility="collapsed")
                     st.success("回答済み")
                     if q["判断理由カテゴリ"]:
                         st.markdown(f"**判断理由：** {', '.join(q['判断理由カテゴリ'])}")
                     if q["判断理由詳細"]:
                         st.markdown(f"**詳細：** {q['判断理由詳細']}")
-                    if st.button("✏️ 回答を修正する", key=f"start_edit_ans_{q['id']}"):
-                        st.session_state[edit_key] = "auth"  # 認証待ち
-                        st.rerun()
+                    col_btn1, col_btn2 = st.columns(2)
+                    with col_btn1:
+                        if st.button("✏️ 回答を修正する", key=f"start_edit_ans_{q['id']}"):
+                            st.session_state[edit_key] = "auth"
+                            st.rerun()
+                    with col_btn2:
+                        if st.button("💬 追加質問する", key=f"start_followup_{q['id']}"):
+                            st.session_state[edit_key] = "followup"
+                            st.rerun()
                     if q["編集履歴"]:
                         with st.expander("📋 編集履歴"):
                             st.text(q["編集履歴"])
+
+                elif is_answer_editing == "followup":
+                    # 回答管理からの追加質問入力
+                    st.markdown("**追加質問を入力してください：**")
+                    follow_up = st.text_area("追加質問内容", height=120, key=f"mgmt_followup_{q['id']}")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button("📨 送信する", key=f"send_mgmt_followup_{q['id']}", type="primary"):
+                            if not follow_up.strip():
+                                st.error("追加質問の内容を入力してください")
+                            else:
+                                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+                                existing_log = q["会話ログ"]
+                                if not existing_log:
+                                    existing_log = f"【Q】{q['質問本文']}\n【A】{answer_text}"
+                                new_log = existing_log + f"\n\n【追加Q｜{timestamp}】{follow_up.strip()}"
+                                if len(new_log) > 1900:
+                                    new_log = "（古い会話を省略）\n" + new_log[-1800:]
+                                Client(auth=NOTION_API_KEY).pages.update(
+                                    page_id=q["id"],
+                                    properties={
+                                        "追加質問": {"rich_text": [{"text": {"content": follow_up.strip()}}]},
+                                        "会話ログ": {"rich_text": [{"text": {"content": new_log}}]},
+                                        "ステータス": {"select": {"name": "再質問"}},
+                                    }
+                                )
+                                st.session_state[edit_key] = False
+                                st.success("追加質問を送信しました！")
+                                st.rerun()
+                    with col2:
+                        if st.button("キャンセル", key=f"cancel_followup_{q['id']}"):
+                            st.session_state[edit_key] = False
+                            st.rerun()
 
                 elif is_answer_editing == "auth":
                     # パスワード認証ステップ
