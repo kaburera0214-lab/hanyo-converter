@@ -1,18 +1,18 @@
 import streamlit as st
 from notion_client import Client
 from datetime import datetime
-import uuid
 from PIL import Image
 import io
+import re
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 
 NOTION_API_KEY = "".join(c for c in st.secrets["NOTION_API_KEY"] if c.isprintable() and ord(c) < 128)
-PAGE_ID = "37384fb235d780b88a46eb8d619a19ad"  # ページID（固定）
+PAGE_ID = "37384fb235d780b88a46eb8d619a19ad"
 GDRIVE_FOLDER_ID = "1z7yCYxDGO3lVVKrBmG8mL1apH6Pfl4Xu"
-
-MAX_FILE_SIZE = 4.5 * 1024 * 1024  # 4.5MB
+ANTHROPIC_API_KEY = st.secrets.get("ANTHROPIC_API_KEY", "")
+MAX_FILE_SIZE = 4.5 * 1024 * 1024
 
 def get_database_id():
     client = Client(auth=NOTION_API_KEY)
@@ -31,6 +31,10 @@ def get_tags():
     return [o["name"] for o in options]
 
 TAGS = get_tags()
+
+def get_text(prop):
+    items = prop.get("rich_text", [])
+    return items[0]["plain_text"] if items else ""
 
 def compress_image(file_bytes):
     img = Image.open(io.BytesIO(file_bytes))
@@ -72,19 +76,94 @@ def upload_to_drive(file_bytes, filename):
         fields="id"
     ).execute()
     file_id = file.get("id")
-    # 誰でも閲覧可能に
     service.permissions().create(
         fileId=file_id,
         body={"type": "anyone", "role": "reader"}
     ).execute()
     return f"https://drive.google.com/file/d/{file_id}/view"
 
+def check_tag_consistency(title, content, tags):
+    if not ANTHROPIC_API_KEY:
+        return None
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        message = client.messages.create(
+            model="claude-haiku-4-5",
+            max_tokens=100,
+            messages=[{"role": "user", "content": f"""質問タイトル：{title}
+質問内容：{content}
+選択されたタグ：{', '.join(tags)}
+
+質問内容とタグが整合しているか判断してください。
+整合している場合は「OK」とだけ答えてください。
+整合していない場合は「NG: （理由を30文字以内で）」の形式で答えてください。"""}]
+        )
+        result = message.content[0].text.strip()
+        if result.startswith("NG"):
+            return f"タグと質問内容が合っていない可能性があります。{result[3:].strip()}"
+        return None
+    except Exception:
+        return None
+
+def validate_question(title, content, tags, has_images):
+    errors = []
+
+    # タイトル粒度チェック（大カテゴリ＋中カテゴリ）
+    if len(title.strip()) < 10:
+        errors.append("質問タイトルが短すぎます。「大カテゴリ＋中カテゴリ」の粒度で記入してください（例：「CS・保険証券の発行タイミングについて」）")
+
+    # 複数質問の「■」チェック
+    question_matches = re.findall(r'[^\n。]*[？?]', content)
+    if len(question_matches) >= 2 and "■" not in content:
+        errors.append("複数の質問がある場合は、各質問の先頭に「■」をつけて質問を明確に分けてください")
+
+    # 画像依存チェック
+    if has_images and len(content.strip()) < 50:
+        errors.append("画像に頼りすぎず、質問内容だけで何を聞いているか分かるよう記載してください（目安50文字以上）")
+
+    # タグ整合性チェック（AI）
+    tag_error = check_tag_consistency(title, content, tags)
+    if tag_error:
+        errors.append(tag_error)
+
+    return errors
+
+def get_editable_questions():
+    client = Client(auth=NOTION_API_KEY)
+    res = client.databases.query(**{
+        "database_id": DATABASE_ID,
+        "filter": {"or": [
+            {"property": "ステータス", "select": {"equals": "未回答"}},
+            {"property": "ステータス", "select": {"equals": "編集中"}},
+        ]},
+        "sorts": [{"property": "質問日時", "direction": "descending"}]
+    })
+    questions = []
+    for page in res["results"]:
+        p = page["properties"]
+        questions.append({
+            "id": page["id"],
+            "タイトル": p["質問タイトル"]["title"][0]["plain_text"] if p.get("質問タイトル", {}).get("title") else "",
+            "質問本文": get_text(p.get("質問本文", {})),
+            "タグ": [s["name"] for s in p.get("タグ", {}).get("multi_select", [])],
+            "ステータス": p["ステータス"]["select"]["name"] if p["ステータス"]["select"] else "未回答",
+            "質問日時": p["質問日時"]["date"]["start"] if p.get("質問日時", {}).get("date") else "",
+        })
+    return questions
+
+# ── 新規投稿フォーム ─────────────────────────────────────────────────
 st.set_page_config(page_title="質問を送る", layout="centered")
 st.title("📝 質問を送る（インハナさん用）")
 
+st.info("""**記入ルール**
+- タイトルは「大カテゴリ＋中カテゴリ」の粒度で（例：CS・保険証券の発行タイミングについて）
+- 複数の質問がある場合は各質問の先頭に「■」をつけること
+- 画像だけで説明を省かず、文章だけで内容が伝わるように記載すること""")
+
 with st.form("question_form"):
-    タイトル = st.text_input("質問タイトル *", placeholder="例：ヘッダーの色変更について")
-    質問本文 = st.text_area("質問内容 *", height=150, placeholder="詳しい内容を記入してください")
+    タイトル = st.text_input("質問タイトル *", placeholder="例：CS・保険証券の発行タイミングについて")
+    質問本文 = st.text_area("質問内容 *", height=150, placeholder="■ 〇〇について確認したいのですが...\n■ また、〇〇の場合はどうなりますか？")
     画像ファイル = st.file_uploader("画像（複数可）", type=["png", "jpg", "jpeg", "gif", "webp"], accept_multiple_files=True)
     タグ = st.multiselect("タグ（必須）*", TAGS)
     submitted = st.form_submit_button("質問を送信する")
@@ -95,47 +174,115 @@ if submitted:
     elif not タグ:
         st.error("タグを選択してください")
     else:
-        with st.spinner("送信中..."):
+        with st.spinner("入力内容を確認中..."):
+            errors = validate_question(タイトル, 質問本文, タグ, bool(画像ファイル))
 
-            # 先にNotionにページを作成してIDを取得
-            client = Client(auth=NOTION_API_KEY)
-            props = {
-                "質問タイトル": {"title": [{"text": {"content": タイトル}}]},
-                "質問本文": {"rich_text": [{"text": {"content": 質問本文}}]},
-                "ステータス": {"select": {"name": "未回答"}},
-                "質問者": {"select": {"name": "インハナ"}},
-                "質問日時": {"date": {"start": datetime.now().isoformat()}},
-                "タグ": {"multi_select": [{"name": t} for t in タグ]},
-            }
-            page = client.pages.create(**{
-                "parent": {"database_id": DATABASE_ID},
-                "properties": props
-            })
-            page_id = page["id"]
+        if errors:
+            for err in errors:
+                st.error(err)
+        else:
+            with st.spinner("送信中..."):
+                client = Client(auth=NOTION_API_KEY)
+                props = {
+                    "質問タイトル": {"title": [{"text": {"content": タイトル}}]},
+                    "質問本文": {"rich_text": [{"text": {"content": 質問本文}}]},
+                    "ステータス": {"select": {"name": "未回答"}},
+                    "質問者": {"select": {"name": "インハナ"}},
+                    "質問日時": {"date": {"start": datetime.now().isoformat()}},
+                    "タグ": {"multi_select": [{"name": t} for t in タグ]},
+                }
+                page = client.pages.create(**{
+                    "parent": {"database_id": DATABASE_ID},
+                    "properties": props
+                })
+                page_id = page["id"]
 
-            # 採番IDを取得
-            page_detail = client.pages.retrieve(page_id=page_id)
-            unique_num = page_detail["properties"].get("ID", {}).get("unique_id", {}).get("number", 0)
+                page_detail = client.pages.retrieve(page_id=page_id)
+                unique_num = page_detail["properties"].get("ID", {}).get("unique_id", {}).get("number", 0)
 
-            # 画像をGoogle Driveにアップロード（採番ID使用）
-            画像URLs = []
-            if 画像ファイル:
-                today = datetime.now().strftime("%Y%m%d")
-                for i, f in enumerate(画像ファイル, start=1):
-                    compressed = compress_image(f.read())
-                    filename = f"{today}_{unique_num:04d}_{i:02d}.jpg"
-                    url = upload_to_drive(compressed, filename)
-                    画像URLs.append(url)
+                画像URLs = []
+                if 画像ファイル:
+                    today = datetime.now().strftime("%Y%m%d")
+                    for i, f in enumerate(画像ファイル, start=1):
+                        compressed = compress_image(f.read())
+                        filename = f"{today}_{unique_num:04d}_{i:02d}.jpg"
+                        url = upload_to_drive(compressed, filename)
+                        画像URLs.append(url)
 
-                # 画像URLをNotionに更新
-                client.pages.update(
-                    page_id=page_id,
-                    properties={
-                        "画像URL": {"rich_text": [{"text": {"content": "\n".join(画像URLs)}}]}
-                    }
-                )
+                    client.pages.update(
+                        page_id=page_id,
+                        properties={
+                            "画像URL": {"rich_text": [{"text": {"content": "\n".join(画像URLs)}}]}
+                        }
+                    )
 
-        msg = "質問を送信しました！"
-        if 画像URLs:
-            msg += f"（画像 {len(画像URLs)}枚アップロード済）"
-        st.success(msg)
+            msg = "質問を送信しました！"
+            if 画像URLs:
+                msg += f"（画像 {len(画像URLs)}枚アップロード済）"
+            st.success(msg)
+
+# ── 投稿済み質問の編集 ────────────────────────────────────────────────
+st.divider()
+st.subheader("✏️ 投稿済み質問を編集する")
+
+edit_questions = get_editable_questions()
+if not edit_questions:
+    st.info("編集できる質問（未回答）はありません")
+else:
+    editing_id = st.session_state.get("editing_id")
+
+    for q in edit_questions:
+        is_editing = (editing_id == q["id"])
+        status_label = "🟡 編集中" if q["ステータス"] == "編集中" else ""
+        label = f"{q['タイトル']}　{q['質問日時'][:10] if q['質問日時'] else ''}　{status_label}"
+
+        with st.expander(label, expanded=is_editing):
+            if not is_editing:
+                st.markdown(f"**質問内容：** {q['質問本文']}")
+                st.markdown(f"**タグ：** {', '.join(q['タグ'])}")
+                if st.button("✏️ 編集する", key=f"start_edit_{q['id']}"):
+                    st.session_state["editing_id"] = q["id"]
+                    Client(auth=NOTION_API_KEY).pages.update(
+                        page_id=q["id"],
+                        properties={"ステータス": {"select": {"name": "編集中"}}}
+                    )
+                    st.rerun()
+            else:
+                with st.form(f"edit_form_{q['id']}"):
+                    new_title = st.text_input("質問タイトル", value=q["タイトル"])
+                    new_content = st.text_area("質問内容", value=q["質問本文"], height=150)
+                    new_tags = st.multiselect("タグ", TAGS, default=q["タグ"])
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        save = st.form_submit_button("保存する", type="primary")
+                    with col2:
+                        cancel = st.form_submit_button("キャンセル")
+
+                if cancel:
+                    st.session_state.pop("editing_id", None)
+                    Client(auth=NOTION_API_KEY).pages.update(
+                        page_id=q["id"],
+                        properties={"ステータス": {"select": {"name": "未回答"}}}
+                    )
+                    st.rerun()
+
+                if save:
+                    with st.spinner("入力内容を確認中..."):
+                        errors = validate_question(new_title, new_content, new_tags, False)
+
+                    if errors:
+                        for err in errors:
+                            st.error(err)
+                    else:
+                        Client(auth=NOTION_API_KEY).pages.update(
+                            page_id=q["id"],
+                            properties={
+                                "質問タイトル": {"title": [{"text": {"content": new_title}}]},
+                                "質問本文": {"rich_text": [{"text": {"content": new_content}}]},
+                                "タグ": {"multi_select": [{"name": t} for t in new_tags]},
+                                "ステータス": {"select": {"name": "未回答"}},
+                            }
+                        )
+                        st.session_state.pop("editing_id", None)
+                        st.success("更新しました。")
+                        st.rerun()

@@ -100,7 +100,7 @@ questions = get_questions()
 if not questions:
     st.info("質問がまだありません")
 else:
-    STATUS_EMOJI = {"未回答": "🔴", "ドラフト生成済": "🔵", "回答済": "🟢"}
+    STATUS_EMOJI = {"未回答": "🔴", "ドラフト生成済": "🔵", "回答済": "🟢", "編集中": "🟡"}
     for q in questions:
         emoji = STATUS_EMOJI.get(q["ステータス"], "⚪")
         label = f"{emoji} {q['タイトル']}　（{q['ステータス']}）　{q['質問日時'][:10] if q['質問日時'] else ''}"
@@ -125,7 +125,10 @@ else:
                 st.markdown(f"**タグ：** {', '.join(q['タグ'])}")
             st.divider()
 
-            if q["ステータス"] == "未回答":
+            if q["ステータス"] == "編集中":
+                st.warning("現在インハナさんが編集中です。編集完了後に対応してください。")
+
+            elif q["ステータス"] == "未回答":
                 if st.button("AIドラフトを生成する", key=f"draft_{q['id']}"):
                     with st.spinner("AIが回答を考えています..."):
                         draft = generate_draft(q, questions)
