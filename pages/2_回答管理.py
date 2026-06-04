@@ -72,6 +72,18 @@ def get_current_status(page_id):
     except Exception:
         return None
 
+def get_editing_ids():
+    """現在「編集中」になっている質問IDをまとめて取得（1回のAPIコール）"""
+    try:
+        client = Client(auth=NOTION_API_KEY)
+        res = client.databases.query(**{
+            "database_id": DATABASE_ID,
+            "filter": {"property": "ステータス", "select": {"equals": "編集中"}}
+        })
+        return {page["id"].replace("-", "") for page in res["results"]}
+    except Exception:
+        return set()
+
 def generate_draft(question, questions):
     if not ANTHROPIC_API_KEY:
         return "（Anthropic APIキーが未設定のためドラフト生成できません）"
@@ -104,14 +116,18 @@ if st.button("🔄 最新の質問を読み込む"):
     st.rerun()
 
 questions = get_questions()
+editing_ids = get_editing_ids()  # 編集中IDをリアルタイム取得
 
 if not questions:
     st.info("質問がまだありません")
 else:
     STATUS_EMOJI = {"未回答": "🔴", "ドラフト生成済": "🔵", "回答済": "🟢", "編集中": "🟡"}
     for q in questions:
-        emoji = STATUS_EMOJI.get(q["ステータス"], "⚪")
-        label = f"{emoji} {q['タイトル']}　（{q['ステータス']}）　{q['質問日時'][:10] if q['質問日時'] else ''}"
+        q_id_plain = q["id"].replace("-", "")
+        is_editing = q_id_plain in editing_ids or q["ステータス"] == "編集中"
+        display_status = "編集中" if is_editing else q["ステータス"]
+        emoji = STATUS_EMOJI.get(display_status, "⚪")
+        label = f"{emoji} {q['タイトル']}　（{display_status}）　{q['質問日時'][:10] if q['質問日時'] else ''}"
         with st.expander(label):
             st.markdown(f"**質問内容：** {q['質問本文']}")
             if q["画像URL"]:
@@ -133,7 +149,7 @@ else:
                 st.markdown(f"**タグ：** {', '.join(q['タグ'])}")
             st.divider()
 
-            if q["ステータス"] == "編集中":
+            if is_editing:
                 st.warning("現在インハナさんが編集中です。編集完了後に対応してください。")
 
             elif q["ステータス"] == "未回答":
