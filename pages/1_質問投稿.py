@@ -329,8 +329,9 @@ elif step == "preview":
     col_orig, col_rewrite = st.columns(2)
     with col_orig:
         st.markdown("**原文**")
-        st.text_input("タイトル（原文）", value=st.session_state["orig_title"], disabled=True, key="orig_t")
-        st.text_area("内容（原文）", value=orig_content, height=content_height, disabled=True, key="orig_c")
+        st.text_input("タイトル（原文）", value=st.session_state["orig_title"], key="orig_t", label_visibility="visible")
+        orig_html = orig_content.replace("\n", "<br>")
+        st.markdown(f'<div style="background:#fff;border:1px solid #dee2e6;border-radius:6px;padding:12px;line-height:1.7;font-size:0.9em;min-height:{content_height}px;">{orig_html}</div>', unsafe_allow_html=True)
 
     with col_rewrite:
         st.markdown("**AIリライト（必要なら編集してください）**")
@@ -449,7 +450,8 @@ else:
             # 会話ログがあれば表示
             if q["会話ログ"]:
                 st.markdown("**会話の流れ：**")
-                st.text(q["会話ログ"])
+                log_html = q["会話ログ"].replace("\n", "<br>")
+                st.markdown(f'<div style="background:#fff;border:1px solid #dee2e6;border-radius:6px;padding:12px;line-height:1.7;font-size:0.9em;">{log_html}</div>', unsafe_allow_html=True)
                 st.divider()
             else:
                 st.markdown(f"**質問内容：** {q['質問本文']}")

@@ -166,7 +166,8 @@ else:
                 if q["会話ログ"]:
                     st.markdown("**会話の流れ：**")
                     conv_height = max(200, q["会話ログ"].count("\n") * 22 + 100)
-                    st.text_area("", value=q["会話ログ"], height=conv_height, disabled=True, label_visibility="collapsed")
+                    log_html = q["会話ログ"].replace("\n", "<br>")
+                    st.markdown(f'<div style="background:#fff;border:1px solid #dee2e6;border-radius:6px;padding:12px;line-height:1.7;font-size:0.9em;">{log_html}</div>', unsafe_allow_html=True)
                 st.error(f"**追加質問：** {q['追加質問']}")
                 st.divider()
 
@@ -272,7 +273,8 @@ else:
                     if q["会話ログ"]:
                         st.markdown("**会話の流れ：**")
                         conv_height = max(200, q["会話ログ"].count("\n") * 22 + 100)
-                        st.text_area("", value=q["会話ログ"], height=conv_height, disabled=True, label_visibility="collapsed")
+                        log_html = q["会話ログ"].replace("\n", "<br>")
+                    st.markdown(f'<div style="background:#fff;border:1px solid #dee2e6;border-radius:6px;padding:12px;line-height:1.7;font-size:0.9em;">{log_html}</div>', unsafe_allow_html=True)
                     else:
                         st.markdown("**回答内容：**")
                         st.text_area("", value=answer_text, height=answer_height, key=f"view_{q['id']}", label_visibility="collapsed")
