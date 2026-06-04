@@ -125,14 +125,32 @@ for i in range(1, 11):
     if name and pw:
         PASSWORDS[pw] = name
 
-if st.button("🔄 最新の質問を読み込む"):
-    st.rerun()
+col_reload, col_search = st.columns([1, 3])
+with col_reload:
+    if st.button("🔄 最新の質問を読み込む"):
+        st.rerun()
+with col_search:
+    search_word = st.text_input("🔍 キーワード検索", placeholder="質問内容・回答・タグで絞り込み", label_visibility="collapsed")
 
 questions = get_questions()
 
+# 検索フィルタ
+if search_word:
+    kw = search_word.lower()
+    questions = [
+        q for q in questions
+        if kw in q["タイトル"].lower()
+        or kw in q["質問本文"].lower()
+        or kw in q["回答本文"].lower()
+        or any(kw in t.lower() for t in q["タグ"])
+        or kw in q["判断理由詳細"].lower()
+    ]
+
 if not questions:
-    st.info("質問がまだありません")
+    st.info("該当する質問がありません" if search_word else "質問がまだありません")
 else:
+    if search_word:
+        st.caption(f"{len(questions)}件ヒット")
     STATUS_EMOJI = {"未回答": "🔴", "ドラフト生成済": "🔵", "回答済": "🟢", "編集中": "🟡", "再質問": "🟠"}
     for q in questions:
         is_editing = q["ステータス"] == "編集中"

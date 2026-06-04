@@ -158,6 +158,67 @@ def validate_question(title, content, tags, has_images):
 
     return errors
 
+def search_similar_questions(title, content):
+    """過去の類似質問をNotionで検索し、上位件数を返す"""
+    import anthropic as ac, json, re
+    client = Client(auth=NOTION_API_KEY)
+
+    # Notion検索API（タイトル+本文の先頭100文字をキーワードに）
+    search_text = f"{title} {content[:100]}"
+    res = client.search(query=search_text, filter={"property": "object", "value": "page"}, page_size=20)
+
+    candidates = []
+    for page in res.get("results", []):
+        p = page.get("properties", {})
+        if not p:
+            continue
+        status = p.get("ステータス", {}).get("select", {})
+        if not status or status.get("name") != "回答済":
+            continue
+        title_prop = p.get("質問タイトル", {}).get("title", [])
+        q_title = title_prop[0]["plain_text"] if title_prop else ""
+        q_body_items = p.get("質問本文", {}).get("rich_text", [])
+        q_body = q_body_items[0]["plain_text"] if q_body_items else ""
+        a_items = p.get("回答本文", {}).get("rich_text", [])
+        a_body = a_items[0]["plain_text"] if a_items else ""
+        tags = [s["name"] for s in p.get("タグ", {}).get("multi_select", [])]
+        if q_title or q_body:
+            candidates.append({
+                "id": page["id"],
+                "タイトル": q_title,
+                "質問本文": q_body,
+                "回答本文": a_body,
+                "タグ": tags,
+            })
+
+    if not candidates:
+        return []
+
+    # Claudeで類似度を判定（上位3件を選別）
+    try:
+        summary = "\n".join([
+            f"[{i}] タイトル:{c['タイトル']} | 質問:{c['質問本文'][:100]}"
+            for i, c in enumerate(candidates)
+        ])
+        ai = ac.Anthropic(api_key=ANTHROPIC_API_KEY)
+        msg = ai.messages.create(
+            model="claude-haiku-4-5",
+            max_tokens=200,
+            messages=[{"role": "user", "content": f"""新規質問：「{title}」{content[:150]}
+
+以下の過去質問のうち、新規質問と類似または参考になるものの番号を最大3つ選んでください。
+類似するものがなければ空配列を返してください。
+JSON配列のみで返答してください（例：[0,2]）：
+
+{summary}"""}]
+        )
+        raw = msg.content[0].text.strip()
+        raw = re.sub(r"```.*?```", "", raw, flags=re.DOTALL).strip()
+        indices = json.loads(raw)
+        return [candidates[i] for i in indices if i < len(candidates)]
+    except Exception:
+        return candidates[:3]
+
 def rewrite_question(title, content):
     """Claude APIで質問をリライトし、タイトルと本文を返す"""
     import anthropic, json, re
@@ -274,7 +335,7 @@ def submit_question(タイトル, 質問本文, タグ, 画像ファイル):
     return len(画像URLs)
 
 # ── ステップ管理 ──────────────────────────────────────────────────────
-step = st.session_state.get("post_step", "input")  # input / preview
+step = st.session_state.get("post_step", "input")  # input / similar / preview
 
 # ── ステップ1：入力フォーム ──────────────────────────────────────────
 if step == "input":
@@ -283,7 +344,7 @@ if step == "input":
         質問本文 = st.text_area("質問内容 *", height=150, placeholder="■ 〇〇について確認したいのですが...\n■ また、〇〇の場合はどうなりますか？")
         画像ファイル = st.file_uploader("画像（複数可）", type=["png", "jpg", "jpeg", "gif", "webp"], accept_multiple_files=True)
         タグ = st.multiselect("タグ（必須）*", TAGS)
-        submitted = st.form_submit_button("確認・リライト →")
+        submitted = st.form_submit_button("類似質問を確認する →")
 
     if submitted:
         if not タイトル or not 質問本文:
@@ -291,25 +352,63 @@ if step == "input":
         elif not タグ:
             st.error("タグを選択してください")
         else:
-            with st.spinner("入力内容を確認・リライト中..."):
+            with st.spinner("入力内容を確認中..."):
                 errors = validate_question(タイトル, 質問本文, タグ, bool(画像ファイル))
 
             if errors:
                 for err in errors:
                     st.error(err)
             else:
-                with st.spinner("AIがリライトしています..."):
-                    rewritten_title, rewritten_content = rewrite_question(タイトル, 質問本文)
+                with st.spinner("過去の類似質問を検索中..."):
+                    similar = search_similar_questions(タイトル, 質問本文)
 
-                # セッションに保存してプレビューへ
-                st.session_state["post_step"] = "preview"
+                st.session_state["post_step"] = "similar"
                 st.session_state["orig_title"] = タイトル
                 st.session_state["orig_content"] = 質問本文
-                st.session_state["rewrite_title"] = rewritten_title
-                st.session_state["rewrite_content"] = rewritten_content
                 st.session_state["post_tags"] = タグ
                 st.session_state["post_images"] = 画像ファイル
+                st.session_state["similar_results"] = similar
                 st.rerun()
+
+# ── ステップ1.5：類似質問プレビュー ──────────────────────────────────
+elif step == "similar":
+    similar = st.session_state.get("similar_results", [])
+    タイトル = st.session_state.get("orig_title", "")
+    質問本文 = st.session_state.get("orig_content", "")
+
+    if similar:
+        st.subheader("🔍 過去の類似質問が見つかりました")
+        st.caption("以下の回答で解決する場合は投稿不要です。解決しない場合は「新規質問として投稿する」へ進んでください。")
+
+        for i, q in enumerate(similar):
+            with st.expander(f"**{q['タイトル'] or '（タイトルなし）'}**　タグ：{'・'.join(q['タグ'])}", expanded=(i == 0)):
+                st.markdown("**質問内容：**")
+                st.markdown(q["質問本文"][:400] + ("…" if len(q["質問本文"]) > 400 else ""))
+                if q["回答本文"]:
+                    st.markdown("**回答：**")
+                    ans_html = q["回答本文"][:400].replace("\n", "<br>") + ("…" if len(q["回答本文"]) > 400 else "")
+                    st.markdown(f'<div style="background:#fff;border:1px solid #dee2e6;border-radius:6px;padding:10px;line-height:1.7;">{ans_html}</div>', unsafe_allow_html=True)
+                else:
+                    st.caption("（回答なし）")
+    else:
+        st.subheader("✅ 類似質問は見つかりませんでした")
+        st.caption("新規質問として投稿してください。")
+
+    st.divider()
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("← 入力に戻る"):
+            st.session_state["post_step"] = "input"
+            st.rerun()
+    with col2:
+        btn_label = "この内容では解決しない → 新規質問として投稿する" if similar else "新規質問として投稿する →"
+        if st.button(btn_label, type="primary"):
+            with st.spinner("AIがリライトしています..."):
+                rewritten_title, rewritten_content = rewrite_question(タイトル, 質問本文)
+            st.session_state["post_step"] = "preview"
+            st.session_state["rewrite_title"] = rewritten_title
+            st.session_state["rewrite_content"] = rewritten_content
+            st.rerun()
 
 # ── ステップ2：リライトプレビュー＆確認 ────────────────────────────
 elif step == "preview":
