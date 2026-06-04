@@ -282,6 +282,65 @@ def load_master_from_file():
     return master, None
 
 
+MASTER_GITHUB_PATH = "master.csv"
+
+
+@st.cache_data(show_spinner="GitHubから商品マスタを読み込み中...", ttl=3600)
+def load_master_from_github():
+    """ローカルファイルがない場合のフォールバック：GitHubからmaster.csvを読み込む"""
+    token = st.secrets.get("GITHUB_TOKEN", "")
+    repo  = st.secrets.get("GITHUB_REPO", "")
+    if not token or not repo:
+        return None, "GitHub認証情報がありません"
+    url     = f"https://api.github.com/repos/{repo}/contents/{MASTER_GITHUB_PATH}"
+    headers = {
+        "Authorization": f"token {token}",
+        "Accept":        "application/vnd.github.raw",  # 大容量ファイル対応
+    }
+    try:
+        r = requests.get(url, headers=headers, timeout=60)
+        if r.status_code == 404:
+            return None, "GitHubにmaster.csvが見つかりません（初回はサイドバーからアップロードしてください）"
+        if not r.ok:
+            return None, f"GitHub読み込み失敗: {r.status_code}"
+        master = {}
+        for row in csv.DictReader(io.StringIO(r.content.decode("utf-8"))):
+            jan = row.get("JANコード", "").strip()
+            if jan:
+                master[jan] = {
+                    "商品コード": row.get("商品コード", "").strip(),
+                    "商品名":     row.get("商品名",     "").strip(),
+                }
+        return master, None
+    except Exception as e:
+        return None, str(e)
+
+
+def save_master_to_github(file_bytes):
+    """アップロードされたmaster.csvをGitHubに保存（次回起動時に自動読み込みされる）"""
+    token = st.secrets.get("GITHUB_TOKEN", "")
+    repo  = st.secrets.get("GITHUB_REPO", "")
+    if not token or not repo:
+        return False, "GitHub認証情報がありません"
+    url     = f"https://api.github.com/repos/{repo}/contents/{MASTER_GITHUB_PATH}"
+    headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github.v3+json"}
+    r   = requests.get(url, headers=headers, timeout=10)
+    sha = r.json().get("sha") if r.ok else None
+    payload = {
+        "message": "Update master.csv via app",
+        "content": base64.b64encode(file_bytes).decode(),
+    }
+    if sha:
+        payload["sha"] = sha
+    try:
+        r = requests.put(url, json=payload, headers=headers, timeout=120)
+        if r.ok:
+            return True, None
+        return False, r.json().get("message", "不明なエラー")
+    except Exception as e:
+        return False, str(e)
+
+
 def load_master_from_upload(file_bytes):
     for enc in ("utf-8-sig", "utf-8", "shift_jis", "cp932"):
         try:
@@ -1470,13 +1529,18 @@ def main():
     if "master" not in st.session_state:
         master, err = load_master_from_file()
         if err:
+            # ローカルになければ GitHub からフォールバック
+            master, err = load_master_from_github()
+        if err:
             st.session_state["master"] = None
             st.session_state["master_info"] = "未読み込み"
         else:
             st.session_state["master"] = master
-            mtime = Path(MASTER_PATH).stat().st_mtime
-            dt = datetime.fromtimestamp(mtime).strftime("%Y/%m/%d")
-            st.session_state["master_info"] = f"{len(master):,} 件（更新日: {dt}）"
+            if MASTER_PATH.exists():
+                dt = datetime.fromtimestamp(MASTER_PATH.stat().st_mtime).strftime("%Y/%m/%d")
+                st.session_state["master_info"] = f"{len(master):,} 件（更新日: {dt}）"
+            else:
+                st.session_state["master_info"] = f"{len(master):,} 件（GitHub から読み込み済み）"
 
     # ── 個口数マスタの読み込み ────────────────────────────
     if "koguchi_master" not in st.session_state:
@@ -1553,7 +1617,16 @@ def main():
                     else:
                         st.session_state["master"] = master
                         st.session_state["master_info"] = f"{len(master):,} 件（今回アップロード）"
-                        st.success(f"更新しました：{len(master):,} 件")
+                        # GitHub に保存（次回起動時に自動読み込みされる）
+                        with st.spinner("GitHubにマスタを保存中（初回は少し時間がかかります）..."):
+                            gh_ok, gh_err = save_master_to_github(file_bytes)
+                        if gh_ok:
+                            load_master_from_github.clear()  # キャッシュ更新
+                            st.success(f"更新しました：{len(master):,} 件（GitHub に保存済み ✅）")
+                        else:
+                            st.warning(f"GitHub 保存失敗（次回起動後に消える可能性あり）: {gh_err}")
+                            st.success(f"更新しました：{len(master):,} 件")
+                        # Google Drive バックアップ
                         with st.spinner("Google Driveにバックアップ中..."):
                             ok, result = backup_to_drive(file_bytes, "商品マスタ", "master")
                         if ok:
