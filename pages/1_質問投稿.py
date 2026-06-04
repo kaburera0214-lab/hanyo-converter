@@ -265,10 +265,14 @@ else:
                 st.markdown(f"**タグ：** {', '.join(q['タグ'])}")
                 if st.button("✏️ 編集する", key=f"start_edit_{q['id']}"):
                     st.session_state["editing_id"] = q["id"]
-                    Client(auth=NOTION_API_KEY).pages.update(
-                        page_id=q["id"],
-                        properties={"ステータス": {"select": {"name": "編集中"}}}
-                    )
+                    try:
+                        Client(auth=NOTION_API_KEY).pages.update(
+                            page_id=q["id"],
+                            properties={"ステータス": {"select": {"name": "編集中"}}}
+                        )
+                    except Exception as e:
+                        st.error(f"ステータス更新失敗: {e}")
+                        st.stop()
                     st.rerun()
             else:
                 with st.form(f"edit_form_{q['id']}"):
