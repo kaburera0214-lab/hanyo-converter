@@ -73,9 +73,10 @@ def generate_draft(question, questions):
         f"【事例】\n質問: {q['質問本文']}\n回答: {q['回答本文']}\n判断理由: {', '.join(q['判断理由カテゴリ'])} / {q['判断理由詳細']}"
         for q in knowledge
     ]) or "（まだ蓄積データがありません）"
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel("gemini-1.5-flash")
-    prompt = f"""あなたはパピー社のナレッジアシスタントです。過去の判断事例をもとに回答ドラフトを作成してください。
+    try:
+        genai.configure(api_key=GEMINI_API_KEY)
+        model = genai.GenerativeModel("gemini-2.0-flash")
+        prompt = f"""あなたはパピー社のナレッジアシスタントです。過去の判断事例をもとに回答ドラフトを作成してください。
 
 【過去の判断事例】
 {knowledge_text}
@@ -83,8 +84,10 @@ def generate_draft(question, questions):
 質問: {question['質問本文']}
 
 上記の質問に対する回答ドラフトを作成してください。"""
-    response = model.generate_content(prompt)
-    return response.text
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        return f"（AIドラフト生成に失敗しました。APIキーを確認してください。エラー: {type(e).__name__}）"
 
 if st.button("🔄 最新の質問を読み込む"):
     st.rerun()
@@ -123,16 +126,19 @@ else:
                 if st.button("AIドラフトを生成する", key=f"draft_{q['id']}"):
                     with st.spinner("AIが回答を考えています..."):
                         draft = generate_draft(q, questions)
-                        c = Client(auth=NOTION_API_KEY)
-                        c.pages.update(
-                            page_id=q["id"],
-                            properties={
-                                "AI生成ドラフト": {"rich_text": [{"text": {"content": draft}}]},
-                                "ステータス": {"select": {"name": "ドラフト生成済"}},
-                            }
-                        )
-                        st.success("ドラフトを生成しました。")
-                        st.rerun()
+                        if draft.startswith("（AIドラフト生成に失敗") or draft.startswith("（Gemini"):
+                            st.error(draft)
+                        else:
+                            c = Client(auth=NOTION_API_KEY)
+                            c.pages.update(
+                                page_id=q["id"],
+                                properties={
+                                    "AI生成ドラフト": {"rich_text": [{"text": {"content": draft}}]},
+                                    "ステータス": {"select": {"name": "ドラフト生成済"}},
+                                }
+                            )
+                            st.success("ドラフトを生成しました。")
+                            st.rerun()
 
             if q["ステータス"] in ("ドラフト生成済", "回答済"):
                 回答本文 = st.text_area(
