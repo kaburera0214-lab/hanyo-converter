@@ -281,15 +281,6 @@ else:
                     with col2:
                         cancel = st.form_submit_button("キャンセル")
 
-                # フォーム外：万が一ロックが残った場合の解除ボタン
-                if st.button("🔓 編集を終了してロック解除", key=f"unlock_{q['id']}", help="保存せずに編集を終了します"):
-                    st.session_state.pop("editing_id", None)
-                    Client(auth=NOTION_API_KEY).pages.update(
-                        page_id=q["id"],
-                        properties={"ステータス": {"select": {"name": "未回答"}}}
-                    )
-                    st.rerun()
-
                 if cancel:
                     st.session_state.pop("editing_id", None)
                     Client(auth=NOTION_API_KEY).pages.update(
