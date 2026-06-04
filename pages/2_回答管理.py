@@ -27,10 +27,9 @@ def ensure_properties():
         client = Client(auth=NOTION_API_KEY)
         db = client.databases.retrieve(database_id=DATABASE_ID)
         updates = {}
-        if "画像URL" not in db["properties"]:
-            updates["画像URL"] = {"rich_text": {}}
-        if "編集履歴" not in db["properties"]:
-            updates["編集履歴"] = {"rich_text": {}}
+        for prop in ["画像URL", "編集履歴", "追加質問", "会話ログ"]:
+            if prop not in db["properties"]:
+                updates[prop] = {"rich_text": {}}
         if updates:
             client.databases.update(database_id=DATABASE_ID, properties=updates)
     except Exception:
@@ -66,6 +65,8 @@ def get_questions():
             "質問日時": p["質問日時"]["date"]["start"] if p["質問日時"]["date"] else "",
             "画像URL": get_text(p.get("画像URL", {})),
             "編集履歴": get_text(p.get("編集履歴", {})),
+            "追加質問": get_text(p.get("追加質問", {})),
+            "会話ログ": get_text(p.get("会話ログ", {})),
         })
     return questions
 
@@ -132,7 +133,7 @@ questions = get_questions()
 if not questions:
     st.info("質問がまだありません")
 else:
-    STATUS_EMOJI = {"未回答": "🔴", "ドラフト生成済": "🔵", "回答済": "🟢", "編集中": "🟡"}
+    STATUS_EMOJI = {"未回答": "🔴", "ドラフト生成済": "🔵", "回答済": "🟢", "編集中": "🟡", "再質問": "🟠"}
     for q in questions:
         is_editing = q["ステータス"] == "編集中"
         emoji = STATUS_EMOJI.get(q["ステータス"], "⚪")
@@ -159,6 +160,48 @@ else:
 
             if is_editing:
                 st.warning("現在インハナさんが編集中です。編集完了後に対応してください。")
+
+            elif q["ステータス"] == "再質問":
+                # 会話ログ表示
+                if q["会話ログ"]:
+                    st.markdown("**会話の流れ：**")
+                    conv_height = max(200, q["会話ログ"].count("\n") * 22 + 100)
+                    st.text_area("", value=q["会話ログ"], height=conv_height, disabled=True, label_visibility="collapsed")
+                st.error(f"**追加質問：** {q['追加質問']}")
+                st.divider()
+
+                # 追加質問への回答
+                add_ans_value = q["AI生成ドラフト"] if not q["回答本文"] else q["回答本文"]
+                add_ans_height = max(150, add_ans_value.count("\n") * 22 + 100)
+                add_answer = st.text_area("追加質問への回答", value="", height=add_ans_height, key=f"add_ans_{q['id']}")
+                選択カテゴリ = st.multiselect("判断理由カテゴリ", REASON_CATEGORIES, key=f"add_cat_{q['id']}")
+                理由詳細 = st.text_area("判断理由の詳細", height=80, key=f"add_reason_{q['id']}")
+
+                if st.button("✓ 追加回答を送信する", key=f"add_approve_{q['id']}", type="primary"):
+                    if not add_answer.strip():
+                        st.error("回答内容を入力してください")
+                    else:
+                        # 会話ログに追記
+                        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+                        new_log = q["会話ログ"] + f"\n\n【追加A｜{timestamp}】{add_answer.strip()}"
+                        if len(new_log) > 1900:
+                            new_log = "（古い会話を省略）\n" + new_log[-1800:]
+                        c = Client(auth=NOTION_API_KEY)
+                        c.pages.update(
+                            page_id=q["id"],
+                            properties={
+                                "回答本文": {"rich_text": [{"text": {"content": add_answer}}]},
+                                "追加質問": {"rich_text": [{"text": {"content": ""}}]},
+                                "会話ログ": {"rich_text": [{"text": {"content": new_log}}]},
+                                "判断理由カテゴリ": {"multi_select": [{"name": c2} for c2 in 選択カテゴリ]},
+                                "判断理由詳細": {"rich_text": [{"text": {"content": 理由詳細}}]},
+                                "ステータス": {"select": {"name": "回答済"}},
+                                "回答日時": {"date": {"start": datetime.now().isoformat()}},
+                                "AI学習済": {"checkbox": True},
+                            }
+                        )
+                        st.success("追加回答を送信しました！")
+                        st.rerun()
 
             elif q["ステータス"] == "未回答":
                 if st.button("AIドラフトを生成する", key=f"draft_{q['id']}"):

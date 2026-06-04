@@ -25,23 +25,29 @@ def get_database_id():
 DATABASE_ID = get_database_id()
 
 def ensure_status_option():
-    """ステータスに「編集中」選択肢がなければ追加する"""
     try:
         client = Client(auth=NOTION_API_KEY)
         db = client.databases.retrieve(database_id=DATABASE_ID)
         options = db["properties"].get("ステータス", {}).get("select", {}).get("options", [])
         names = [o["name"] for o in options]
+        new_options = list(options)
         if "編集中" not in names:
+            new_options.append({"name": "編集中", "color": "yellow"})
+        if "再質問" not in names:
+            new_options.append({"name": "再質問", "color": "orange"})
+        if new_options != options:
             client.databases.update(
                 database_id=DATABASE_ID,
-                properties={
-                    "ステータス": {
-                        "select": {
-                            "options": options + [{"name": "編集中", "color": "yellow"}]
-                        }
-                    }
-                }
+                properties={"ステータス": {"select": {"options": new_options}}}
             )
+        # 追加質問・会話ログプロパティを追加
+        updates = {}
+        if "追加質問" not in db["properties"]:
+            updates["追加質問"] = {"rich_text": {}}
+        if "会話ログ" not in db["properties"]:
+            updates["会話ログ"] = {"rich_text": {}}
+        if updates:
+            client.databases.update(database_id=DATABASE_ID, properties=updates)
     except Exception:
         pass
 
@@ -199,6 +205,33 @@ def get_editable_questions():
             "質問本文": get_text(p.get("質問本文", {})),
             "タグ": [s["name"] for s in p.get("タグ", {}).get("multi_select", [])],
             "ステータス": p["ステータス"]["select"]["name"] if p["ステータス"]["select"] else "未回答",
+            "質問日時": p["質問日時"]["date"]["start"] if p.get("質問日時", {}).get("date") else "",
+        })
+    return questions
+
+def get_answered_questions():
+    """追加質問できる回答済み質問を取得"""
+    client = Client(auth=NOTION_API_KEY)
+    res = client.databases.query(**{
+        "database_id": DATABASE_ID,
+        "filter": {"or": [
+            {"property": "ステータス", "select": {"equals": "回答済"}},
+            {"property": "ステータス", "select": {"equals": "再質問"}},
+        ]},
+        "sorts": [{"property": "質問日時", "direction": "descending"}]
+    })
+    questions = []
+    for page in res["results"]:
+        p = page["properties"]
+        questions.append({
+            "id": page["id"],
+            "タイトル": p["質問タイトル"]["title"][0]["plain_text"] if p.get("質問タイトル", {}).get("title") else "",
+            "質問本文": get_text(p.get("質問本文", {})),
+            "回答本文": get_text(p.get("回答本文", {})),
+            "追加質問": get_text(p.get("追加質問", {})),
+            "会話ログ": get_text(p.get("会話ログ", {})),
+            "タグ": [s["name"] for s in p.get("タグ", {}).get("multi_select", [])],
+            "ステータス": p["ステータス"]["select"]["name"] if p["ステータス"]["select"] else "回答済",
             "質問日時": p["質問日時"]["date"]["start"] if p.get("質問日時", {}).get("date") else "",
         })
     return questions
@@ -400,3 +433,60 @@ else:
                             st.rerun()
                         except Exception as e:
                             st.error(f"保存に失敗しました: {e}")
+
+# ── 回答済み質問への追加質問 ──────────────────────────────────────────
+st.divider()
+st.subheader("💬 回答済み質問への追加質問")
+
+answered_questions = get_answered_questions()
+if not answered_questions:
+    st.info("回答済みの質問はありません")
+else:
+    for q in answered_questions:
+        status_emoji = "🟠" if q["ステータス"] == "再質問" else "🟢"
+        label = f"{status_emoji} {q['タイトル']}　{q['質問日時'][:10] if q['質問日時'] else ''}"
+        with st.expander(label):
+            # 会話ログがあれば表示
+            if q["会話ログ"]:
+                st.markdown("**会話の流れ：**")
+                st.text(q["会話ログ"])
+                st.divider()
+            else:
+                st.markdown(f"**質問内容：** {q['質問本文']}")
+                st.markdown(f"**回答：** {q['回答本文']}")
+                st.divider()
+
+            if q["ステータス"] == "再質問":
+                st.warning(f"⏳ 追加質問を送信済みです。回答をお待ちください。\n\n**追加質問内容：** {q['追加質問']}")
+            else:
+                follow_up_key = f"followup_{q['id']}"
+                follow_up_text = st.text_area(
+                    "追加質問を入力してください",
+                    height=120,
+                    key=follow_up_key,
+                    placeholder="解決しなかった点や追加で確認したいことを記入してください"
+                )
+                if st.button("📨 追加質問を送信する", key=f"send_followup_{q['id']}", type="primary"):
+                    if not follow_up_text.strip():
+                        st.error("追加質問の内容を入力してください")
+                    else:
+                        # 会話ログに追記
+                        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+                        existing_log = q["会話ログ"]
+                        if not existing_log:
+                            existing_log = f"【Q】{q['質問本文']}\n【A】{q['回答本文']}"
+                        new_log = existing_log + f"\n\n【追加Q｜{timestamp}】{follow_up_text.strip()}"
+                        # 2000文字超えたら古い部分をトリミング
+                        if len(new_log) > 1900:
+                            new_log = "（古い会話を省略）\n" + new_log[-1800:]
+
+                        Client(auth=NOTION_API_KEY).pages.update(
+                            page_id=q["id"],
+                            properties={
+                                "追加質問": {"rich_text": [{"text": {"content": follow_up_text.strip()}}]},
+                                "会話ログ": {"rich_text": [{"text": {"content": new_log}}]},
+                                "ステータス": {"select": {"name": "再質問"}},
+                            }
+                        )
+                        st.success("追加質問を送信しました！")
+                        st.rerun()
