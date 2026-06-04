@@ -1383,14 +1383,19 @@ def _field_config_ui(field, current, columns, pfx):
                 existing_map = current.get("map", {})
                 txt = "\n".join(f"{k} → {v}" for k, v in existing_map.items())
                 edited = st.text_area(
-                    "コード対応表（先方コード → 自社商品コード、1行1ペア）",
+                    "コード対応表（先方コード , 自社商品コード　区切りは → , 、 いずれもOK）",
                     value=txt, height=120, key=f"{pfx}_sup_map_{field}",
-                    placeholder="例:\nABC001 → 4920520123456\nXYZ002 → 4920520654321",
+                    placeholder="例:\nABC001,4920520123456\nXYZ002、4920520654321\nDEF003 → 4920520999999",
                 )
+                import re as _re
                 m = {}
                 for ln in edited.strip().split("\n"):
-                    if "→" in ln:
-                        parts = ln.split("→", 1)
+                    ln = ln.strip()
+                    if not ln:
+                        continue
+                    # 区切り文字：→ ／ , ／ 、（全角半角スペース込み）
+                    parts = _re.split(r"\s*[→,、]\s*", ln, maxsplit=1)
+                    if len(parts) == 2 and parts[0] and parts[1]:
                         m[parts[0].strip()] = parts[1].strip()
                 new_cfg["map"] = m
 
