@@ -1527,20 +1527,14 @@ def main():
 
     # ── 商品マスタの読み込み ──────────────────────────────
     if "master" not in st.session_state:
-        master, err = load_master_from_file()
-        if err:
-            # ローカルになければ GitHub からフォールバック
-            master, err = load_master_from_github()
+        # ローカルは参照せず、常にGitHubから読み込む
+        master, err = load_master_from_github()
         if err:
             st.session_state["master"] = None
             st.session_state["master_info"] = "未読み込み"
         else:
             st.session_state["master"] = master
-            if MASTER_PATH.exists():
-                dt = datetime.fromtimestamp(MASTER_PATH.stat().st_mtime).strftime("%Y/%m/%d")
-                st.session_state["master_info"] = f"{len(master):,} 件（更新日: {dt}）"
-            else:
-                st.session_state["master_info"] = f"{len(master):,} 件（GitHub から読み込み済み）"
+            st.session_state["master_info"] = f"{len(master):,} 件（GitHub から読み込み済み）"
 
     # ── 個口数マスタの読み込み ────────────────────────────
     if "koguchi_master" not in st.session_state:
