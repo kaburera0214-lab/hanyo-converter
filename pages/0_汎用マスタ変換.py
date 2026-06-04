@@ -1227,7 +1227,8 @@ def apply_custom_mapping(order_bytes, mapping_def, master, koguchi_master, encod
                             not_found.setdefault(f"[商品コード空] {jan}", []).append(order_id)
                         val = code or ""
                     elif logic == "supplier_code":
-                        val = prod_supplier.get("商品コード", "")
+                        code_map = fd.get("map", {})
+                        val = code_map.get(sup_code, "")
                         if not val and out_field == "商品コード":
                             not_found.setdefault(f"[先方コード未紐付] {sup_code}", []).append(order_id)
                     elif logic == "koguchi_note":
@@ -1253,6 +1254,12 @@ def apply_custom_mapping(order_bytes, mapping_def, master, koguchi_master, encod
                 else:
                     val = ""
                 out_row[out_field] = val
+
+            # 商品コード空欄チェック（ロジック問わず全件）
+            if not out_row.get("商品コード", "").strip():
+                sku_val = item.get(sku_col, "") if sku_col else item.get(supplier_col, "")
+                not_found.setdefault(f"[商品コード空欄] {sku_val or '（コードなし）'}", []).append(order_id)
+
             output_rows.append(out_row)
 
     buf = io.StringIO()
@@ -1363,6 +1370,29 @@ def _field_config_ui(field, current, columns, pfx):
                     sel = st.selectbox("参照キー", col_opts, index=idx,
                                        key=f"{pfx}_sls_{field}")
                     new_cfg["source"] = "" if sel == "（未設定）" else sel
+
+            elif chosen_logic == "supplier_code":
+                # 参照列 + 先方コード→商品コードのマッピングテーブル
+                with v2:
+                    src = current.get("source", "")
+                    idx = col_opts.index(src) if src in col_opts else 0
+                    sel = st.selectbox("先方コード列", col_opts, index=idx,
+                                       key=f"{pfx}_sls_{field}")
+                    new_cfg["source"] = "" if sel == "（未設定）" else sel
+                # マッピングテーブル（全幅で下に表示）
+                existing_map = current.get("map", {})
+                txt = "\n".join(f"{k} → {v}" for k, v in existing_map.items())
+                edited = st.text_area(
+                    "コード対応表（先方コード → 自社商品コード、1行1ペア）",
+                    value=txt, height=120, key=f"{pfx}_sup_map_{field}",
+                    placeholder="例:\nABC001 → 4920520123456\nXYZ002 → 4920520654321",
+                )
+                m = {}
+                for ln in edited.strip().split("\n"):
+                    if "→" in ln:
+                        parts = ln.split("→", 1)
+                        m[parts[0].strip()] = parts[1].strip()
+                new_cfg["map"] = m
 
         elif chosen_type == "conditional":
             branch_type_opts = ["固定値", "列の値"]
