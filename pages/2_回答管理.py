@@ -6,7 +6,7 @@ from streamlit_autorefresh import st_autorefresh
 st.set_page_config(page_title="回答管理", layout="wide")
 st.title("✅ 回答・管理（パピー用）")
 
-st_autorefresh(interval=20000, key="auto_refresh")
+st_autorefresh(interval=60000, key="auto_refresh")
 
 NOTION_API_KEY = "".join(c for c in st.secrets["NOTION_API_KEY"] if c.isprintable() and ord(c) < 128)
 PAGE_ID = "37384fb235d780b88a46eb8d619a19ad"
@@ -54,6 +54,7 @@ def get_questions():
         p = page["properties"]
         questions.append({
             "id": page["id"],
+            "番号": p.get("ID", {}).get("unique_id", {}).get("number"),
             "タイトル": p["質問タイトル"]["title"][0]["plain_text"] if p.get("質問タイトル", {}).get("title") else "",
             "質問本文": get_text(p["質問本文"]),
             "ステータス": p["ステータス"]["select"]["name"] if p["ステータス"]["select"] else "未回答",
@@ -125,34 +126,78 @@ for i in range(1, 11):
     if name and pw:
         PASSWORDS[pw] = name
 
-col_reload, col_search = st.columns([1, 3])
-with col_reload:
-    if st.button("🔄 最新の質問を読み込む"):
-        st.rerun()
-with col_search:
-    search_word = st.text_input("🔍 キーワード検索", placeholder="質問内容・回答・タグで絞り込み", label_visibility="collapsed")
+if st.button("🔄 最新の質問を読み込む"):
+    st.rerun()
 
 questions = get_questions()
 
-# 検索フィルタ
-if search_word:
-    kw = search_word.lower()
-    questions = [
-        q for q in questions
-        if kw in q["タイトル"].lower()
-        or kw in q["質問本文"].lower()
-        or kw in q["回答本文"].lower()
-        or any(kw in t.lower() for t in q["タグ"])
-        or kw in q["判断理由詳細"].lower()
-    ]
+# ── 検索フォーム ──────────────────────────────────────────────────────
+all_tags = sorted({t for q in questions for t in q["タグ"]})
 
-if not questions:
-    st.info("該当する質問がありません" if search_word else "質問がまだありません")
+with st.form("search_form"):
+    st.markdown("**🔍 絞り込み検索**")
+    col1, col2 = st.columns(2)
+    with col1:
+        f_keyword = st.text_input("キーワード（質問内容・回答本文）", placeholder="例：送料　キャンセル")
+        f_number = st.text_input("質問番号", placeholder="例：42")
+    with col2:
+        f_tags = st.multiselect("タグ", all_tags)
+        f_date = st.date_input("期間", value=[], help="開始日・終了日の2つを選択（1つだけでもOK）")
+    search_submitted = st.form_submit_button("🔍 検索する", type="primary")
+    clear_submitted = st.form_submit_button("クリア")
+
+if clear_submitted:
+    st.rerun()
+
+# フィルタ適用（検索ボタン押下時のみ）
+filtered = questions
+is_filtered = False
+if search_submitted:
+    is_filtered = True
+    if f_keyword:
+        kw = f_keyword.lower()
+        filtered = [q for q in filtered
+                    if kw in q["タイトル"].lower()
+                    or kw in q["質問本文"].lower()
+                    or kw in q["回答本文"].lower()
+                    or kw in q["判断理由詳細"].lower()]
+    if f_number:
+        try:
+            num = int(f_number)
+            filtered = [q for q in filtered if q["番号"] == num]
+        except ValueError:
+            pass
+    if f_tags:
+        filtered = [q for q in filtered if any(t in q["タグ"] for t in f_tags)]
+    if isinstance(f_date, (list, tuple)) and len(f_date) >= 1:
+        from datetime import date
+        date_from = f_date[0] if len(f_date) >= 1 else None
+        date_to = f_date[1] if len(f_date) >= 2 else None
+        def in_range(q):
+            d_str = q["質問日時"][:10] if q["質問日時"] else ""
+            if not d_str:
+                return False
+            try:
+                d = date.fromisoformat(d_str)
+                if date_from and d < date_from:
+                    return False
+                if date_to and d > date_to:
+                    return False
+                return True
+            except Exception:
+                return False
+        filtered = [q for q in filtered if in_range(q)]
+
+display_questions = filtered if is_filtered else questions
+
+if is_filtered:
+    st.caption(f"検索結果：{len(filtered)}件 / 全{len(questions)}件")
+
+if not display_questions:
+    st.info("該当する質問がありません" if is_filtered else "質問がまだありません")
 else:
-    if search_word:
-        st.caption(f"{len(questions)}件ヒット")
     STATUS_EMOJI = {"未回答": "🔴", "ドラフト生成済": "🔵", "回答済": "🟢", "編集中": "🟡", "再質問": "🟠"}
-    for q in questions:
+    for q in display_questions:
         is_editing = q["ステータス"] == "編集中"
         emoji = STATUS_EMOJI.get(q["ステータス"], "⚪")
         label = f"{emoji} {q['タイトル']}　（{q['ステータス']}）　{q['質問日時'][:10] if q['質問日時'] else ''}"
