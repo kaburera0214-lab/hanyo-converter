@@ -76,13 +76,18 @@ def generate_report(questions: list, period_label: str) -> str:
         line = f"[{i+1}] タグ:{tags} | タイトル:{q['タイトル']} | 判断理由:{reasons}"
         if q["判断理由詳細"]:
             line += f" | 詳細:{q['判断理由詳細'][:80]}"
+        # 実際のやり取り（先頭150文字）を含める
+        if q["質問本文"]:
+            line += f"\n    Q: {q['質問本文'][:150].replace(chr(10), ' ')}"
+        if q["回答本文"]:
+            line += f"\n    A: {q['回答本文'][:150].replace(chr(10), ' ')}"
         summary_lines.append(line)
 
     summary = "\n".join(summary_lines)
 
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     prompt = f"""あなたはパピー社の業務改善アドバイザーです。
-以下は{period_label}の社内Q&A {len(questions)}件のサマリーです。
+以下は{period_label}の社内Q&A {len(questions)}件のデータです（各行にQ:質問・A:回答の抜粋を含みます）。
 
 {summary}
 
@@ -92,23 +97,23 @@ def generate_report(questions: list, period_label: str) -> str:
 件数・タグ別内訳・期間の特徴を2〜3文で
 
 ## 2. 頻出テーマ TOP3
-最も多く質問されたテーマを3つ挙げ、それぞれ件数と具体例を記載
+最も多く質問されたテーマを3つ挙げ、それぞれ件数と**実際のやり取り例（Q&Aを1〜2件引用）**を記載
 
 ## 3. 判断理由の傾向
-どんな基準で判断されることが多いか、傾向と背景を分析
+どんな基準で判断されることが多いか、傾向と背景を**実例を交えて**分析
 
 ## 4. 根本原因の仮説
 なぜこれらの質問が発生しているか、プロセス・ルール・情報共有の観点から考察
 
 ## 5. 構造改善の提案（優先度順）
-具体的なアクションを3〜5個、実行難易度（低/中/高）とセットで提示
+具体的なアクションを3〜5個、実行難易度（低/中/高）と**どのやり取りパターンを解消するか**をセットで提示
 
 ## 6. 次の分析までに確認すべき点
 改善効果を測るための指標や確認事項"""
 
     message = client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=3000,
+        max_tokens=4000,
         messages=[{"role": "user", "content": prompt}]
     )
     return message.content[0].text
