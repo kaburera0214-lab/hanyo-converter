@@ -97,6 +97,7 @@ SPECIAL_LOGICS = {
     "order_datetime":  "日時フォーマット変換",
     "jan_master_name": "JANマスタ→商品名",
     "jan_master_code": "JANマスタ→商品コード",
+    "supplier_code":   "先方のコード→商品コード",
     "koguchi_note":    "個口数メモ（日時列指定）",
 }
 
@@ -282,6 +283,23 @@ def load_master_from_file():
     return master, None
 
 
+@st.cache_data(show_spinner="商品マスタ（先方コード）を読み込み中...")
+def load_master_supplier_from_file():
+    """先方コード→商品コード のマッピング辞書を返す"""
+    if not MASTER_PATH.exists():
+        return {}
+    supplier = {}
+    with open(MASTER_PATH, encoding="utf-8", newline="") as f:
+        for row in csv.DictReader(f):
+            sup_code = row.get("先方コード", "").strip()
+            if sup_code:
+                supplier[sup_code] = {
+                    "商品コード": row.get("商品コード", "").strip(),
+                    "商品名":     row.get("商品名", "").strip(),
+                }
+    return supplier
+
+
 MASTER_GITHUB_PATH = "master.csv"
 
 
@@ -312,6 +330,32 @@ def load_master_from_github():
                     "商品名":     row.get("商品名",     "").strip(),
                 }
         return master, None
+
+
+@st.cache_data(show_spinner="GitHubから商品マスタ（先方コード）を読み込み中...", ttl=3600)
+def load_master_supplier_from_github():
+    """先方コード→商品コード のマッピング辞書をGitHubから返す"""
+    token = st.secrets.get("GITHUB_TOKEN", "")
+    repo  = st.secrets.get("GITHUB_REPO", "")
+    if not token or not repo:
+        return {}
+    url     = f"https://api.github.com/repos/{repo}/contents/{MASTER_GITHUB_PATH}"
+    headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github.raw"}
+    try:
+        r = requests.get(url, headers=headers, timeout=60)
+        if not r.ok:
+            return {}
+        supplier = {}
+        for row in csv.DictReader(io.StringIO(r.content.decode("utf-8"))):
+            sup_code = row.get("先方コード", "").strip()
+            if sup_code:
+                supplier[sup_code] = {
+                    "商品コード": row.get("商品コード", "").strip(),
+                    "商品名":     row.get("商品名",     "").strip(),
+                }
+        return supplier
+    except Exception:
+        return {}
     except Exception as e:
         return None, str(e)
 
@@ -1069,7 +1113,7 @@ def auto_detect_shipment_mapping(input_data, output_rows):
 
 
 # ── カスタムマッピング：変換エンジン ─────────────────────────
-def apply_custom_mapping(order_bytes, mapping_def, master, koguchi_master, encoding="shift_jis"):
+def apply_custom_mapping(order_bytes, mapping_def, master, koguchi_master, encoding="shift_jis", master_supplier=None):
     try:
         text = order_bytes.decode(encoding, errors="replace")
     except Exception:
@@ -1087,13 +1131,15 @@ def apply_custom_mapping(order_bytes, mapping_def, master, koguchi_master, encod
     if not group_key:
         group_key = mapping_def.get("group_key_column", "")
 
-    # ── SKU列：JANマスタ特殊ロジックの参照列を使用（旧形式フォールバックあり）
+    # ── SKU列：JANマスタ or 先方コード特殊ロジックの参照列を使用
     sku_col = ""
+    supplier_col = ""
     for fd in fields.values():
-        if fd.get("type") == "special" and fd.get("logic") in ("jan_master_name", "jan_master_code"):
-            sku_col = fd.get("source", "")
-            if sku_col:
-                break
+        if fd.get("type") == "special":
+            if fd.get("logic") in ("jan_master_name", "jan_master_code") and not sku_col:
+                sku_col = fd.get("source", "")
+            if fd.get("logic") == "supplier_code" and not supplier_col:
+                supplier_col = fd.get("source", "")
     if not sku_col:
         sku_col = mapping_def.get("sku_column", "")
 
@@ -1113,6 +1159,15 @@ def apply_custom_mapping(order_bytes, mapping_def, master, koguchi_master, encod
             "「JANマスタ→商品名」または「JANマスタ→商品コード」を使用していますが、"
             "参照列が設定されていません。\n"
             "「商品名」または「商品コード」の特殊ロジック設定で JANコード列を参照列として選択してください。"
+        )
+    uses_supplier = any(
+        fd.get("type") == "special" and fd.get("logic") == "supplier_code"
+        for fd in fields.values()
+    )
+    if uses_supplier and not supplier_col:
+        return None, 0, 0, {}, (
+            "「先方のコード→商品コード」を使用していますが、参照列が設定されていません。\n"
+            "特殊ロジック設定で先方のコード列を参照列として選択してください。"
         )
 
     orders = OrderedDict()
@@ -1136,6 +1191,10 @@ def apply_custom_mapping(order_bytes, mapping_def, master, koguchi_master, encod
             prod = master.get(jan, {}) if (master and jan) else {}
             if master and jan and not prod:
                 not_found.setdefault(jan, []).append(order_id)
+
+            # 先方コード→商品コード のルックアップ
+            sup_code = item.get(supplier_col, "").strip() if supplier_col else ""
+            prod_supplier = (master_supplier or {}).get(sup_code, {}) if sup_code else {}
 
             out_row = {}
             for out_field in OUT_HEADERS:
@@ -1161,7 +1220,14 @@ def apply_custom_mapping(order_bytes, mapping_def, master, koguchi_master, encod
                     elif logic == "jan_master_name":
                         val = prod.get("商品名") or item.get("商品名", "")
                     elif logic == "jan_master_code":
-                        val = prod.get("商品コード") or jan
+                        code = prod.get("商品コード", "")
+                        if not code and out_field == "商品コード":
+                            not_found.setdefault(f"[商品コード空] {jan}", []).append(order_id)
+                        val = code or ""
+                    elif logic == "supplier_code":
+                        val = prod_supplier.get("商品コード", "")
+                        if not val and out_field == "商品コード":
+                            not_found.setdefault(f"[先方コード未紐付] {sup_code}", []).append(order_id)
                     elif logic == "koguchi_note":
                         note = order_datetime(item.get(src, "")) if src else ""
                         if koguchi == "宅配":
@@ -1536,6 +1602,9 @@ def main():
             st.session_state["master"] = master
             st.session_state["master_info"] = f"{len(master):,} 件（GitHub から読み込み済み）"
 
+    if "master_supplier" not in st.session_state:
+        st.session_state["master_supplier"] = load_master_supplier_from_github()
+
     # ── 個口数マスタの読み込み ────────────────────────────
     if "koguchi_master" not in st.session_state:
         km = load_koguchi_from_file()
@@ -1805,6 +1874,7 @@ def main():
                             _b3, _o3, _r3, _nf3, _e3 = apply_custom_mapping(
                                 order3.read(), mappings[sel_name],
                                 master3 or {}, koguchi_master3, s_enc_map[enc_lbl],
+                                master_supplier=st.session_state.get("master_supplier", {}),
                             )
                         if _e3:
                             st.error(_e3)
