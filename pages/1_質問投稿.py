@@ -154,27 +154,31 @@ def validate_question(title, content, tags, has_images):
 
 def rewrite_question(title, content):
     """Claude APIで質問をリライトし、タイトルと本文を返す"""
-    try:
-        import anthropic
-        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-        message = client.messages.create(
-            model="claude-haiku-4-5",
-            max_tokens=1024,
-            messages=[{"role": "user", "content": f"""以下の質問を、日本語として自然で丁寧なビジネス文章にリライトしてください。
-意味は変えず、表現を整えてください。
-複数の質問がある場合は各質問の先頭に「■」をつけてください。
+    import anthropic, json, re
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    message = client.messages.create(
+        model="claude-haiku-4-5",
+        max_tokens=2048,
+        messages=[{"role": "user", "content": f"""あなたは日本語ビジネス文章の校正アシスタントです。
+以下の質問を、日本語として自然で丁寧なビジネス文章にリライトしてください。
+
+ルール：
+- 意味・情報は一切変えない
+- 文法・表現・敬語を整える
+- 複数の質問がある場合は各質問の先頭に「■」をつける
+- タイトルは「大カテゴリ・中カテゴリ」の形式で整える
 
 質問タイトル：{title}
 質問内容：{content}
 
-以下のJSON形式で返してください（JSON以外は出力しないこと）：
+必ず以下のJSON形式のみで返してください。前後に説明文や```は不要です：
 {{"title": "リライト後のタイトル", "content": "リライト後の内容"}}"""}]
-        )
-        import json
-        result = json.loads(message.content[0].text.strip())
-        return result.get("title", title), result.get("content", content)
-    except Exception:
-        return title, content
+    )
+    raw = message.content[0].text.strip()
+    # コードブロックを除去
+    raw = re.sub(r"```(?:json)?", "", raw).strip().rstrip("```").strip()
+    result = json.loads(raw)
+    return result.get("title", title), result.get("content", content)
 
 def get_editable_questions():
     client = Client(auth=NOTION_API_KEY)
@@ -279,16 +283,26 @@ elif step == "preview":
     st.subheader("📋 リライトプレビュー")
     st.caption("左：入力原文　右：AIリライト（編集可）")
 
+    # 余白を最小化するCSS
+    st.markdown("""<style>
+    [data-testid="column"] { padding-left: 0.25rem !important; padding-right: 0.25rem !important; }
+    </style>""", unsafe_allow_html=True)
+
+    # 内容の行数に応じて高さを動的に計算
+    orig_content = st.session_state["orig_content"]
+    rewrite_content = st.session_state["rewrite_content"]
+    content_height = max(300, max(orig_content.count("\n"), rewrite_content.count("\n")) * 22 + 120)
+
     col_orig, col_rewrite = st.columns(2)
     with col_orig:
         st.markdown("**原文**")
         st.text_input("タイトル（原文）", value=st.session_state["orig_title"], disabled=True, key="orig_t")
-        st.text_area("内容（原文）", value=st.session_state["orig_content"], height=200, disabled=True, key="orig_c")
+        st.text_area("内容（原文）", value=orig_content, height=content_height, disabled=True, key="orig_c")
 
     with col_rewrite:
         st.markdown("**AIリライト（必要なら編集してください）**")
         final_title = st.text_input("タイトル", value=st.session_state["rewrite_title"], key="final_t")
-        final_content = st.text_area("内容", value=st.session_state["rewrite_content"], height=200, key="final_c")
+        final_content = st.text_area("内容", value=rewrite_content, height=content_height, key="final_c")
 
     st.divider()
     col1, col2 = st.columns(2)
