@@ -330,6 +330,8 @@ def load_master_from_github():
                     "商品名":     row.get("商品名",     "").strip(),
                 }
         return master, None
+    except Exception as e:
+        return None, str(e)
 
 
 @st.cache_data(show_spinner="GitHubから商品マスタ（先方コード）を読み込み中...", ttl=3600)
