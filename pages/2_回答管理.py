@@ -1,9 +1,13 @@
 import streamlit as st
 from notion_client import Client
 from datetime import datetime
+from streamlit_autorefresh import st_autorefresh
 
 st.set_page_config(page_title="回答管理", layout="wide")
 st.title("✅ 回答・管理（パピー用）")
+
+# 5秒ごとに自動リフレッシュ（編集中ロックをリアルタイム反映）
+st_autorefresh(interval=5000, key="auto_refresh")
 
 NOTION_API_KEY = "".join(c for c in st.secrets["NOTION_API_KEY"] if c.isprintable() and ord(c) < 128)
 PAGE_ID = "37384fb235d780b88a46eb8d619a19ad"  # ページID（固定）

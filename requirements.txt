@@ -5,3 +5,4 @@ notion-client==2.2.1
 google-api-python-client
 google-auth
 anthropic
+streamlit-autorefresh

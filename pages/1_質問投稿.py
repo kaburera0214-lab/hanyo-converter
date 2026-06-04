@@ -314,7 +314,6 @@ else:
                             )
                             st.session_state.pop("editing_id", None)
                             st.success("更新しました。")
+                            st.rerun()
                         except Exception as e:
                             st.error(f"保存に失敗しました: {e}")
-                        finally:
-                            st.rerun()
