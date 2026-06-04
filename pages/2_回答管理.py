@@ -64,6 +64,14 @@ def get_questions():
         })
     return questions
 
+def get_current_status(page_id):
+    try:
+        client = Client(auth=NOTION_API_KEY)
+        page = client.pages.retrieve(page_id=page_id)
+        return page["properties"]["ステータス"]["select"]["name"]
+    except Exception:
+        return None
+
 def generate_draft(question, questions):
     if not ANTHROPIC_API_KEY:
         return "（Anthropic APIキーが未設定のためドラフト生成できません）"
@@ -130,21 +138,26 @@ else:
 
             elif q["ステータス"] == "未回答":
                 if st.button("AIドラフトを生成する", key=f"draft_{q['id']}"):
-                    with st.spinner("AIが回答を考えています..."):
-                        draft = generate_draft(q, questions)
-                        if draft.startswith("（AIドラフト生成に失敗") or draft.startswith("（Gemini"):
-                            st.error(draft)
-                        else:
-                            c = Client(auth=NOTION_API_KEY)
-                            c.pages.update(
-                                page_id=q["id"],
-                                properties={
-                                    "AI生成ドラフト": {"rich_text": [{"text": {"content": draft}}]},
-                                    "ステータス": {"select": {"name": "ドラフト生成済"}},
-                                }
-                            )
-                            st.success("ドラフトを生成しました。")
-                            st.rerun()
+                    current = get_current_status(q["id"])
+                    if current == "編集中":
+                        st.warning("現在インハナさんが編集中です。編集完了後に対応してください。")
+                        st.rerun()
+                    else:
+                        with st.spinner("AIが回答を考えています..."):
+                            draft = generate_draft(q, questions)
+                            if draft.startswith("（AIドラフト生成に失敗") or draft.startswith("（Anthropic") or draft.startswith("（Gemini"):
+                                st.error(draft)
+                            else:
+                                c = Client(auth=NOTION_API_KEY)
+                                c.pages.update(
+                                    page_id=q["id"],
+                                    properties={
+                                        "AI生成ドラフト": {"rich_text": [{"text": {"content": draft}}]},
+                                        "ステータス": {"select": {"name": "ドラフト生成済"}},
+                                    }
+                                )
+                                st.success("ドラフトを生成しました。")
+                                st.rerun()
 
             if q["ステータス"] in ("ドラフト生成済", "回答済"):
                 回答本文 = st.text_area(
@@ -161,7 +174,11 @@ else:
                     理由詳細 = st.text_area("判断理由の詳細", height=80, key=f"reason_{q['id']}")
 
                     if st.button("✓ インハナさんに送信する", key=f"approve_{q['id']}", type="primary"):
-                        if not 選択カテゴリ and not 理由詳細.strip():
+                        current = get_current_status(q["id"])
+                        if current == "編集中":
+                            st.warning("現在インハナさんが編集中です。編集完了後に対応してください。")
+                            st.rerun()
+                        elif not 選択カテゴリ and not 理由詳細.strip():
                             st.error("判断理由を入力してください")
                         elif not 回答本文.strip():
                             st.error("回答内容を入力してください")
