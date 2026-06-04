@@ -77,6 +77,37 @@ def get_current_status(page_id):
     except Exception:
         return None
 
+def get_editor_identity():
+    """IPアドレスとデバイス情報を自動取得"""
+    try:
+        headers = st.context.headers
+        ip = headers.get("X-Forwarded-For", headers.get("X-Real-IP", "不明"))
+        ip = ip.split(",")[0].strip()
+        ua = headers.get("User-Agent", "")
+        if "iPhone" in ua or "iPad" in ua:
+            device = "iOS"
+        elif "Android" in ua:
+            device = "Android"
+        elif "Windows" in ua:
+            device = "Windows"
+        elif "Mac" in ua:
+            device = "Mac"
+        else:
+            device = "不明"
+        if "Edg" in ua:
+            browser = "Edge"
+        elif "Chrome" in ua:
+            browser = "Chrome"
+        elif "Firefox" in ua:
+            browser = "Firefox"
+        elif "Safari" in ua:
+            browser = "Safari"
+        else:
+            browser = "不明"
+        return f"{ip} ({device}/{browser})"
+    except Exception:
+        return "不明"
+
 def append_edit_history(existing_history, editor, new_content):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
     summary = new_content[:30].replace("\n", " ") + ("…" if len(new_content) > 30 else "")
@@ -119,15 +150,7 @@ def generate_draft(question, questions):
     except Exception as e:
         return f"（AIドラフト生成に失敗しました。APIキーを確認してください。エラー: {type(e).__name__}）"
 
-# ── 編集者選択（セッション内で一度だけ）─────────────────────────────
-with st.sidebar:
-    st.divider()
-    editor_name = st.selectbox(
-        "操作者",
-        ["パピー", "インハナ"],
-        key="editor_name",
-        help="回答を編集した際の履歴に記録されます"
-    )
+editor_name = get_editor_identity()
 
 if st.button("🔄 最新の質問を読み込む"):
     st.rerun()
