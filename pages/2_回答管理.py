@@ -77,47 +77,13 @@ def get_current_status(page_id):
     except Exception:
         return None
 
-def get_editor_identity():
-    """IPアドレスとデバイス情報を自動取得"""
-    try:
-        headers = st.context.headers
-        ip = headers.get("X-Forwarded-For", headers.get("X-Real-IP", "不明"))
-        ip = ip.split(",")[0].strip()
-        ua = headers.get("User-Agent", "")
-        if "iPhone" in ua or "iPad" in ua:
-            device = "iOS"
-        elif "Android" in ua:
-            device = "Android"
-        elif "Windows" in ua:
-            device = "Windows"
-        elif "Mac" in ua:
-            device = "Mac"
-        else:
-            device = "不明"
-        if "Edg" in ua:
-            browser = "Edge"
-        elif "Chrome" in ua:
-            browser = "Chrome"
-        elif "Firefox" in ua:
-            browser = "Firefox"
-        elif "Safari" in ua:
-            browser = "Safari"
-        else:
-            browser = "不明"
-        return f"{ip} ({device}/{browser})"
-    except Exception:
-        return "不明"
-
-def append_edit_history(existing_history, editor, new_content):
+def append_edit_history(existing_history, editor, new_content=None):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-    summary = new_content[:30].replace("\n", " ") + ("…" if len(new_content) > 30 else "")
-    new_entry = f"[{timestamp}] {editor}：{summary}"
+    new_entry = f"[{timestamp}] {editor}"
     lines = existing_history.strip().split("\n") if existing_history.strip() else []
     lines.append(new_entry)
-    # 最新20件のみ保持（Notion rich_textの文字数制限対策）
-    lines = lines[-20:]
+    lines = lines[-30:]
     result = "\n".join(lines)
-    # 2000文字を超える場合は古いものから削除
     while len(result) > 1900 and len(lines) > 1:
         lines = lines[1:]
         result = "\n".join(lines)
@@ -150,7 +116,22 @@ def generate_draft(question, questions):
     except Exception as e:
         return f"（AIドラフト生成に失敗しました。APIキーを確認してください。エラー: {type(e).__name__}）"
 
-editor_name = get_editor_identity()
+# ── 操作者をセッション開始時に一度だけ選択・ロック ──────────────────
+if "operator" not in st.session_state:
+    st.info("このセッションでの操作者を選択してください。選択後は変更できません。")
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("👤 パピー として作業する", use_container_width=True, type="primary"):
+            st.session_state["operator"] = "パピー"
+            st.rerun()
+    with col2:
+        if st.button("👤 インハナ として作業する", use_container_width=True):
+            st.session_state["operator"] = "インハナ"
+            st.rerun()
+    st.stop()
+
+editor_name = st.session_state["operator"]
+st.sidebar.markdown(f"**操作者：{editor_name}**")
 
 if st.button("🔄 最新の質問を読み込む"):
     st.rerun()
