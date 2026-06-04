@@ -116,25 +116,10 @@ def generate_draft(question, questions):
     except Exception as e:
         return f"（AIドラフト生成に失敗しました。APIキーを確認してください。エラー: {type(e).__name__}）"
 
-# ── パスワード認証（セッション内で一度だけ）────────────────────────
 PASSWORDS = {
     st.secrets.get("PAPY_PASSWORD", ""): "パピー",
     st.secrets.get("INHA_PASSWORD", ""): "インハナ",
 }
-
-if "operator" not in st.session_state:
-    st.markdown("### パスワードを入力してください")
-    pw = st.text_input("パスワード", type="password", key="pw_input")
-    if st.button("ログイン", type="primary"):
-        if pw and pw in PASSWORDS:
-            st.session_state["operator"] = PASSWORDS[pw]
-            st.rerun()
-        else:
-            st.error("パスワードが正しくありません")
-    st.stop()
-
-editor_name = st.session_state["operator"]
-st.sidebar.markdown(f"**操作者：{editor_name}**")
 
 if st.button("🔄 最新の質問を読み込む"):
     st.rerun()
@@ -239,24 +224,42 @@ else:
                 is_answer_editing = st.session_state.get(edit_key, False)
 
                 if not is_answer_editing:
-                    # 通常表示（グレーアウトなし）
                     st.markdown("**回答内容：**")
-                    st.text_area("", value=answer_text, height=answer_height, key=f"view_{q['id']}", disabled=False, label_visibility="collapsed")
+                    st.text_area("", value=answer_text, height=answer_height, key=f"view_{q['id']}", label_visibility="collapsed")
                     st.success("回答済み")
                     if q["判断理由カテゴリ"]:
                         st.markdown(f"**判断理由：** {', '.join(q['判断理由カテゴリ'])}")
                     if q["判断理由詳細"]:
                         st.markdown(f"**詳細：** {q['判断理由詳細']}")
                     if st.button("✏️ 回答を修正する", key=f"start_edit_ans_{q['id']}"):
-                        st.session_state[edit_key] = True
+                        st.session_state[edit_key] = "auth"  # 認証待ち
                         st.rerun()
-                    # 編集履歴
                     if q["編集履歴"]:
                         with st.expander("📋 編集履歴"):
                             st.text(q["編集履歴"])
-                else:
-                    # 修正モード
-                    st.markdown("**回答内容を修正中：**")
+
+                elif is_answer_editing == "auth":
+                    # パスワード認証ステップ
+                    st.markdown("**回答を修正するにはパスワードを入力してください**")
+                    pw = st.text_input("パスワード", type="password", key=f"pw_{q['id']}")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button("認証して修正する", key=f"auth_ans_{q['id']}", type="primary"):
+                            if pw and pw in PASSWORDS:
+                                st.session_state[edit_key] = "editing"
+                                st.session_state[f"editor_{q['id']}"] = PASSWORDS[pw]
+                                st.rerun()
+                            else:
+                                st.error("パスワードが正しくありません")
+                    with col2:
+                        if st.button("キャンセル", key=f"cancel_auth_{q['id']}"):
+                            st.session_state[edit_key] = False
+                            st.rerun()
+
+                elif is_answer_editing == "editing":
+                    # 修正モード（認証済み）
+                    editor_name = st.session_state.get(f"editor_{q['id']}", "不明")
+                    st.markdown(f"**回答内容を修正中（{editor_name}）：**")
                     new_answer = st.text_area("回答内容", value=answer_text, height=answer_height, key=f"edit_ans_{q['id']}")
                     col1, col2 = st.columns(2)
                     with col1:
@@ -264,7 +267,7 @@ else:
                             if not new_answer.strip():
                                 st.error("回答内容を入力してください")
                             else:
-                                new_history = append_edit_history(q["編集履歴"], editor_name, new_answer)
+                                new_history = append_edit_history(q["編集履歴"], editor_name)
                                 c = Client(auth=NOTION_API_KEY)
                                 c.pages.update(
                                     page_id=q["id"],
@@ -274,11 +277,13 @@ else:
                                     }
                                 )
                                 st.session_state[edit_key] = False
+                                st.session_state.pop(f"editor_{q['id']}", None)
                                 st.success("修正を保存しました。")
                                 st.rerun()
                     with col2:
                         if st.button("キャンセル", key=f"cancel_ans_{q['id']}"):
                             st.session_state[edit_key] = False
+                            st.session_state.pop(f"editor_{q['id']}", None)
                             st.rerun()
                     if q["編集履歴"]:
                         with st.expander("📋 編集履歴"):
