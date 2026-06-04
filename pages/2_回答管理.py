@@ -6,11 +6,10 @@ from streamlit_autorefresh import st_autorefresh
 st.set_page_config(page_title="回答管理", layout="wide")
 st.title("✅ 回答・管理（パピー用）")
 
-# 5秒ごとに自動リフレッシュ（編集中ロックをリアルタイム反映）
 st_autorefresh(interval=5000, key="auto_refresh")
 
 NOTION_API_KEY = "".join(c for c in st.secrets["NOTION_API_KEY"] if c.isprintable() and ord(c) < 128)
-PAGE_ID = "37384fb235d780b88a46eb8d619a19ad"  # ページID（固定）
+PAGE_ID = "37384fb235d780b88a46eb8d619a19ad"
 ANTHROPIC_API_KEY = st.secrets.get("ANTHROPIC_API_KEY", "")
 
 def get_database_id():
@@ -23,16 +22,17 @@ def get_database_id():
 
 DATABASE_ID = get_database_id()
 
-# 画像URLプロパティが未存在なら自動追加
 def ensure_properties():
     try:
         client = Client(auth=NOTION_API_KEY)
         db = client.databases.retrieve(database_id=DATABASE_ID)
+        updates = {}
         if "画像URL" not in db["properties"]:
-            client.databases.update(
-                database_id=DATABASE_ID,
-                properties={"画像URL": {"rich_text": {}}}
-            )
+            updates["画像URL"] = {"rich_text": {}}
+        if "編集履歴" not in db["properties"]:
+            updates["編集履歴"] = {"rich_text": {}}
+        if updates:
+            client.databases.update(database_id=DATABASE_ID, properties=updates)
     except Exception:
         pass
 
@@ -65,6 +65,7 @@ def get_questions():
             "タグ": [s["name"] for s in p["タグ"]["multi_select"]],
             "質問日時": p["質問日時"]["date"]["start"] if p["質問日時"]["date"] else "",
             "画像URL": get_text(p.get("画像URL", {})),
+            "編集履歴": get_text(p.get("編集履歴", {})),
         })
     return questions
 
@@ -76,6 +77,20 @@ def get_current_status(page_id):
     except Exception:
         return None
 
+def append_edit_history(existing_history, editor, new_content):
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+    summary = new_content[:30].replace("\n", " ") + ("…" if len(new_content) > 30 else "")
+    new_entry = f"[{timestamp}] {editor}：{summary}"
+    lines = existing_history.strip().split("\n") if existing_history.strip() else []
+    lines.append(new_entry)
+    # 最新20件のみ保持（Notion rich_textの文字数制限対策）
+    lines = lines[-20:]
+    result = "\n".join(lines)
+    # 2000文字を超える場合は古いものから削除
+    while len(result) > 1900 and len(lines) > 1:
+        lines = lines[1:]
+        result = "\n".join(lines)
+    return result
 
 def generate_draft(question, questions):
     if not ANTHROPIC_API_KEY:
@@ -88,22 +103,31 @@ def generate_draft(question, questions):
     try:
         import anthropic
         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-        prompt = f"""あなたはパピー社のナレッジアシスタントです。過去の判断事例をもとに回答ドラフトを作成してください。
+        message = client.messages.create(
+            model="claude-haiku-4-5",
+            max_tokens=1024,
+            messages=[{"role": "user", "content": f"""あなたはパピー社のナレッジアシスタントです。過去の判断事例をもとに回答ドラフトを作成してください。
 
 【過去の判断事例】
 {knowledge_text}
 
 質問: {question['質問本文']}
 
-上記の質問に対する回答ドラフトを作成してください。"""
-        message = client.messages.create(
-            model="claude-haiku-4-5",
-            max_tokens=1024,
-            messages=[{"role": "user", "content": prompt}]
+上記の質問に対する回答ドラフトを作成してください。"""}]
         )
         return message.content[0].text
     except Exception as e:
         return f"（AIドラフト生成に失敗しました。APIキーを確認してください。エラー: {type(e).__name__}）"
+
+# ── 編集者選択（セッション内で一度だけ）─────────────────────────────
+with st.sidebar:
+    st.divider()
+    editor_name = st.selectbox(
+        "操作者",
+        ["パピー", "インハナ"],
+        key="editor_name",
+        help="回答を編集した際の履歴に記録されます"
+    )
 
 if st.button("🔄 最新の質問を読み込む"):
     st.rerun()
@@ -126,7 +150,6 @@ else:
                 cols = st.columns(min(len(urls), 3))
                 for i, url in enumerate(urls):
                     if url.strip():
-                        # Google DriveのURLをダイレクト表示用に変換
                         if "drive.google.com/file/d/" in url:
                             file_id = url.split("/file/d/")[1].split("/")[0]
                             img_url = f"https://drive.google.com/thumbnail?id={file_id}&sz=w400"
@@ -165,48 +188,91 @@ else:
                                 st.success("ドラフトを生成しました。")
                                 st.rerun()
 
-            if q["ステータス"] in ("ドラフト生成済", "回答済"):
-                回答本文 = st.text_area(
-                    "回答内容（編集可）",
-                    value=q["AI生成ドラフト"] if not q["回答本文"] else q["回答本文"],
-                    height=150,
-                    key=f"answer_{q['id']}",
-                    disabled=q["ステータス"] == "回答済"
-                )
+            if q["ステータス"] == "ドラフト生成済":
+                answer_value = q["AI生成ドラフト"] if not q["回答本文"] else q["回答本文"]
+                answer_height = max(150, answer_value.count("\n") * 22 + 100)
+                回答本文 = st.text_area("回答内容（編集可）", value=answer_value, height=answer_height, key=f"answer_{q['id']}")
+                st.warning("⚠️ 判断理由を入力しないと送信できません")
+                選択カテゴリ = st.multiselect("判断理由カテゴリ", REASON_CATEGORIES, key=f"cat_{q['id']}")
+                理由詳細 = st.text_area("判断理由の詳細", height=80, key=f"reason_{q['id']}")
 
-                if q["ステータス"] == "ドラフト生成済":
-                    st.warning("⚠️ 判断理由を入力しないと送信できません")
-                    選択カテゴリ = st.multiselect("判断理由カテゴリ", REASON_CATEGORIES, key=f"cat_{q['id']}")
-                    理由詳細 = st.text_area("判断理由の詳細", height=80, key=f"reason_{q['id']}")
+                if st.button("✓ インハナさんに送信する", key=f"approve_{q['id']}", type="primary"):
+                    current = get_current_status(q["id"])
+                    if current == "編集中":
+                        st.warning("現在インハナさんが編集中です。編集完了後に対応してください。")
+                        st.rerun()
+                    elif not 選択カテゴリ and not 理由詳細.strip():
+                        st.error("判断理由を入力してください")
+                    elif not 回答本文.strip():
+                        st.error("回答内容を入力してください")
+                    else:
+                        new_history = append_edit_history(q["編集履歴"], editor_name, 回答本文)
+                        c = Client(auth=NOTION_API_KEY)
+                        c.pages.update(
+                            page_id=q["id"],
+                            properties={
+                                "回答本文": {"rich_text": [{"text": {"content": 回答本文}}]},
+                                "判断理由カテゴリ": {"multi_select": [{"name": c2} for c2 in 選択カテゴリ]},
+                                "判断理由詳細": {"rich_text": [{"text": {"content": 理由詳細}}]},
+                                "ステータス": {"select": {"name": "回答済"}},
+                                "回答日時": {"date": {"start": datetime.now().isoformat()}},
+                                "AI学習済": {"checkbox": True},
+                                "編集履歴": {"rich_text": [{"text": {"content": new_history}}]},
+                            }
+                        )
+                        st.success("送信しました！")
+                        st.rerun()
 
-                    if st.button("✓ インハナさんに送信する", key=f"approve_{q['id']}", type="primary"):
-                        current = get_current_status(q["id"])
-                        if current == "編集中":
-                            st.warning("現在インハナさんが編集中です。編集完了後に対応してください。")
-                            st.rerun()
-                        elif not 選択カテゴリ and not 理由詳細.strip():
-                            st.error("判断理由を入力してください")
-                        elif not 回答本文.strip():
-                            st.error("回答内容を入力してください")
-                        else:
-                            c = Client(auth=NOTION_API_KEY)
-                            c.pages.update(
-                                page_id=q["id"],
-                                properties={
-                                    "回答本文": {"rich_text": [{"text": {"content": 回答本文}}]},
-                                    "判断理由カテゴリ": {"multi_select": [{"name": c2} for c2 in 選択カテゴリ]},
-                                    "判断理由詳細": {"rich_text": [{"text": {"content": 理由詳細}}]},
-                                    "ステータス": {"select": {"name": "回答済"}},
-                                    "回答日時": {"date": {"start": datetime.now().isoformat()}},
-                                    "AI学習済": {"checkbox": True},
-                                }
-                            )
-                            st.success("送信しました！")
-                            st.rerun()
+            elif q["ステータス"] == "回答済":
+                answer_text = q["回答本文"]
+                answer_height = max(150, answer_text.count("\n") * 22 + 100)
 
-                elif q["ステータス"] == "回答済":
+                # 回答修正モード判定
+                edit_key = f"editing_answer_{q['id']}"
+                is_answer_editing = st.session_state.get(edit_key, False)
+
+                if not is_answer_editing:
+                    # 通常表示（グレーアウトなし）
+                    st.markdown("**回答内容：**")
+                    st.text_area("", value=answer_text, height=answer_height, key=f"view_{q['id']}", disabled=False, label_visibility="collapsed")
                     st.success("回答済み")
                     if q["判断理由カテゴリ"]:
                         st.markdown(f"**判断理由：** {', '.join(q['判断理由カテゴリ'])}")
                     if q["判断理由詳細"]:
                         st.markdown(f"**詳細：** {q['判断理由詳細']}")
+                    if st.button("✏️ 回答を修正する", key=f"start_edit_ans_{q['id']}"):
+                        st.session_state[edit_key] = True
+                        st.rerun()
+                    # 編集履歴
+                    if q["編集履歴"]:
+                        with st.expander("📋 編集履歴"):
+                            st.text(q["編集履歴"])
+                else:
+                    # 修正モード
+                    st.markdown("**回答内容を修正中：**")
+                    new_answer = st.text_area("回答内容", value=answer_text, height=answer_height, key=f"edit_ans_{q['id']}")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button("💾 修正を保存する", key=f"save_ans_{q['id']}", type="primary"):
+                            if not new_answer.strip():
+                                st.error("回答内容を入力してください")
+                            else:
+                                new_history = append_edit_history(q["編集履歴"], editor_name, new_answer)
+                                c = Client(auth=NOTION_API_KEY)
+                                c.pages.update(
+                                    page_id=q["id"],
+                                    properties={
+                                        "回答本文": {"rich_text": [{"text": {"content": new_answer}}]},
+                                        "編集履歴": {"rich_text": [{"text": {"content": new_history}}]},
+                                    }
+                                )
+                                st.session_state[edit_key] = False
+                                st.success("修正を保存しました。")
+                                st.rerun()
+                    with col2:
+                        if st.button("キャンセル", key=f"cancel_ans_{q['id']}"):
+                            st.session_state[edit_key] = False
+                            st.rerun()
+                    if q["編集履歴"]:
+                        with st.expander("📋 編集履歴"):
+                            st.text(q["編集履歴"])
