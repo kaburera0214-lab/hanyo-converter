@@ -4,4 +4,4 @@ requests>=2.31.0
 notion-client==2.2.1
 google-api-python-client
 google-auth
-google-generativeai
+google-genai

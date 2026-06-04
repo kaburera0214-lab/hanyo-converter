@@ -67,15 +67,14 @@ def get_questions():
 def generate_draft(question, questions):
     if not GEMINI_API_KEY:
         return "（Gemini APIキーが未設定のためドラフト生成できません）"
-    import google.generativeai as genai
     knowledge = [q for q in questions if q["ステータス"] == "回答済"]
     knowledge_text = "\n\n".join([
         f"【事例】\n質問: {q['質問本文']}\n回答: {q['回答本文']}\n判断理由: {', '.join(q['判断理由カテゴリ'])} / {q['判断理由詳細']}"
         for q in knowledge
     ]) or "（まだ蓄積データがありません）"
     try:
-        genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel("gemini-2.0-flash")
+        from google import genai as google_genai
+        client = google_genai.Client(api_key=GEMINI_API_KEY)
         prompt = f"""あなたはパピー社のナレッジアシスタントです。過去の判断事例をもとに回答ドラフトを作成してください。
 
 【過去の判断事例】
@@ -84,7 +83,7 @@ def generate_draft(question, questions):
 質問: {question['質問本文']}
 
 上記の質問に対する回答ドラフトを作成してください。"""
-        response = model.generate_content(prompt)
+        response = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
         return response.text
     except Exception as e:
         return f"（AIドラフト生成に失敗しました。APIキーを確認してください。エラー: {type(e).__name__}）"
