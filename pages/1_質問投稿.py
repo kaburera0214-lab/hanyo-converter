@@ -152,6 +152,30 @@ def validate_question(title, content, tags, has_images):
 
     return errors
 
+def rewrite_question(title, content):
+    """Claude APIで質問をリライトし、タイトルと本文を返す"""
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        message = client.messages.create(
+            model="claude-haiku-4-5",
+            max_tokens=1024,
+            messages=[{"role": "user", "content": f"""以下の質問を、日本語として自然で丁寧なビジネス文章にリライトしてください。
+意味は変えず、表現を整えてください。
+複数の質問がある場合は各質問の先頭に「■」をつけてください。
+
+質問タイトル：{title}
+質問内容：{content}
+
+以下のJSON形式で返してください（JSON以外は出力しないこと）：
+{{"title": "リライト後のタイトル", "content": "リライト後の内容"}}"""}]
+        )
+        import json
+        result = json.loads(message.content[0].text.strip())
+        return result.get("title", title), result.get("content", content)
+    except Exception:
+        return title, content
+
 def get_editable_questions():
     client = Client(auth=NOTION_API_KEY)
     res = client.databases.query(**{
@@ -184,65 +208,110 @@ st.info("""**記入ルール**
 - 複数の質問がある場合は各質問の先頭に「■」をつけること
 - 画像だけで説明を省かず、文章だけで内容が伝わるように記載すること""")
 
-with st.form("question_form"):
-    タイトル = st.text_input("質問タイトル *", placeholder="例：CS・保険証券の発行タイミングについて")
-    質問本文 = st.text_area("質問内容 *", height=150, placeholder="■ 〇〇について確認したいのですが...\n■ また、〇〇の場合はどうなりますか？")
-    画像ファイル = st.file_uploader("画像（複数可）", type=["png", "jpg", "jpeg", "gif", "webp"], accept_multiple_files=True)
-    タグ = st.multiselect("タグ（必須）*", TAGS)
-    submitted = st.form_submit_button("質問を送信する")
+def submit_question(タイトル, 質問本文, タグ, 画像ファイル):
+    """Notionへ質問を保存し、画像をDriveにアップロードする"""
+    client = Client(auth=NOTION_API_KEY)
+    props = {
+        "質問タイトル": {"title": [{"text": {"content": タイトル}}]},
+        "質問本文": {"rich_text": [{"text": {"content": 質問本文}}]},
+        "ステータス": {"select": {"name": "未回答"}},
+        "質問者": {"select": {"name": "インハナ"}},
+        "質問日時": {"date": {"start": datetime.now().isoformat()}},
+        "タグ": {"multi_select": [{"name": t} for t in タグ]},
+    }
+    page = client.pages.create(**{"parent": {"database_id": DATABASE_ID}, "properties": props})
+    page_id = page["id"]
+    unique_num = client.pages.retrieve(page_id=page_id)["properties"].get("ID", {}).get("unique_id", {}).get("number", 0)
 
-if submitted:
-    if not タイトル or not 質問本文:
-        st.error("タイトルと質問内容は必須です")
-    elif not タグ:
-        st.error("タグを選択してください")
-    else:
-        with st.spinner("入力内容を確認中..."):
-            errors = validate_question(タイトル, 質問本文, タグ, bool(画像ファイル))
+    画像URLs = []
+    if 画像ファイル:
+        today = datetime.now().strftime("%Y%m%d")
+        for i, f in enumerate(画像ファイル, start=1):
+            compressed = compress_image(f.read())
+            url = upload_to_drive(compressed, f"{today}_{unique_num:04d}_{i:02d}.jpg")
+            画像URLs.append(url)
+        client.pages.update(
+            page_id=page_id,
+            properties={"画像URL": {"rich_text": [{"text": {"content": "\n".join(画像URLs)}}]}}
+        )
+    return len(画像URLs)
 
-        if errors:
-            for err in errors:
-                st.error(err)
+# ── ステップ管理 ──────────────────────────────────────────────────────
+step = st.session_state.get("post_step", "input")  # input / preview
+
+# ── ステップ1：入力フォーム ──────────────────────────────────────────
+if step == "input":
+    with st.form("question_form"):
+        タイトル = st.text_input("質問タイトル *", placeholder="例：CS・保険証券の発行タイミングについて")
+        質問本文 = st.text_area("質問内容 *", height=150, placeholder="■ 〇〇について確認したいのですが...\n■ また、〇〇の場合はどうなりますか？")
+        画像ファイル = st.file_uploader("画像（複数可）", type=["png", "jpg", "jpeg", "gif", "webp"], accept_multiple_files=True)
+        タグ = st.multiselect("タグ（必須）*", TAGS)
+        submitted = st.form_submit_button("確認・リライト →")
+
+    if submitted:
+        if not タイトル or not 質問本文:
+            st.error("タイトルと質問内容は必須です")
+        elif not タグ:
+            st.error("タグを選択してください")
         else:
+            with st.spinner("入力内容を確認・リライト中..."):
+                errors = validate_question(タイトル, 質問本文, タグ, bool(画像ファイル))
+
+            if errors:
+                for err in errors:
+                    st.error(err)
+            else:
+                with st.spinner("AIがリライトしています..."):
+                    rewritten_title, rewritten_content = rewrite_question(タイトル, 質問本文)
+
+                # セッションに保存してプレビューへ
+                st.session_state["post_step"] = "preview"
+                st.session_state["orig_title"] = タイトル
+                st.session_state["orig_content"] = 質問本文
+                st.session_state["rewrite_title"] = rewritten_title
+                st.session_state["rewrite_content"] = rewritten_content
+                st.session_state["post_tags"] = タグ
+                st.session_state["post_images"] = 画像ファイル
+                st.rerun()
+
+# ── ステップ2：リライトプレビュー＆確認 ────────────────────────────
+elif step == "preview":
+    st.subheader("📋 リライトプレビュー")
+    st.caption("左：入力原文　右：AIリライト（編集可）")
+
+    col_orig, col_rewrite = st.columns(2)
+    with col_orig:
+        st.markdown("**原文**")
+        st.text_input("タイトル（原文）", value=st.session_state["orig_title"], disabled=True, key="orig_t")
+        st.text_area("内容（原文）", value=st.session_state["orig_content"], height=200, disabled=True, key="orig_c")
+
+    with col_rewrite:
+        st.markdown("**AIリライト（必要なら編集してください）**")
+        final_title = st.text_input("タイトル", value=st.session_state["rewrite_title"], key="final_t")
+        final_content = st.text_area("内容", value=st.session_state["rewrite_content"], height=200, key="final_c")
+
+    st.divider()
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("← 入力に戻る"):
+            st.session_state["post_step"] = "input"
+            st.rerun()
+    with col2:
+        if st.button("✅ この内容で送信する", type="primary"):
             with st.spinner("送信中..."):
-                client = Client(auth=NOTION_API_KEY)
-                props = {
-                    "質問タイトル": {"title": [{"text": {"content": タイトル}}]},
-                    "質問本文": {"rich_text": [{"text": {"content": 質問本文}}]},
-                    "ステータス": {"select": {"name": "未回答"}},
-                    "質問者": {"select": {"name": "インハナ"}},
-                    "質問日時": {"date": {"start": datetime.now().isoformat()}},
-                    "タグ": {"multi_select": [{"name": t} for t in タグ]},
-                }
-                page = client.pages.create(**{
-                    "parent": {"database_id": DATABASE_ID},
-                    "properties": props
-                })
-                page_id = page["id"]
-
-                page_detail = client.pages.retrieve(page_id=page_id)
-                unique_num = page_detail["properties"].get("ID", {}).get("unique_id", {}).get("number", 0)
-
-                画像URLs = []
-                if 画像ファイル:
-                    today = datetime.now().strftime("%Y%m%d")
-                    for i, f in enumerate(画像ファイル, start=1):
-                        compressed = compress_image(f.read())
-                        filename = f"{today}_{unique_num:04d}_{i:02d}.jpg"
-                        url = upload_to_drive(compressed, filename)
-                        画像URLs.append(url)
-
-                    client.pages.update(
-                        page_id=page_id,
-                        properties={
-                            "画像URL": {"rich_text": [{"text": {"content": "\n".join(画像URLs)}}]}
-                        }
-                    )
-
+                img_count = submit_question(
+                    final_title, final_content,
+                    st.session_state["post_tags"],
+                    st.session_state.get("post_images")
+                )
             msg = "質問を送信しました！"
-            if 画像URLs:
-                msg += f"（画像 {len(画像URLs)}枚アップロード済）"
+            if img_count:
+                msg += f"（画像 {img_count}枚アップロード済）"
             st.success(msg)
+            # セッションをリセット
+            for k in ["post_step", "orig_title", "orig_content", "rewrite_title", "rewrite_content", "post_tags", "post_images"]:
+                st.session_state.pop(k, None)
+            st.rerun()
 
 # ── 投稿済み質問の編集 ────────────────────────────────────────────────
 st.divider()
