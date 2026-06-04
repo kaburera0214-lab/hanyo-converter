@@ -296,7 +296,7 @@ else:
                 選択カテゴリ = st.multiselect("判断理由カテゴリ", REASON_CATEGORIES, key=f"cat_{q['id']}")
                 理由詳細 = st.text_area("判断理由の詳細", height=80, key=f"reason_{q['id']}")
 
-                if st.button("✓ インハナさんに送信する", key=f"approve_{q['id']}", type="primary"):
+                if st.button("✅ 回答を送信する", key=f"approve_{q['id']}", type="primary"):
                     current = get_current_status(q["id"])
                     if current == "編集中":
                         st.warning("現在インハナさんが編集中です。編集完了後に対応してください。")
@@ -306,7 +306,7 @@ else:
                     elif not 回答本文.strip():
                         st.error("回答内容を入力してください")
                     else:
-                        new_history = append_edit_history(q["編集履歴"], editor_name, 回答本文)
+                        new_history = append_edit_history(q["編集履歴"], "パピー")
                         c = Client(auth=NOTION_API_KEY)
                         c.pages.update(
                             page_id=q["id"],
