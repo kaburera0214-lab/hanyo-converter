@@ -377,11 +377,11 @@ elif step == "similar":
     質問本文 = st.session_state.get("orig_content", "")
 
     if similar:
-        st.subheader("🔍 過去の類似質問が見つかりました")
+        st.subheader(f"🔍 {len(similar)}件の類似質問が見つかりました")
         st.caption("以下の回答で解決する場合は投稿不要です。解決しない場合は「新規質問として投稿する」へ進んでください。")
 
         for i, q in enumerate(similar):
-            with st.expander(f"**{q['タイトル'] or '（タイトルなし）'}**　タグ：{'・'.join(q['タグ'])}", expanded=(i == 0)):
+            with st.expander(f"**{q['タイトル'] or '（タイトルなし）'}**　タグ：{'・'.join(q['タグ'])}", expanded=False):
                 st.markdown("**質問内容：**")
                 st.markdown(q["質問本文"][:400] + ("…" if len(q["質問本文"]) > 400 else ""))
                 if q["回答本文"]:
