@@ -133,5 +133,14 @@
     "rows": 45,
     "error": null,
     "unknown_jan": 0
+  },
+  {
+    "ts": "2026-06-05T03:04:37",
+    "func": "hanyo",
+    "template": null,
+    "orders": 172,
+    "rows": 176,
+    "error": null,
+    "unknown_jan": 0
   }
 ]
