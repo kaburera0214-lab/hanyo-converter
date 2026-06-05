@@ -311,7 +311,7 @@
       },
       "商品計": {
         "type": "column",
-        "source": ""
+        "source": "謝礼品価格"
       },
       "税金": {
         "type": "column",
@@ -335,7 +335,7 @@
       },
       "合計金額": {
         "type": "column",
-        "source": ""
+        "source": "謝礼品価格"
       },
       "ギフトフラグ": {
         "type": "empty"
@@ -390,11 +390,13 @@
       },
       "商品価格": {
         "type": "column",
-        "source": ""
+        "source": "謝礼品価格"
       },
       "受注数量": {
-        "type": "column",
-        "source": ""
+        "type": "value_map",
+        "source": "謝礼品",
+        "default": "",
+        "map": {}
       },
       "商品オプション": {
         "type": "column",
