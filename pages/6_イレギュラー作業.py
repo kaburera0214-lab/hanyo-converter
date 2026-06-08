@@ -51,7 +51,8 @@ today = datetime.date.today()
 
 # --- クライアント・モード選択 ---
 cc1, cc2 = st.columns([2, 3])
-client_name = cc1.selectbox("クライアント", client_names, key="irr_client")
+_def_idx = client_names.index("Team-EC") if "Team-EC" in client_names else 0
+client_name = cc1.selectbox("クライアント", client_names, index=_def_idx, key="irr_client")
 mode = cc2.radio("モード", ["かんたん入力（日々の記録）", "編集・管理（請求担当者向け）"],
                  horizontal=True, key="irr_mode")
 
@@ -270,14 +271,58 @@ if len(by_month) >= 1:
                       for k, v in by_month.items()]),
         use_container_width=True, hide_index=True)
 
-if st.button("💾 保存", key="irr_save", type="primary"):
+# 直前の保存結果メッセージ
+_save_flash = st.session_state.pop("irr_save_flash", None)
+if _save_flash:
+    st.success(_save_flash)
+
+
+def _do_save(recs):
     try:
         res = notion_store.save_irregular_work(
-            db_ids, client_name, edited.to_dict("records"), loaded_ids, fallback_ym)
+            db_ids, client_name, recs, loaded_ids, fallback_ym)
         st.session_state.pop(all_key, None)
-        st.success(
+        st.session_state["irr_save_flash"] = (
             f"{client_name} の作業記録を保存しました"
             f"（新規{res['created']}・更新{res['updated']}・削除{res['deleted']}）。"
             "請求書発行ページの[汎用]作業料に反映されます。")
     except Exception as e:
-        st.error(f"保存に失敗しました: {e}")
+        st.session_state["irr_save_flash"] = f"保存に失敗しました: {e}"
+
+
+if st.button("💾 保存", key="irr_save", type="primary"):
+    recs = edited.to_dict("records")
+    _ids = {str(r.get("id")).strip() for r in recs
+            if r.get("id") and str(r.get("id")).strip().lower() != "nan"}
+    deletions = [i for i in loaded_ids if i not in _ids]
+    if deletions:
+        # 削除がある場合は確認をはさむ
+        st.session_state["irr_pending"] = {"recs": recs, "ndel": len(deletions)}
+        st.rerun()
+    else:
+        _do_save(recs)
+        st.rerun()
+
+# 削除確認（ポップアップ）
+_pending = st.session_state.get("irr_pending")
+if _pending:
+    def _render_confirm():
+        st.warning(f"⚠️ {_pending['ndel']} 件のレコードを削除します。"
+                   "この操作は取り消せません。よろしいですか？")
+        b1, b2 = st.columns(2)
+        if b1.button("✅ 削除して保存", key="irr_confirm_yes", type="primary"):
+            _do_save(_pending["recs"])
+            st.session_state.pop("irr_pending", None)
+            st.rerun()
+        if b2.button("↩️ やめる（戻る）", key="irr_confirm_no"):
+            st.session_state.pop("irr_pending", None)
+            st.rerun()
+
+    _dlg = getattr(st, "dialog", None) or getattr(st, "experimental_dialog", None)
+    if _dlg:
+        @_dlg("削除の確認")
+        def _confirm_dialog():
+            _render_confirm()
+        _confirm_dialog()
+    else:
+        _render_confirm()

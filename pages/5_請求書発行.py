@@ -91,7 +91,9 @@ client_names = list(clients.keys())
 st.header("① クライアント・対象月")
 col1, col2, col3 = st.columns([2, 1, 1])
 with col1:
-    client_name = st.selectbox("クライアント", client_names, key="invoice_client")
+    _def_idx = client_names.index("Team-EC") if "Team-EC" in client_names else 0
+    client_name = st.selectbox("クライアント", client_names, index=_def_idx,
+                               key="invoice_client")
 with col2:
     today = datetime.date.today()
     # 既定は先月（締めて請求するため）
