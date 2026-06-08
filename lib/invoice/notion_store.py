@@ -675,6 +675,17 @@ def _irregular_props(client_name, r, fallback_ym):
     }
 
 
+def add_irregular_work(db_ids, client_name, row):
+    """
+    イレギュラー作業を1件だけ追加（新規作成のみ）。
+    過去レコードには一切触れないため、現場の日々入力でも誤操作で
+    過去分を壊す心配がない。
+    """
+    _client().pages.create(
+        parent={"database_id": db_ids["請求_イレギュラー作業"]},
+        properties=_irregular_props(client_name, row, ""))
+
+
 def save_irregular_work(db_ids, client_name, edited_rows, loaded_ids, fallback_ym):
     """
     差分保存。
