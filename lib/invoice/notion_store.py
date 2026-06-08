@@ -572,6 +572,37 @@ def replace_price_master(db_ids, client_name, rows):
     return saved
 
 
+def replace_price_rows(db_ids, client_name, himoku_set, rows):
+    """
+    指定クライアントの、特定費目（himoku_set）の単価行だけを置き換える。
+    他費目（保管・送料など）の行は残す。
+    rows: [{"費目","種別","単価","出力品名"}]
+    """
+    client = _client()
+    db = db_ids["請求_単価マスタ"]
+    for row in _query_all(db):
+        p = row["properties"]
+        if (_read_rt(p.get("クライアント")) == client_name
+                and _read_select(p.get("費目")) in himoku_set):
+            client.pages.update(page_id=row["id"], archived=True)
+    saved = 0
+    for r in rows:
+        himoku = str(r.get("費目", "")).strip()
+        shubetsu = str(r.get("種別", "")).strip()
+        if himoku not in himoku_set or not shubetsu:
+            continue
+        client.pages.create(parent={"database_id": db}, properties={
+            "項目名": {"title": _title(f"{client_name}|{himoku}|{shubetsu}")},
+            "クライアント": {"rich_text": _rt(client_name)},
+            "費目": {"select": {"name": himoku}},
+            "種別": {"rich_text": _rt(shubetsu)},
+            "単価": {"number": float(r.get("単価") or 0)},
+            "出力品名": {"rich_text": _rt(r.get("出力品名", ""))},
+        })
+        saved += 1
+    return saved
+
+
 def load_storage_history(db_ids, client_name, target_ym):
     """指定クライアント×対象年月の保管内訳履歴を返す（無ければ空リスト）。"""
     rows = []

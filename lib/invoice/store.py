@@ -81,6 +81,9 @@ DEFAULT_CLIENTS = {
 
 CLIENTS_FILE = "clients.json"
 
+# 配送種別（出荷作業料・資材費の軸）。ネコポス＝nekop、宅配便はサイズ。
+DELIVERY_TYPES = ["nekop", "60", "80", "100", "120", "140", "160"]
+
 # 送料表の地域（列）。ヤマト運輸の地域区分に準拠。
 SHIPPING_AREAS = [
     "北海道", "北東北", "南東北", "関東", "信越", "北陸", "東海",

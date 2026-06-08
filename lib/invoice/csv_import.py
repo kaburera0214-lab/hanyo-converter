@@ -74,3 +74,36 @@ def parse_shipping_table_csv(file_bytes, areas):
             rec[area] = _to_number(r[cols[area]]) if area in cols else 0
         rows.append(rec)
     return rows
+
+
+def parse_size_rate_csv(file_bytes):
+    """
+    配送種別単価CSVを取り込み、[{配送種別, 出荷作業料, 資材費}] を返す。
+    想定ヘッダ: 配送種別,出荷作業料,資材費（列名の表記ゆれを多少吸収）。
+    """
+    df = read_csv_auto(file_bytes)
+    cols = {c.strip(): c for c in df.columns}
+
+    def pick(*cands):
+        for c in cands:
+            if c in cols:
+                return cols[c]
+        return None
+
+    c_type = pick("配送種別", "種別", "サイズ", "配送区分")
+    c_ship = pick("出荷作業料", "出荷作業", "出荷作業単価")
+    c_mat = pick("資材費", "資材", "資材単価")
+    if c_type is None:
+        raise ValueError(f"配送種別の列が見つかりません。実際の列: {list(df.columns)}")
+
+    rows = []
+    for _, r in df.iterrows():
+        t = _normalize_size(r[c_type])
+        if not t:
+            continue
+        rows.append({
+            "配送種別": t,
+            "出荷作業料": _to_number(r[c_ship]) if c_ship else 0,
+            "資材費": _to_number(r[c_mat]) if c_mat else 0,
+        })
+    return rows

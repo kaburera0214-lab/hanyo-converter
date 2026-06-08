@@ -177,6 +177,75 @@ with st.expander("🛠 単価マスタ管理（クライアント別：送料・
             except Exception as e:
                 st.error(f"保存に失敗しました: {e}")
 
+        # --- 配送種別単価（出荷作業料・資材費）を見やすいグリッドで編集 ---
+        st.markdown("---")
+        st.markdown("##### 配送種別ごとの単価（出荷作業料・資材費）")
+        st.caption("出荷作業料・資材費は配送種別(nekop/60/80/100/120/140/160)ごとの単価です。"
+                   "ここで編集すると内部的に単価マスタへ保存されます。")
+        # 既存の単価マスタ(費目=出荷作業/資材)を配送種別でピボット
+        ship_map = {r["種別"]: r["単価"] for r in pm_rows if r["費目"] == "出荷作業"}
+        mat_map = {r["種別"]: r["単価"] for r in pm_rows if r["費目"] == "資材"}
+        # 未登録なら既定値（store）でプリフィル
+        if not ship_map and not mat_map:
+            for m in store.DEFAULT_CLIENTS.get(client_name, {}).get("単価マスタ", []):
+                if m["費目"] == "出荷作業":
+                    ship_map[m["種別"]] = m["単価"]
+                elif m["費目"] == "資材":
+                    mat_map[m["種別"]] = m["単価"]
+        types = list(dict.fromkeys(
+            store.DELIVERY_TYPES + list(ship_map.keys()) + list(mat_map.keys())))
+        size_df = pd.DataFrame([
+            {"配送種別": t, "出荷作業料": ship_map.get(t, 0), "資材費": mat_map.get(t, 0)}
+            for t in types if t
+        ])
+        size_edited = st.data_editor(
+            size_df, num_rows="dynamic", use_container_width=True,
+            key="invoice_sizerate_editor",
+            column_config={
+                "配送種別": st.column_config.TextColumn("配送種別"),
+                "出荷作業料": st.column_config.NumberColumn("出荷作業料(単価)", step=1),
+                "資材費": st.column_config.NumberColumn("資材費(単価)", step=0.01),
+            })
+
+        def _save_size_rates(records):
+            rows = []
+            for r in records:
+                t = str(r.get("配送種別", "")).strip()
+                if not t:
+                    continue
+                rows.append({"費目": "出荷作業", "種別": t,
+                             "単価": r.get("出荷作業料") or 0, "出力品名": "出荷作業料"})
+                rows.append({"費目": "資材", "種別": t,
+                             "単価": r.get("資材費") or 0, "出力品名": "資材費"})
+            n = notion_store.replace_price_rows(
+                db_ids, client_name, {"出荷作業", "資材"}, rows)
+            st.session_state.pop("invoice_clients_cache", None)
+            return n
+
+        if st.button("💾 配送種別単価を保存", key="invoice_sizerate_save", type="primary"):
+            try:
+                n = _save_size_rates(size_edited.to_dict("records"))
+                st.success(f"配送種別単価を保存しました（{n}件）。")
+            except Exception as e:
+                st.error(f"保存に失敗しました: {e}")
+
+        # 配送種別単価のCSV取込（列: 配送種別,出荷作業料,資材費）
+        sr_csv = st.file_uploader(
+            "配送種別単価CSVを選択（列: 配送種別,出荷作業料,資材費）",
+            type=["csv"], key="invoice_sr_csv")
+        if sr_csv is not None:
+            try:
+                sr_imported = csv_import.parse_size_rate_csv(sr_csv.getvalue())
+                st.caption(f"取込プレビュー（{len(sr_imported)}行）")
+                st.dataframe(pd.DataFrame(sr_imported), use_container_width=True,
+                             hide_index=True)
+                if st.button("💾 このCSV内容で配送種別単価を上書き保存",
+                             key="invoice_sr_csv_save"):
+                    n = _save_size_rates(sr_imported)
+                    st.success(f"CSVから配送種別単価を保存しました（{n}件）。再読込で反映されます。")
+            except Exception as e:
+                st.error(f"CSV取込に失敗しました: {e}")
+
         # --- 送料方式（クライアント別） ---
         st.markdown("---")
         st.markdown("##### 送料の請求方式")
