@@ -57,7 +57,7 @@ target_ym = f"{int(year)}-{int(month):02d}"
 hourly = 0.0
 try:
     for r in notion_store.load_price_master(db_ids, client_name):
-        if r["費目"] == "その他" and "[汎用]" in str(r["種別"]):
+        if "[汎用]作業料" in str(r.get("出力品名", "")):
             hourly = float(r["単価"] or 0)
             break
 except Exception:
@@ -102,7 +102,8 @@ with st.expander("スプレッドシートCSVから取込（移行用）", expan
 
 
 # --- 入力テーブル ---
-st.markdown(f"#### {client_name}／{target_ym} の作業記録")
+st.markdown(f"#### {client_name} の作業記録（編集中）")
+st.caption(f"表示・新規入力の基準月は {target_ym} です。各行は『日付』の月に振り分けて保存されます。")
 edited = st.data_editor(
     base_df,
     num_rows="dynamic",
@@ -126,9 +127,20 @@ total_hours = float(edited2["合計時間"].sum())
 amount = round(total_hours * hourly)
 
 m1, m2, m3 = st.columns(3)
-m1.metric("合計人時", f"{total_hours:g} h")
+m1.metric("合計人時（表全体）", f"{total_hours:g} h")
 m2.metric("時給単価", f"{hourly:,.0f} 円/h")
-m3.metric("[汎用]作業料（概算）", f"{amount:,} 円")
+m3.metric("[汎用]作業料（表全体・概算）", f"{amount:,} 円")
+
+# 月ごとの合計人時（請求は月単位なので内訳を表示）
+edited2["対象年月"] = edited2["日付"].map(lambda d: notion_store._ym_from_date(d, target_ym))
+by_month = edited2.groupby("対象年月")["合計時間"].sum()
+if len(by_month) > 1 or (len(by_month) == 1 and by_month.index[0] != target_ym):
+    st.caption("月ごとの合計人時（保存時はこの月単位で振り分けられます）：")
+    st.dataframe(
+        pd.DataFrame([{"対象年月": k, "合計人時": f"{v:g} h",
+                       "[汎用]作業料概算": f"{round(v * hourly):,} 円"}
+                      for k, v in by_month.items()]),
+        use_container_width=True, hide_index=True)
 
 st.caption("各行は『日付』の年月に振り分けて保存されます（複数月のCSVを取り込んでもOK）。"
            "日付が読めない行は選択中の対象月に保存します。")

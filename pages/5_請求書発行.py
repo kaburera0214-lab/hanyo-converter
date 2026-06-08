@@ -695,7 +695,7 @@ _hanyo_hours = 0.0
 if notion_ready:
     try:
         for r in notion_store.load_price_master(db_ids, client_name):
-            if r["費目"] == "その他" and "[汎用]" in str(r["種別"]):
+            if "[汎用]作業料" in str(r.get("出力品名", "")):
                 _hanyo_unit = float(r["単価"] or 0)
                 break
         _irr = notion_store.load_irregular_work(db_ids, client_name, target_ym)
