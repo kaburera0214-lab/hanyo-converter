@@ -30,15 +30,18 @@ from lib.invoice import mf_export, invoice_number, store, notion_store, csv_impo
 #    エラー時はローカル既定値にフォールバックし、ページは必ず動作させる。
 # ============================================================
 def init_notion():
-    """DBを冪等生成し db_ids を返す。session_stateにキャッシュ。"""
-    if st.session_state.get("invoice_db_ids"):
-        return st.session_state["invoice_db_ids"]
-    db_ids = notion_store.ensure_databases()
-    notion_store.seed_clients_if_empty(db_ids, store.DEFAULT_CLIENTS)
-    notion_store.seed_area_map_if_empty(db_ids, store.DEFAULT_AREA_MAP)
-    # 送料表の初期値はTeam-ECに投入（他クライアントは空から編集）
-    notion_store.seed_shipping_table_if_empty(
-        db_ids, "Team-EC", store.DEFAULT_SHIPPING_TABLE, store.SHIPPING_AREAS)
+    """DBを冪等生成し db_ids を返す。session_stateにキャッシュ。
+    キャッシュに不足DBがある場合（スキーマ追加後など）は作り直して自動修復する。"""
+    cached = st.session_state.get("invoice_db_ids")
+    if cached and all(k in cached for k in notion_store.DB_SCHEMAS):
+        return cached
+    with st.spinner("Notionデータベースを準備中…（初回・スキーマ更新時は数十秒かかります）"):
+        db_ids = notion_store.ensure_databases()
+        notion_store.seed_clients_if_empty(db_ids, store.DEFAULT_CLIENTS)
+        notion_store.seed_area_map_if_empty(db_ids, store.DEFAULT_AREA_MAP)
+        # 送料表の初期値はTeam-ECに投入（他クライアントは空から編集）
+        notion_store.seed_shipping_table_if_empty(
+            db_ids, "Team-EC", store.DEFAULT_SHIPPING_TABLE, store.SHIPPING_AREAS)
     st.session_state["invoice_db_ids"] = db_ids
     return db_ids
 
