@@ -11,6 +11,19 @@ import re
 import pandas as pd
 
 
+def load_concat(uploaded_files, loader):
+    """
+    複数のアップロードファイルを loader で読み込み、縦に結合して返す。
+    loader: bytes -> DataFrame（各CSVの検証もloaderが行う）。
+    NEの出荷確定など、1000件単位で分割されたファイルをまとめて扱うため。
+    """
+    import pandas as pd
+    dfs = [loader(f.getvalue()) for f in uploaded_files]
+    if not dfs:
+        return None
+    return pd.concat(dfs, ignore_index=True)
+
+
 def read_csv_auto(file_bytes):
     """
     bytesからDataFrameを読む。UTF-8(BOM可)→CP932の順で文字コードを試す。

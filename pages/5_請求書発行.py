@@ -428,10 +428,13 @@ soufuda_set = set()          # ①の発送伝票番号（送り状）集合
 ne_denpyo_set = set()        # ①のNE伝票番号集合（④橋渡し用）
 issued_df = None             # ④発行済データ
 
-ne_ship_file = st.file_uploader("①NE出荷確定CSVを選択", type=["csv"], key="invoice_ne_ship")
-if ne_ship_file is not None:
+ne_ship_files = st.file_uploader(
+    "①NE出荷確定CSVを選択（1000件単位で分割されている場合は複数選択OK）",
+    type=["csv"], key="invoice_ne_ship", accept_multiple_files=True)
+if ne_ship_files:
     try:
-        ne_df = ne_calc.load_shipment(ne_ship_file.getvalue())
+        ne_df = csv_import.load_concat(ne_ship_files, ne_calc.load_shipment)
+        st.caption(f"①を {len(ne_ship_files)} ファイル結合（計 {len(ne_df):,} 行）")
         summary = ne_calc.summarize_shipment(ne_df)
         auto_ship_count = summary["出荷件数"]
         soufuda_set = ne_calc.get_soufuda_set(ne_df)
@@ -541,15 +544,17 @@ with st.expander("③商品マスタの管理（毎回アップ不要・Drive保
         except Exception as e:
             st.error(f"③の取込に失敗: {e}")
 
-order_file = st.file_uploader("②受注明細一覧CSV", type=["csv"], key="invoice_ne_order")
-if order_file is not None:
+order_files = st.file_uploader(
+    "②受注明細一覧CSV（複数選択OK）",
+    type=["csv"], key="invoice_ne_order", accept_multiple_files=True)
+if order_files:
     if prod_df is None:
         st.error("③商品マスタがありません。上の『③商品マスタの管理』から最新の③をアップロードしてください。")
     elif not notion_ready:
         st.warning("Notion未設定のため出荷作業単価を参照できません。")
     else:
         try:
-            order_df = ne_calc.load_order_detail(order_file.getvalue())
+            order_df = csv_import.load_concat(order_files, ne_calc.load_order_detail)
             ship_rates = {}
             for r in notion_store.load_price_master(db_ids, client_name):
                 if r["費目"] == "出荷作業":
@@ -591,11 +596,13 @@ if order_file is not None:
 st.markdown("##### ④ヤマト発行済データCSV（推奨：ネコポスの紐付け精度向上）")
 st.caption("ネコポスはNEの発送番号と実際の送り状がズレるため、④で正しく橋渡しします。"
            "未アップロードでも動きますが、ネコポスの件数が過少になることがあります。")
-issued_file = st.file_uploader("④ヤマト発行済データCSVを選択", type=["csv"], key="invoice_ya_issued")
-if issued_file is not None:
+issued_files = st.file_uploader(
+    "④ヤマト発行済データCSVを選択（複数選択OK）",
+    type=["csv"], key="invoice_ya_issued", accept_multiple_files=True)
+if issued_files:
     try:
-        issued_df = yamato_calc.load_issued(issued_file.getvalue())
-        st.caption(f"④発行済データ {len(issued_df):,}件を読み込みました。")
+        issued_df = csv_import.load_concat(issued_files, yamato_calc.load_issued)
+        st.caption(f"④発行済データ {len(issued_df):,}件を読み込みました（{len(issued_files)}ファイル）。")
     except Exception as e:
         st.error(f"④発行済データの取込に失敗しました: {e}")
 
@@ -603,15 +610,17 @@ if issued_file is not None:
 st.markdown("##### ⑤ヤマト運賃CSV（全クライアント混在のままでOK）")
 st.caption("①（＋④）でこのクライアント分だけ絞り込み、サイズ別に出荷作業料・資材費・送料を算出します。"
            "先に①NE出荷確定を取り込んでください。")
-ya_file = st.file_uploader("⑤ヤマト運賃情報参照CSVを選択", type=["csv"], key="invoice_ya_freight")
-if ya_file is not None:
+ya_files = st.file_uploader(
+    "⑤ヤマト運賃情報参照CSVを選択（複数選択OK）",
+    type=["csv"], key="invoice_ya_freight", accept_multiple_files=True)
+if ya_files:
     if not soufuda_set:
         st.warning("先に①NE出荷確定CSVを取り込んでください（送り状番号で絞り込みます）。")
     elif not notion_ready:
         st.warning("Notion未設定のため単価マスタを参照できません。")
     else:
         try:
-            fr_df = yamato_calc.load_freight(ya_file.getvalue())
+            fr_df = csv_import.load_concat(ya_files, yamato_calc.load_freight)
             client_keys = yamato_calc.build_client_soufuda(
                 soufuda_set, ne_denpyo_set, issued_df)
             matched, n_match, n_all = yamato_calc.filter_by_soufuda(fr_df, client_keys)
