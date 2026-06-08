@@ -62,7 +62,8 @@ else:
 col_reload, _ = st.columns([1, 5])
 with col_reload:
     if st.button("🔄 マスタ再読込", key="invoice_reload"):
-        for k in ("invoice_db_ids", "invoice_clients_cache"):
+        for k in ("invoice_db_ids", "invoice_clients_cache",
+                  "invoice_prod_df", "invoice_prod_meta"):
             st.session_state.pop(k, None)
         st.rerun()
 
