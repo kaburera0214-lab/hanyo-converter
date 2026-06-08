@@ -430,7 +430,7 @@ issued_df = None             # ④発行済データ
 
 ne_ship_files = st.file_uploader(
     "①NE出荷確定CSVを選択（1000件単位で分割されている場合は複数選択OK）",
-    type=["csv"], key="invoice_ne_ship", accept_multiple_files=True)
+    type=["csv"], key="invoice_ne_ship_m", accept_multiple_files=True)
 if ne_ship_files:
     try:
         ne_df, _errs = csv_import.load_concat(ne_ship_files, ne_calc.load_shipment)
@@ -550,7 +550,7 @@ with st.expander("③商品マスタの管理（毎回アップ不要・Drive保
 
 order_files = st.file_uploader(
     "②受注明細一覧CSV（複数選択OK）",
-    type=["csv"], key="invoice_ne_order", accept_multiple_files=True)
+    type=["csv"], key="invoice_ne_order_m", accept_multiple_files=True)
 if order_files:
     if prod_df is None:
         st.error("③商品マスタがありません。上の『③商品マスタの管理』から最新の③をアップロードしてください。")
@@ -606,7 +606,7 @@ st.caption("ネコポスはNEの発送番号と実際の送り状がズレるた
            "未アップロードでも動きますが、ネコポスの件数が過少になることがあります。")
 issued_files = st.file_uploader(
     "④ヤマト発行済データCSVを選択（複数選択OK）",
-    type=["csv"], key="invoice_ya_issued", accept_multiple_files=True)
+    type=["csv"], key="invoice_ya_issued_m", accept_multiple_files=True)
 if issued_files:
     try:
         issued_df, _ierrs = csv_import.load_concat(issued_files, yamato_calc.load_issued)
@@ -623,7 +623,7 @@ st.caption("①（＋④）でこのクライアント分だけ絞り込み、�
            "先に①NE出荷確定を取り込んでください。")
 ya_files = st.file_uploader(
     "⑤ヤマト運賃情報参照CSVを選択（複数選択OK）",
-    type=["csv"], key="invoice_ya_freight", accept_multiple_files=True)
+    type=["csv"], key="invoice_ya_freight_m", accept_multiple_files=True)
 if ya_files:
     if not soufuda_set:
         st.warning("先に①NE出荷確定CSVを取り込んでください（送り状番号で絞り込みます）。")
