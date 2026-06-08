@@ -76,6 +76,20 @@ DB_SCHEMAS = {
         "作業詳細": {"rich_text": {}},
         "備考": {"rich_text": {}},
     },
+    "請求_保管カウント": {
+        "レコード名": {"title": {}},
+        "クライアント": {"rich_text": {}},
+        "対象年月": {"rich_text": {}},
+        "期": {"select": {"options": [
+            {"name": "第1期", "color": "blue"},
+            {"name": "第2期", "color": "green"},
+        ]}},
+        "カウント日": {"rich_text": {}},
+        "種別": {"rich_text": {}},
+        "ロケーション": {"rich_text": {}},
+        "数量": {"number": {}},
+        "備考": {"rich_text": {}},
+    },
     "請求_発行履歴": {
         "請求書番号": {"title": {}},
         "クライアント": {"rich_text": {}},
@@ -725,6 +739,123 @@ def save_irregular_work(db_ids, client_name, edited_rows, loaded_ids, fallback_y
             pass
 
     return {"created": created, "updated": updated, "deleted": deleted}
+
+
+# ============================================================
+# 保管カウント（明細行ベース：種別×ロケーション×数量／第1期・第2期）
+# ============================================================
+def _period_from_date(date_str):
+    """カウント日の日付から期を推定（20日以前=第1期、以降=第2期）。"""
+    import re
+    m = re.search(r"\D(\d{1,2})\s*$", "/" + str(date_str).strip())
+    if m:
+        return "第1期" if int(m.group(1)) <= 20 else "第2期"
+    return "第1期"
+
+
+def _storage_props(client_name, r, ym):
+    date = str(r.get("カウント日", "")).strip()
+    period = str(r.get("期", "")).strip() or _period_from_date(date)
+    shubetsu = str(r.get("種別", "")).strip()
+    loc = str(r.get("ロケーション", "")).strip()
+    return {
+        "レコード名": {"title": _title(f"{client_name} {ym} {period} {shubetsu} {loc}")},
+        "クライアント": {"rich_text": _rt(client_name)},
+        "対象年月": {"rich_text": _rt(ym)},
+        "期": {"select": {"name": period}},
+        "カウント日": {"rich_text": _rt(date)},
+        "種別": {"rich_text": _rt(shubetsu)},
+        "ロケーション": {"rich_text": _rt(loc)},
+        "数量": {"number": float(r.get("数量") or 0)},
+        "備考": {"rich_text": _rt(r.get("備考", ""))},
+    }
+
+
+def load_storage_counts(db_ids, client_name, target_ym):
+    """指定クライアント×対象月の保管カウント明細を返す（id付き）。"""
+    rows = []
+    for row in _query_all(db_ids["請求_保管カウント"]):
+        p = row["properties"]
+        if _read_rt(p.get("クライアント")) != client_name:
+            continue
+        if _read_rt(p.get("対象年月")) != target_ym:
+            continue
+        rows.append({
+            "id": row["id"],
+            "期": _read_select(p.get("期")),
+            "カウント日": _read_rt(p.get("カウント日")),
+            "種別": _read_rt(p.get("種別")),
+            "ロケーション": _read_rt(p.get("ロケーション")),
+            "数量": _read_num(p.get("数量")) or 0,
+            "備考": _read_rt(p.get("備考")),
+        })
+    rows.sort(key=lambda r: (r["カウント日"], r["種別"], r["ロケーション"]))
+    return rows
+
+
+def add_storage_count(db_ids, client_name, row, target_ym):
+    """保管カウントを1件だけ追加（過去に触れない）。"""
+    _client().pages.create(
+        parent={"database_id": db_ids["請求_保管カウント"]},
+        properties=_storage_props(client_name, row, target_ym))
+
+
+def save_storage_counts(db_ids, client_name, edited_rows, loaded_ids, target_ym):
+    """保管カウントの差分保存（id付き=更新/無し=新規/読込済で消えた=削除）。"""
+    client = _client()
+    db = db_ids["請求_保管カウント"]
+    kept, created, updated, deleted = set(), 0, 0, 0
+    for r in edited_rows:
+        if not str(r.get("種別", "")).strip() and float(r.get("数量") or 0) == 0:
+            continue
+        props = _storage_props(client_name, r, target_ym)
+        rid = str(r.get("id") or "").strip()
+        if rid and rid.lower() != "nan":
+            client.pages.update(page_id=rid, properties=props, archived=False)
+            kept.add(rid)
+            updated += 1
+        else:
+            client.pages.create(parent={"database_id": db}, properties=props)
+            created += 1
+    for rid in set(loaded_ids) - kept:
+        try:
+            client.pages.update(page_id=rid, archived=True)
+            deleted += 1
+        except Exception:  # noqa: BLE001
+            pass
+    return {"created": created, "updated": updated, "deleted": deleted}
+
+
+def aggregate_storage(count_rows, master_price, master_out):
+    """
+    明細行から種別ごとの 第1期合計・第2期合計・平均・金額 を集計する。
+    返り値: (preview[list], by_out[dict 出力品名->金額], warnings[list])
+    """
+    agg = {}
+    for r in count_rows:
+        name = str(r.get("種別", "")).strip()
+        if not name:
+            continue
+        a = agg.setdefault(name, {"第1期": 0.0, "第2期": 0.0})
+        q = float(r.get("数量") or 0)
+        if str(r.get("期", "")) == "第2期":
+            a["第2期"] += q
+        else:
+            a["第1期"] += q
+    preview, by_out, warnings = [], {}, []
+    for name, a in agg.items():
+        avg = (a["第1期"] + a["第2期"]) / 2
+        if name in master_price:
+            price = float(master_price[name])
+        else:
+            price = 0.0
+            warnings.append(f"種別 '{name}' の単価が保管料マスタに未登録")
+        out = master_out.get(name, "保管料")
+        amt = round(avg * price)
+        preview.append({"種別": name, "第1期合計": a["第1期"], "第2期合計": a["第2期"],
+                        "平均": avg, "単価": price, "金額": amt, "出力品名": out})
+        by_out[out] = by_out.get(out, 0) + amt
+    return preview, by_out, warnings
 
 
 def load_storage_history(db_ids, client_name, target_ym):

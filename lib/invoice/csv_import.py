@@ -100,6 +100,47 @@ def parse_shipping_table_csv(file_bytes, areas):
     return rows
 
 
+def parse_storage_count_csv(file_bytes):
+    """
+    保管カウントのスプレッドシートCSVを取り込む。
+    [{カウント日,種別,ロケーション,数量,備考}]
+    想定列：カウント日 / 種別 / ロケーション(任意) / 数量 / 備考。表記ゆれを吸収。
+    """
+    import unicodedata
+    df = read_csv_auto(file_bytes)
+    cols = {unicodedata.normalize("NFKC", str(c)).strip(): c for c in df.columns}
+
+    def pick(*cands):
+        for c in cands:
+            if c in cols:
+                return cols[c]
+        for key, orig in cols.items():
+            if any(c in key for c in cands):
+                return orig
+        return None
+
+    c_date = pick("カウント日", "日付")
+    c_type = pick("種別")
+    c_loc = pick("ロケーション", "ロケ")
+    c_qty = pick("数量")
+    c_note = pick("備考")
+
+    rows = []
+    for _, r in df.iterrows():
+        shubetsu = str(r[c_type]).strip() if c_type else ""
+        qty = _to_number(r[c_qty]) if c_qty else 0
+        if not shubetsu and not qty:
+            continue
+        rows.append({
+            "カウント日": str(r[c_date]).strip() if c_date else "",
+            "種別": shubetsu,
+            "ロケーション": str(r[c_loc]).strip() if c_loc else "",
+            "数量": qty,
+            "備考": str(r[c_note]).strip() if c_note else "",
+        })
+    return rows
+
+
 def parse_irregular_csv(file_bytes):
     """
     イレギュラー作業のスプレッドシートCSVを取り込む。

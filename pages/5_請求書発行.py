@@ -342,30 +342,20 @@ st.caption("数量の入力は左メニュー「保管カウント」ページ�
 
 target_ym = f"{int(year)}-{int(month):02d}"
 
-# 保管カウント（保存済み）を読み込み、2期平均×単価で集計（表示のみ）
-history_rows = []
-if notion_ready:
-    try:
-        history_rows = notion_store.load_storage_history(db_ids, client_name, target_ym)
-    except Exception as e:
-        st.caption(f"（保管カウントの読込はスキップしました: {e}）")
-
+# 保管カウント明細を読み込み、種別ごとの2期平均×単価で集計（表示のみ）
 storage_lines = {}   # 出力品名 -> 金額合計
 storage_preview = []
-for r in history_rows:
-    name = str(r.get("種別名", "")).strip()
-    if not name:
-        continue
-    q15 = float(r.get("15日数量") or 0)
-    qend = float(r.get("末日数量") or 0)
-    price = float(r.get("単価") or 0)
-    out_name = str(r.get("出力品名", "")).strip() or "保管料"
-    avg = (q15 + qend) / 2
-    amount = round(avg * price)
-    storage_preview.append({
-        "種別名": name, "15日数量": q15, "末日数量": qend, "平均数量": avg,
-        "単価": price, "金額": amount, "出力品名": out_name})
-    storage_lines[out_name] = storage_lines.get(out_name, 0) + amount
+if notion_ready:
+    try:
+        _counts = notion_store.load_storage_counts(db_ids, client_name, target_ym)
+        _mp = {m["種別名"]: m["単価"] for m in client.get("保管料マスタ", [])}
+        _mo = {m["種別名"]: m["出力品名"] for m in client.get("保管料マスタ", [])}
+        storage_preview, storage_lines, _swarn = notion_store.aggregate_storage(
+            _counts, _mp, _mo)
+        for _w in _swarn:
+            st.caption(f"（{_w}）")
+    except Exception as e:
+        st.caption(f"（保管カウントの読込はスキップしました: {e}）")
 
 if storage_preview:
     st.dataframe(pd.DataFrame(storage_preview), use_container_width=True, hide_index=True)
