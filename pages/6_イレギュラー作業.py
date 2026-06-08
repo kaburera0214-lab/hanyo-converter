@@ -53,6 +53,9 @@ year = c2.number_input("対象年", min_value=2020, max_value=2100,
 month = c3.selectbox("対象月", list(range(1, 13)), index=today.month - 1, key="irr_month")
 target_ym = f"{int(year)}-{int(month):02d}"
 
+show_all = st.checkbox("全期間を表示（このクライアントの全月を累計表示）", key="irr_showall")
+scope = "ALL" if show_all else target_ym
+
 # 時給単価（クライアント別・単価マスタの 費目=その他/種別=[汎用]作業料）
 hourly = 0.0
 try:
@@ -66,14 +69,15 @@ st.caption(f"時給単価: {hourly:,.0f} 円/h（「請求書発行」→単価�
 
 
 # --- 既存データ読込（編集の土台） ---
-reload_key = f"irr_loaded_{client_name}_{target_ym}"
-if st.button("🔄 この月のデータを再読込", key="irr_reload"):
+reload_key = f"irr_loaded_{client_name}_{scope}"
+if st.button("🔄 データを再読込", key="irr_reload"):
     st.session_state.pop(reload_key, None)
     st.rerun()
 
 if reload_key not in st.session_state:
     try:
-        existing = notion_store.load_irregular_work(db_ids, client_name, target_ym)
+        existing = notion_store.load_irregular_work(
+            db_ids, client_name, None if show_all else target_ym)
     except Exception as e:
         existing = []
         st.error(f"読込に失敗: {e}")
@@ -102,13 +106,15 @@ with st.expander("スプレッドシートCSVから取込（移行用）", expan
 
 
 # --- 入力テーブル ---
-st.markdown(f"#### {client_name} の作業記録（編集中）")
-st.caption(f"表示・新規入力の基準月は {target_ym} です。各行は『日付』の月に振り分けて保存されます。")
+_scope_label = "全期間" if show_all else target_ym
+st.markdown(f"#### {client_name} の作業記録（{_scope_label}）")
+st.caption(f"日付が読めない行の保存先は {target_ym}。各行は『日付』の月に振り分けて保存されます。"
+           + ("　※全期間表示中：保存すると表内の各月をまとめて更新します。" if show_all else ""))
 edited = st.data_editor(
     base_df,
     num_rows="dynamic",
     use_container_width=True,
-    key="irr_editor",
+    key=f"irr_editor_{client_name}_{scope}",
     column_config={
         "日付": st.column_config.TextColumn("日付", help="例: 2026/04/14"),
         "時間数": st.column_config.NumberColumn("時間数(h)", step=0.25, min_value=0),
