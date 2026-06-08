@@ -56,7 +56,7 @@ master_out = {m["種別名"]: m["出力品名"] for m in master}
 
 
 def _load(ym):
-    key = f"stk_data_{client_name}_{ym}"
+    key = f"stk_lines_{client_name}_{ym}"
     if key not in st.session_state:
         try:
             st.session_state[key] = notion_store.load_storage_counts(db_ids, client_name, ym)
@@ -96,7 +96,7 @@ if mode.startswith("かんたん"):
     cdate = st.date_input("カウント日（この期の全行に付きます）", value=today, key="stk_q_date")
 
     if st.button("🔄 最新に更新", key="stk_q_reload"):
-        st.session_state.pop(f"stk_data_{client_name}_{ym}", None)
+        st.session_state.pop(f"stk_lines_{client_name}_{ym}", None)
         st.rerun()
     _, all_rows = _load(ym)
     period_rows = [r for r in all_rows if r["期"] == period_name]
@@ -133,7 +133,7 @@ if mode.startswith("かんたん"):
                 recs.append(e)
             res = notion_store.save_storage_counts(
                 db_ids, client_name, recs, loaded_ids, ym)
-            st.session_state.pop(f"stk_data_{client_name}_{ym}", None)
+            st.session_state.pop(f"stk_lines_{client_name}_{ym}", None)
             st.session_state["stk_q_ver"] = _qver + 1
             st.success(f"{period_name}を保存しました"
                        f"（新規{res['created']}・更新{res['updated']}・削除{res['deleted']}）。")
@@ -159,7 +159,7 @@ month = e2.selectbox("対象月", list(range(1, 13)), index=today.month - 1, key
 ym = f"{int(year)}-{int(month):02d}"
 
 if st.button("🔄 データを再読込", key="stk_e_reload"):
-    st.session_state.pop(f"stk_data_{client_name}_{ym}", None)
+    st.session_state.pop(f"stk_lines_{client_name}_{ym}", None)
     st.rerun()
 data_key, rows = _load(ym)
 
