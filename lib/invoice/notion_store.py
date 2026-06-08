@@ -263,6 +263,21 @@ def seed_clients_if_empty(db_ids, default_clients):
                 "単価": {"number": m["単価"]},
                 "出力品名": {"rich_text": _rt(m["出力品名"])},
             })
+        # 出荷作業・資材・受注作業・送料などの単価マスタ
+        for m in c.get("単価マスタ", []):
+            props = {
+                "項目名": {"title": _title(f"{name}|{m['費目']}|{m.get('種別', '')}")},
+                "クライアント": {"rich_text": _rt(name)},
+                "費目": {"select": {"name": m["費目"]}},
+                "種別": {"rich_text": _rt(m.get("種別", ""))},
+                "単価": {"number": float(m.get("単価", 0))},
+                "出力品名": {"rich_text": _rt(m.get("出力品名", ""))},
+            }
+            if m.get("マージン率") is not None:
+                props["マージン率"] = {"number": float(m["マージン率"])}
+            if m.get("加算額") is not None:
+                props["加算額"] = {"number": float(m["加算額"])}
+            client.pages.create(parent={"database_id": pdb}, properties=props)
     return True
 
 
@@ -317,6 +332,71 @@ def save_storage_history(db_ids, *, client_name, target_ym, storage_rows):
             "金額": {"number": int(r.get("金額", 0))},
             "出力品名": {"rich_text": _rt(r.get("出力品名", ""))},
         })
+
+
+# ============================================================
+# 単価マスタの読込・保存（クライアント別）
+# ============================================================
+def load_price_master(db_ids, client_name):
+    """
+    指定クライアントの単価マスタ全行を返す。
+    [{"費目","種別","単価","出力品名","マージン率","加算額","備考"}]
+    """
+    rows = []
+    for row in _query_all(db_ids["請求_単価マスタ"]):
+        p = row["properties"]
+        if _read_rt(p.get("クライアント")) != client_name:
+            continue
+        rows.append({
+            "費目": _read_select(p.get("費目")),
+            "種別": _read_rt(p.get("種別")),
+            "単価": _read_num(p.get("単価")) or 0,
+            "出力品名": _read_rt(p.get("出力品名")),
+            "マージン率": _read_num(p.get("マージン率")),
+            "加算額": _read_num(p.get("加算額")),
+            "備考": _read_rt(p.get("備考")),
+        })
+    return rows
+
+
+def replace_price_master(db_ids, client_name, rows):
+    """
+    指定クライアントの単価マスタを丸ごと置き換える（既存をアーカイブ→新規作成）。
+    rows: load_price_master と同じ形式のリスト。費目・種別が空の行は無視。
+    """
+    client = _client()
+    db = db_ids["請求_単価マスタ"]
+    # 既存をアーカイブ
+    for row in _query_all(db):
+        p = row["properties"]
+        if _read_rt(p.get("クライアント")) == client_name:
+            client.pages.update(page_id=row["id"], archived=True)
+    # 新規作成
+    saved = 0
+    for r in rows:
+        himoku = str(r.get("費目", "")).strip()
+        shubetsu = str(r.get("種別", "")).strip()
+        if not himoku and not shubetsu:
+            continue
+        props = {
+            "項目名": {"title": _title(f"{client_name}|{himoku}|{shubetsu}")},
+            "クライアント": {"rich_text": _rt(client_name)},
+            "種別": {"rich_text": _rt(shubetsu)},
+            "単価": {"number": float(r.get("単価") or 0)},
+            "出力品名": {"rich_text": _rt(r.get("出力品名", ""))},
+            "備考": {"rich_text": _rt(r.get("備考", ""))},
+        }
+        if himoku:
+            props["費目"] = {"select": {"name": himoku}}
+        margin = r.get("マージン率")
+        if margin is not None and str(margin) != "":
+            props["マージン率"] = {"number": float(margin)}
+        addon = r.get("加算額")
+        if addon is not None and str(addon) != "":
+            props["加算額"] = {"number": float(addon)}
+        client.pages.create(parent={"database_id": db}, properties=props)
+        saved += 1
+    return saved
 
 
 def load_storage_history(db_ids, client_name, target_ym):

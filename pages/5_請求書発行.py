@@ -132,6 +132,44 @@ with st.expander("取引先の詳細情報（住所・備考・振込先）", ex
 # ============================================================
 # 3. 保管料（2期制）
 # ============================================================
+with st.expander("🛠 単価マスタ管理（クライアント別：送料・出荷作業・資材・受注作業・保管）", expanded=False):
+    if not notion_ready:
+        st.info("Notion未設定のため編集できません。Secretsに INVOICE_NOTION_PARENT_PAGE_ID を設定してください。")
+    else:
+        st.caption("費目ごとの単価を編集できます。出荷作業・資材は配送種別(nekop/60/80/100/120/140/160)ごと、"
+                   "送料はマージン率(%)・加算額で設定します。保存するとNotionの単価マスタを更新します。")
+        try:
+            pm_rows = notion_store.load_price_master(db_ids, client_name)
+        except Exception as e:
+            pm_rows = []
+            st.error(f"単価マスタ読込に失敗: {e}")
+        pm_df = pd.DataFrame(pm_rows, columns=[
+            "費目", "種別", "単価", "出力品名", "マージン率", "加算額", "備考"])
+        pm_edited = st.data_editor(
+            pm_df,
+            num_rows="dynamic",
+            use_container_width=True,
+            key="invoice_pm_editor",
+            column_config={
+                "費目": st.column_config.SelectboxColumn(
+                    "費目", options=["保管", "送料", "出荷作業", "資材", "受注作業", "その他"]),
+                "種別": st.column_config.TextColumn("種別（配送種別など）"),
+                "単価": st.column_config.NumberColumn("単価", step=1),
+                "出力品名": st.column_config.TextColumn("出力品名（MF品目名）"),
+                "マージン率": st.column_config.NumberColumn("マージン率(%)", step=1),
+                "加算額": st.column_config.NumberColumn("加算額", step=1),
+                "備考": st.column_config.TextColumn("備考"),
+            },
+        )
+        if st.button("💾 単価マスタを保存", key="invoice_pm_save", type="primary"):
+            try:
+                n = notion_store.replace_price_master(
+                    db_ids, client_name, pm_edited.to_dict("records"))
+                st.session_state.pop("invoice_clients_cache", None)
+                st.success(f"単価マスタを保存しました（{n}件）。")
+            except Exception as e:
+                st.error(f"保存に失敗しました: {e}")
+
 st.header("③ 保管料（2期制：15日・末日）")
 st.caption("各種別について15日時点と末日時点の数量を入力すると、平均×単価で自動計算します。")
 
