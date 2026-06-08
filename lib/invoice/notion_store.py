@@ -632,6 +632,7 @@ def load_irregular_work(db_ids, client_name, target_ym=None):
         if target_ym and ym != target_ym:
             continue
         rows.append({
+            "対象年月": ym,
             "日付": _read_rt(p.get("日付")),
             "時間数": _read_num(p.get("時間数")) or 0,
             "人数": _read_num(p.get("人数")) or 0,
@@ -654,11 +655,11 @@ def _ym_from_date(date_str, fallback):
     return fallback
 
 
-def replace_irregular_work(db_ids, client_name, rows, fallback_ym):
+def replace_irregular_work(db_ids, client_name, rows, fallback_ym, scope_yms=None):
     """
-    イレギュラー作業を保存する。各行の対象年月は日付から自動判定し、
-    判定できた月（＋日付不明分はfallback_ym）のクライアント既存データを
-    置き換える。日付が複数月にまたがるCSV取込にも対応。
+    イレギュラー作業を保存する。各行の対象年月は日付から自動判定。
+    scope_yms（表示中の月範囲）＋新規行の月のクライアント既存データを
+    置き換える。scope_ymsを渡すと、行を削除した月も正しく空にできる。
     rows: [{日付,時間数,人数,作業項目,作業詳細,備考}]
     """
     client = _client()
@@ -676,7 +677,10 @@ def replace_irregular_work(db_ids, client_name, rows, fallback_ym):
         ym = _ym_from_date(date, fallback_ym)
         prepared.append((ym, date, item, hours, people, r))
 
-    target_yms = {ym for ym, *_ in prepared} or {fallback_ym}
+    # 置き換え対象の月＝表示範囲(scope_yms)＋新規行の月
+    target_yms = set(scope_yms or set()) | {ym for ym, *_ in prepared}
+    if not target_yms:
+        target_yms = {fallback_ym}
 
     # 対象月の既存データをアーカイブ（既にアーカイブ済みは無視）
     for row in _query_all(db):

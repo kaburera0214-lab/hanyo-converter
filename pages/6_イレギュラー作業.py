@@ -50,11 +50,20 @@ client_name = c1.selectbox("クライアント", client_names, key="irr_client")
 today = datetime.date.today()
 year = c2.number_input("対象年", min_value=2020, max_value=2100,
                        value=today.year, step=1, key="irr_year")
-month = c3.selectbox("対象月", list(range(1, 13)), index=today.month - 1, key="irr_month")
-target_ym = f"{int(year)}-{int(month):02d}"
-
-show_all = st.checkbox("全期間を表示（このクライアントの全月を累計表示）", key="irr_showall")
-scope = "ALL" if show_all else target_ym
+# 既定は最新請求月（先月）。範囲指定できる。
+_last_billing = today.month - 1 if today.month > 1 else 12
+start_month = c3.selectbox("開始月", list(range(1, 13)),
+                           index=_last_billing - 1, key="irr_start")
+c4a, c4b = st.columns([1, 4])
+end_month = c4a.selectbox("終了月", list(range(1, 13)),
+                          index=_last_billing - 1, key="irr_end")
+show_all = c4b.checkbox("全期間を表示（年月指定を無視してこのクライアントの全月）",
+                        key="irr_showall")
+if start_month > end_month:
+    start_month, end_month = end_month, start_month
+range_yms = {f"{int(year)}-{m:02d}" for m in range(start_month, end_month + 1)}
+fallback_ym = f"{int(year)}-{end_month:02d}"
+scope_sig = "ALL" if show_all else f"{int(year)}-{start_month:02d}_{end_month:02d}"
 
 # 時給単価（クライアント別・単価マスタの 費目=その他/種別=[汎用]作業料）
 hourly = 0.0
@@ -68,21 +77,27 @@ except Exception:
 st.caption(f"時給単価: {hourly:,.0f} 円/h（「請求書発行」→単価マスタ管理で変更できます）")
 
 
-# --- 既存データ読込（編集の土台） ---
-reload_key = f"irr_loaded_{client_name}_{scope}"
+# --- 既存データ読込（クライアント全件をキャッシュし、範囲でフィルタ） ---
+all_key = f"irr_all_{client_name}"
 if st.button("🔄 データを再読込", key="irr_reload"):
-    st.session_state.pop(reload_key, None)
+    st.session_state.pop(all_key, None)
     st.rerun()
 
-if reload_key not in st.session_state:
+if all_key not in st.session_state:
     try:
-        existing = notion_store.load_irregular_work(
-            db_ids, client_name, None if show_all else target_ym)
+        st.session_state[all_key] = notion_store.load_irregular_work(
+            db_ids, client_name, None)
     except Exception as e:
-        existing = []
+        st.session_state[all_key] = []
         st.error(f"読込に失敗: {e}")
-    st.session_state[reload_key] = existing
-existing = st.session_state[reload_key]
+all_rows = st.session_state[all_key]
+
+if show_all:
+    existing = all_rows
+    scope_yms = {r["対象年月"] for r in all_rows} or {fallback_ym}
+else:
+    existing = [r for r in all_rows if r.get("対象年月") in range_yms]
+    scope_yms = set(range_yms)
 
 base_df = pd.DataFrame(
     [{"日付": r["日付"], "時間数": r["時間数"], "人数": r["人数"],
@@ -106,15 +121,16 @@ with st.expander("スプレッドシートCSVから取込（移行用）", expan
 
 
 # --- 入力テーブル ---
-_scope_label = "全期間" if show_all else target_ym
+_scope_label = "全期間" if show_all else (
+    f"{int(year)}-{start_month:02d}〜{end_month:02d}")
 st.markdown(f"#### {client_name} の作業記録（{_scope_label}）")
-st.caption(f"日付が読めない行の保存先は {target_ym}。各行は『日付』の月に振り分けて保存されます。"
-           + ("　※全期間表示中：保存すると表内の各月をまとめて更新します。" if show_all else ""))
+st.caption(f"日付が読めない行の保存先は {fallback_ym}。各行は『日付』の月に振り分けて保存されます。"
+           "　保存すると表示中の範囲の月がまとめて更新されます（行を消した月は空になります）。")
 edited = st.data_editor(
     base_df,
     num_rows="dynamic",
     use_container_width=True,
-    key=f"irr_editor_{client_name}_{scope}",
+    key=f"irr_editor_{client_name}_{scope_sig}",
     column_config={
         "日付": st.column_config.TextColumn("日付", help="例: 2026/04/14"),
         "時間数": st.column_config.NumberColumn("時間数(h)", step=0.25, min_value=0),
@@ -138,9 +154,9 @@ m2.metric("時給単価", f"{hourly:,.0f} 円/h")
 m3.metric("[汎用]作業料（表全体・概算）", f"{amount:,} 円")
 
 # 月ごとの合計人時（請求は月単位なので内訳を表示）
-edited2["対象年月"] = edited2["日付"].map(lambda d: notion_store._ym_from_date(d, target_ym))
+edited2["対象年月"] = edited2["日付"].map(lambda d: notion_store._ym_from_date(d, fallback_ym))
 by_month = edited2.groupby("対象年月")["合計時間"].sum()
-if len(by_month) > 1 or (len(by_month) == 1 and by_month.index[0] != target_ym):
+if len(by_month) >= 1:
     st.caption("月ごとの合計人時（保存時はこの月単位で振り分けられます）：")
     st.dataframe(
         pd.DataFrame([{"対象年月": k, "合計人時": f"{v:g} h",
@@ -157,13 +173,11 @@ if st.button("💾 保存", key="irr_save", type="primary"):
         # 保存先の月の内訳を表示
         months = {}
         for r in recs:
-            ym = notion_store._ym_from_date(r.get("日付", ""), target_ym)
+            ym = notion_store._ym_from_date(r.get("日付", ""), fallback_ym)
             months[ym] = months.get(ym, 0) + 1
         n = notion_store.replace_irregular_work(
-            db_ids, client_name, recs, target_ym)
-        for k in list(st.session_state.keys()):
-            if k.startswith("irr_loaded_"):
-                st.session_state.pop(k, None)
+            db_ids, client_name, recs, fallback_ym, scope_yms=scope_yms)
+        st.session_state.pop(all_key, None)
         st.success(f"{client_name} の作業記録を保存しました（{n}件）。"
                    f"保存先の月: {months}。請求書発行ページの[汎用]作業料に反映されます。")
     except Exception as e:
