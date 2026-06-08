@@ -499,6 +499,26 @@ with st.expander("③商品マスタの管理（毎回アップ不要・Drive保
         st.success(f"③商品マスタ利用中: {prod_meta}")
     else:
         st.info("③商品マスタが未保存です。初回のみ最新の③をアップロードしてください。")
+    if st.button("🔄 商品マスタを再取得（最新を読み直す）", key="invoice_prod_reload"):
+        for k in ("invoice_prod_df", "invoice_prod_meta"):
+            st.session_state.pop(k, None)
+        st.rerun()
+    # 特定商品の項目1が今のマスタに反映されているか確認
+    if prod_df is not None:
+        chk = st.text_input("商品コードで項目1を確認", key="invoice_prod_check",
+                            placeholder="例: TE4580060597956")
+        if chk.strip():
+            import unicodedata as _u
+            key = _u.normalize("NFKC", chk).strip()
+            hit = prod_df[prod_df["商品コード"].map(ne_calc._norm) == key]
+            if hit.empty:
+                st.error(f"この商品コードは現在の商品マスタに存在しません（③が最新でない可能性）。")
+            else:
+                val = ne_calc._norm(hit.iloc[0]["項目1"])
+                if val in ("", "nan"):
+                    st.warning("この商品の項目1（サイズ）は**空**です。③で項目1を設定して更新してください。")
+                else:
+                    st.success(f"この商品の項目1（サイズ）= 「{val}」（マスタに反映済み）")
     if not drive_folder:
         st.warning("Secretsに INVOICE_GDRIVE_FOLDER_ID が未設定のため、③をDrive保存できません"
                    "（今回のセッションのみ利用）。")
