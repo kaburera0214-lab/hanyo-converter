@@ -26,13 +26,17 @@ def _digits(value):
     return "".join(ch for ch in str(value) if ch.isdigit())
 
 
-def size_to_delivery_type(size_value):
-    """⑤サイズ列の値を配送種別へ。全角数字も半角化。
-    "－"/空→nekop、"６０"/"60サイズ"/"60"→"60"。"""
+def size_to_delivery_type(size_value, kubun2=None):
+    """⑤の配送種別を判定。商品区分2があれば優先（ネコポス→nekop）、
+    無ければサイズから判定。全角数字も半角化。
+    "－"/空/ネコポス/メール便/3cm以内→nekop、"６０"/"60サイズ"/"60"→"60"。"""
+    if kubun2 is not None:
+        k = unicodedata.normalize("NFKC", str(kubun2)).strip()
+        if "ネコポス" in k or "メール" in k or "nekop" in k.lower():
+            return "nekop"
     s = unicodedata.normalize("NFKC", str(size_value)).strip()
     if s in ("", "-", "－", "nan"):
         return "nekop"
-    # ネコポス/メール便系（"3cm以内"・"ネコポス"・"メール便"）はnekop
     low = s.lower()
     if "cm" in low or "ネコポス" in s or "メール" in s or "nekop" in low:
         return "nekop"
@@ -118,7 +122,12 @@ def compute_charges(matched_df, *, ship_rates, material_rates,
     返り値: dict(送料, 出荷作業料, 資材費, 種別別件数, 警告list)
     """
     warnings = []
-    types = matched_df["サイズ"].map(size_to_delivery_type)
+    has_kubun2 = "商品区分2" in matched_df.columns
+    if has_kubun2:
+        types = matched_df.apply(
+            lambda r: size_to_delivery_type(r["サイズ"], r["商品区分2"]), axis=1)
+    else:
+        types = matched_df["サイズ"].map(size_to_delivery_type)
     count_by_type = types.value_counts().to_dict()
 
     # 出荷作業料・資材費（配送種別ごと件数×単価）
@@ -149,7 +158,8 @@ def compute_charges(matched_df, *, ship_rates, material_rates,
                 table_by_type[key] = row
             miss = set()
             for _, r in matched_df.iterrows():
-                t = size_to_delivery_type(r["サイズ"])
+                t = size_to_delivery_type(
+                    r["サイズ"], r["商品区分2"] if has_kubun2 else None)
                 pref = str(r.get(PREF_COL, "")).strip()
                 area = area_map.get(pref)
                 trow = table_by_type.get(t)
