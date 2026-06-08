@@ -86,6 +86,7 @@ DB_SCHEMAS = {
         ]}},
         "カウント日": {"rich_text": {}},
         "種別": {"rich_text": {}},
+        "エリア": {"rich_text": {}},
         "ロケーション": {"rich_text": {}},
         "数量": {"number": {}},
         "備考": {"rich_text": {}},
@@ -757,14 +758,16 @@ def _storage_props(client_name, r, ym):
     date = str(r.get("カウント日", "")).strip()
     period = str(r.get("期", "")).strip() or _period_from_date(date)
     shubetsu = str(r.get("種別", "")).strip()
+    area = str(r.get("エリア", "")).strip()
     loc = str(r.get("ロケーション", "")).strip()
     return {
-        "レコード名": {"title": _title(f"{client_name} {ym} {period} {shubetsu} {loc}")},
+        "レコード名": {"title": _title(f"{client_name} {ym} {period} {area} {shubetsu} {loc}")},
         "クライアント": {"rich_text": _rt(client_name)},
         "対象年月": {"rich_text": _rt(ym)},
         "期": {"select": {"name": period}},
         "カウント日": {"rich_text": _rt(date)},
         "種別": {"rich_text": _rt(shubetsu)},
+        "エリア": {"rich_text": _rt(area)},
         "ロケーション": {"rich_text": _rt(loc)},
         "数量": {"number": float(r.get("数量") or 0)},
         "備考": {"rich_text": _rt(r.get("備考", ""))},
@@ -785,6 +788,7 @@ def load_storage_counts(db_ids, client_name, target_ym):
             "期": _read_select(p.get("期")),
             "カウント日": _read_rt(p.get("カウント日")),
             "種別": _read_rt(p.get("種別")),
+            "エリア": _read_rt(p.get("エリア")),
             "ロケーション": _read_rt(p.get("ロケーション")),
             "数量": _read_num(p.get("数量")) or 0,
             "備考": _read_rt(p.get("備考")),

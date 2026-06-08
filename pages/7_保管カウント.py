@@ -106,19 +106,20 @@ if mode.startswith("かんたん"):
     st.caption("種別ごとに行を足して、ロケーション・数量・備考を入力してください。"
                "同じ種別を複数行（ロケーション違い）書けます。選んだ期だけ更新されます。")
     sheet = pd.DataFrame(
-        [{"id": r.get("id", ""), "種別": r["種別"], "ロケーション": r["ロケーション"],
-          "数量": r["数量"], "備考": r["備考"]} for r in period_rows],
-        columns=["id", "種別", "ロケーション", "数量", "備考"])
+        [{"id": r.get("id", ""), "種別": r["種別"], "エリア": r.get("エリア", ""),
+          "ロケーション": r["ロケーション"], "数量": r["数量"], "備考": r["備考"]}
+         for r in period_rows],
+        columns=["id", "種別", "エリア", "ロケーション", "数量", "備考"])
     _qver = st.session_state.get("stk_q_ver", 0)
-    type_col = (st.column_config.SelectboxColumn("種別", options=master_names)
-                if master_names else st.column_config.TextColumn("種別"))
+    _type_opts = (master_names + ["その他"]) if master_names else ["その他"]
     edited = st.data_editor(
         sheet, num_rows="dynamic", use_container_width=True, hide_index=True,
         key=f"stk_q_editor_{client_name}_{ym}_{period_name}_{_qver}",
         column_config={
             "id": None,
-            "種別": type_col,
-            "ロケーション": st.column_config.TextColumn("ロケーション", help="例: TA, TB, ネスティング等"),
+            "種別": st.column_config.SelectboxColumn("種別", options=_type_opts, width="large"),
+            "エリア": st.column_config.SelectboxColumn("エリア", options=store.STORAGE_AREAS),
+            "ロケーション": st.column_config.TextColumn("ロケーション", help="例: TA, TB（自由記入）"),
             "数量": st.column_config.NumberColumn("数量", min_value=0, step=1),
             "備考": st.column_config.TextColumn("備考", width="large"),
         })
@@ -165,8 +166,9 @@ data_key, rows = _load(ym)
 
 base_df = pd.DataFrame(
     [{"id": r.get("id", ""), "カウント日": r["カウント日"], "期": r["期"], "種別": r["種別"],
-      "ロケーション": r["ロケーション"], "数量": r["数量"], "備考": r["備考"]} for r in rows],
-    columns=["id", "カウント日", "期", "種別", "ロケーション", "数量", "備考"])
+      "エリア": r.get("エリア", ""), "ロケーション": r["ロケーション"],
+      "数量": r["数量"], "備考": r["備考"]} for r in rows],
+    columns=["id", "カウント日", "期", "種別", "エリア", "ロケーション", "数量", "備考"])
 loaded_ids = [r["id"] for r in rows if r.get("id")]
 
 with st.expander("スプレッドシートCSVから取込（移行用）", expanded=False):
@@ -193,7 +195,10 @@ edited = st.data_editor(
         "id": None,
         "カウント日": st.column_config.TextColumn("カウント日", help="例: 2026/05/15"),
         "期": st.column_config.SelectboxColumn("期", options=["第1期", "第2期"]),
-        "種別": st.column_config.TextColumn("種別"),
+        "種別": st.column_config.SelectboxColumn(
+            "種別", options=(master_names + ["その他"]) if master_names else ["その他"],
+            width="large"),
+        "エリア": st.column_config.SelectboxColumn("エリア", options=store.STORAGE_AREAS),
         "ロケーション": st.column_config.TextColumn("ロケーション"),
         "数量": st.column_config.NumberColumn("数量", step=1),
         "備考": st.column_config.TextColumn("備考", width="large"),

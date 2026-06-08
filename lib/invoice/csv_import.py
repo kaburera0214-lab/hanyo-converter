@@ -121,6 +121,7 @@ def parse_storage_count_csv(file_bytes):
 
     c_date = pick("カウント日", "日付")
     c_type = pick("種別")
+    c_area = pick("エリア")
     c_loc = pick("ロケーション", "ロケ")
     c_qty = pick("数量")
     c_note = pick("備考")
@@ -134,6 +135,7 @@ def parse_storage_count_csv(file_bytes):
         rows.append({
             "カウント日": str(r[c_date]).strip() if c_date else "",
             "種別": shubetsu,
+            "エリア": str(r[c_area]).strip() if c_area else "",
             "ロケーション": str(r[c_loc]).strip() if c_loc else "",
             "数量": qty,
             "備考": str(r[c_note]).strip() if c_note else "",
