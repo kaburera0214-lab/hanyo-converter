@@ -23,7 +23,7 @@ st.caption("倉庫業務クライアント向けの請求書を作成し、MFク
 
 # --- 専用モジュール（遅延import） ---
 from lib.invoice import (mf_export, invoice_number, store, notion_store,
-                         csv_import, ne_calc, yamato_calc)
+                         csv_import, ne_calc, yamato_calc, drive_master)
 
 
 # ============================================================
@@ -450,24 +450,81 @@ if ne_ship_file is not None:
         st.error(f"NE出荷確定CSVの取込に失敗しました: {e}")
 
 # --- ②受注明細＋③商品マスタ → 出荷作業料（PCS×サイズ別単価） ---
-st.markdown("##### ②受注明細一覧 ＋ ③NEカスタム(商品マスタ) → 出荷作業料")
+st.markdown("##### ②受注明細一覧 ＋ ③商品マスタ → 出荷作業料")
 st.caption("出荷作業料はPCS（商品点数）×サイズ別単価で算出します。"
-           "②はクライアント別、③はNE共通の商品マスタ（商品コード→項目1サイズ）です。")
-oc1, oc2 = st.columns(2)
-order_file = oc1.file_uploader("②受注明細一覧CSV", type=["csv"], key="invoice_ne_order")
-prod_file = oc2.file_uploader("③NEカスタム(商品マスタ)CSV", type=["csv"], key="invoice_ne_prod")
-if order_file is not None and prod_file is not None:
-    if not notion_ready:
+           "②はクライアント別。③はNE共通の商品マスタで、Driveに保存して毎回のアップは不要です。")
+
+drive_folder = st.secrets.get("INVOICE_GDRIVE_FOLDER_ID", "")
+
+# ③商品マスタ：session_state→Drive の順で取得
+prod_df = st.session_state.get("invoice_prod_df")
+prod_meta = st.session_state.get("invoice_prod_meta", "")
+if prod_df is None and drive_folder:
+    try:
+        f = drive_master.find_file(drive_master.PRODUCT_MASTER_NAME, drive_folder)
+        if f:
+            prod_df = ne_calc.load_product_master(drive_master.download_bytes(f["id"]))
+            prod_meta = f"Drive保存版（更新 {str(f.get('modifiedTime',''))[:10]}・{len(prod_df):,}件）"
+            st.session_state["invoice_prod_df"] = prod_df
+            st.session_state["invoice_prod_meta"] = prod_meta
+    except Exception as e:
+        st.caption(f"（Driveの③読込をスキップ: {e}）")
+
+with st.expander("③商品マスタの管理（毎回アップ不要・Drive保存）",
+                 expanded=(prod_df is None)):
+    if prod_df is not None:
+        st.success(f"③商品マスタ利用中: {prod_meta}")
+    else:
+        st.info("③商品マスタが未保存です。初回のみ最新の③をアップロードしてください。")
+    if not drive_folder:
+        st.warning("Secretsに INVOICE_GDRIVE_FOLDER_ID が未設定のため、③をDrive保存できません"
+                   "（今回のセッションのみ利用）。")
+    new_prod = st.file_uploader("③NEカスタム(商品マスタ)をアップロード／更新",
+                                type=["csv"], key="invoice_prod_upload")
+    if new_prod is not None:
+        try:
+            data = new_prod.getvalue()
+            pdf = ne_calc.load_product_master(data)  # 検証
+            if drive_folder:
+                drive_master.upload_or_replace(
+                    data, drive_master.PRODUCT_MASTER_NAME, drive_folder)
+                prod_meta = f"アップロード版（{len(pdf):,}件・Drive保存済）"
+                st.success(f"③をDriveに保存しました（{len(pdf):,}件）。次回からアップ不要です。")
+            else:
+                prod_meta = f"アップロード版（{len(pdf):,}件・未保存）"
+            prod_df = pdf
+            st.session_state["invoice_prod_df"] = pdf
+            st.session_state["invoice_prod_meta"] = prod_meta
+        except Exception as e:
+            st.error(f"③の取込に失敗: {e}")
+
+order_file = st.file_uploader("②受注明細一覧CSV", type=["csv"], key="invoice_ne_order")
+if order_file is not None:
+    if prod_df is None:
+        st.error("③商品マスタがありません。上の『③商品マスタの管理』から最新の③をアップロードしてください。")
+    elif not notion_ready:
         st.warning("Notion未設定のため出荷作業単価を参照できません。")
     else:
         try:
             order_df = ne_calc.load_order_detail(order_file.getvalue())
-            prod_df = ne_calc.load_product_master(prod_file.getvalue())
             ship_rates = {}
             for r in notion_store.load_price_master(db_ids, client_name):
                 if r["費目"] == "出荷作業":
                     ship_rates[r["種別"]] = r["単価"]
             pres = ne_calc.compute_picking_charge(order_df, prod_df, ship_rates)
+            unmatched = pres["未マッチ商品数"]
+            if unmatched:
+                st.error(
+                    f"⚠️ ③商品マスタに無い商品が {unmatched} 件あります。"
+                    "③が最新でない可能性が高いです。"
+                    "『③商品マスタの管理』から**最新の③をアップロード**してください"
+                    "（このままでは出荷作業料が過少になります）。")
+                with st.expander("紐づかなかった商品コード（先頭20件）", expanded=True):
+                    bad = order_df.loc[
+                        ~order_df["商品コード"].map(ne_calc._norm).isin(
+                            prod_df["商品コード"].map(ne_calc._norm)),
+                        "商品コード"].astype(str).head(20).tolist()
+                    st.write(bad)
             auto_shukka = pres["出荷作業料"]
             st.success(f"出荷作業料 ＝ {auto_shukka:,}円（PCS合計 "
                        f"{sum(pres['サイズ別PCS'].values()):,}）（⑤に反映）")
@@ -476,8 +533,6 @@ if order_file is not None and prod_file is not None:
                     pd.DataFrame([{"サイズ": k, "PCS": v}
                                   for k, v in pres["サイズ別PCS"].items()]),
                     use_container_width=True, hide_index=True)
-            if pres["未マッチ商品数"]:
-                st.warning(f"③商品マスタに無い商品が {pres['未マッチ商品数']} 行（サイズ不明として集計）")
             if pres["単価未登録サイズ"]:
                 st.warning(f"出荷作業単価が未登録のサイズ: {pres['単価未登録サイズ']}")
         except Exception as e:
