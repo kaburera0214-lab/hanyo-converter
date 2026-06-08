@@ -96,6 +96,22 @@ all_rows = st.session_state[all_key]
 def _eff_ym(r):
     return notion_store._ym_from_date(r.get("日付", ""), r.get("対象年月", ""))
 
+# 診断：このクライアントがNotionに何件・どの月に保存されているか
+with st.expander(f"📊 保存済みデータの月別件数（全{len(all_rows)}件）", expanded=False):
+    _diag = {}
+    for r in all_rows:
+        em = _eff_ym(r)
+        _diag.setdefault(em, [0, 0.0])
+        _diag[em][0] += 1
+        _diag[em][1] += float(r.get("合計時間") or 0)
+    if _diag:
+        st.dataframe(pd.DataFrame(
+            [{"対象年月(日付基準)": k, "件数": v[0], "合計人時": f"{v[1]:g} h"}
+             for k, v in sorted(_diag.items())]),
+            use_container_width=True, hide_index=True)
+    else:
+        st.info("このクライアントの保存データはありません。")
+
 if show_all:
     existing = all_rows
     scope_yms = {_eff_ym(r) for r in all_rows} or {fallback_ym}

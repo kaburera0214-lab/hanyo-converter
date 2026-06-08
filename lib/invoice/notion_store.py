@@ -628,7 +628,8 @@ def load_irregular_work(db_ids, client_name, target_ym=None):
         p = row["properties"]
         if _read_rt(p.get("クライアント")) != client_name:
             continue
-        ym = _read_rt(p.get("対象年月"))
+        # 実日付から月を判定（保存済み対象年月が古くてズレていても正す）
+        ym = _ym_from_date(_read_rt(p.get("日付")), _read_rt(p.get("対象年月")))
         if target_ym and ym != target_ym:
             continue
         rows.append({
