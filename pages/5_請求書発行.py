@@ -22,7 +22,7 @@ st.title("請求書発行")
 st.caption("倉庫業務クライアント向けの請求書を作成し、MFクラウド取込用CSVを出力します。（Phase1）")
 
 # --- 専用モジュール（遅延import） ---
-from lib.invoice import mf_export, invoice_number, store, notion_store
+from lib.invoice import mf_export, invoice_number, store, notion_store, csv_import
 
 
 # ============================================================
@@ -216,7 +216,7 @@ with st.expander("🛠 単価マスタ管理（クライアント別：送料・
         st_edited = st.data_editor(
             st_df, num_rows="dynamic", use_container_width=True,
             key="invoice_shiptable_editor")
-        if st.button("💾 送料表を保存", key="invoice_st_save"):
+        if st.button("💾 送料表を保存（表の内容）", key="invoice_st_save"):
             try:
                 n = notion_store.replace_shipping_table(
                     db_ids, client_name, st_edited.to_dict("records"),
@@ -224,6 +224,26 @@ with st.expander("🛠 単価マスタ管理（クライアント別：送料・
                 st.success(f"送料表を保存しました（{n}行）。")
             except Exception as e:
                 st.error(f"保存に失敗しました: {e}")
+
+        # 送料表のCSV一括取込
+        st.markdown("**CSVで一括取込**")
+        st.caption("形式：先頭列が 配送業者・配送区分・サイズ、以降に地域列（北海道〜沖縄）。"
+                   "金額のカンマ区切り（1,460）や「60サイズ」表記も自動処理します。")
+        st_csv = st.file_uploader("送料表CSVを選択", type=["csv"], key="invoice_st_csv")
+        if st_csv is not None:
+            try:
+                imported = csv_import.parse_shipping_table_csv(
+                    st_csv.getvalue(), store.SHIPPING_AREAS)
+                imp_df = pd.DataFrame(imported, columns=st_cols)
+                st.caption(f"取込プレビュー（{len(imp_df)}行）")
+                st.dataframe(imp_df, use_container_width=True, hide_index=True)
+                if st.button("💾 このCSV内容で送料表を上書き保存",
+                             key="invoice_st_csv_save", type="primary"):
+                    n = notion_store.replace_shipping_table(
+                        db_ids, client_name, imported, store.SHIPPING_AREAS)
+                    st.success(f"CSVから送料表を保存しました（{n}行）。再読込で反映されます。")
+            except Exception as e:
+                st.error(f"CSV取込に失敗しました: {e}")
 
         # --- 地域マスタ（都道府県→エリア） ---
         st.markdown("---")
