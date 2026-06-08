@@ -22,7 +22,7 @@ st.title("請求書発行")
 st.caption("倉庫業務クライアント向けの請求書を作成し、MFクラウド取込用CSVを出力します。（Phase1）")
 
 # --- 専用モジュール（遅延import） ---
-from lib.invoice import mf_export, invoice_number, store, notion_store, csv_import
+from lib.invoice import mf_export, invoice_number, store, notion_store, csv_import, ne_calc
 
 
 # ============================================================
@@ -401,16 +401,64 @@ if storage_preview:
 
 
 # ============================================================
-# 4. イレギュラー・その他費目（手入力）
+# 4. データ取込・自動算出（NE）
 # ============================================================
-st.header("④ その他費目（送料・作業料・値引き等の手入力）")
-st.caption("Phase1では手入力です。送料・作業料の自動算出はPhase2以降で追加します。")
+st.header("④ データ取込・自動算出（NE）")
+st.caption("①NE出荷確定CSVを取り込むと、出荷件数から受注作業料を自動算出して下の⑤に反映します。"
+           "出荷作業料・資材費・送料は配送種別が必要なため、⑤ヤマト運賃と紐付けるPhase3で対応します。")
+
+# 受注作業の単価をマスタから取得
+juchu_unit = 0.0
+if notion_ready:
+    try:
+        for r in notion_store.load_price_master(db_ids, client_name):
+            if r["費目"] == "受注作業":
+                juchu_unit = float(r["単価"] or 0)
+                break
+    except Exception as e:
+        st.caption(f"（受注作業単価の取得をスキップ: {e}）")
+
+auto_ship_count = 0          # 出荷件数
+auto_juchu_amount = None     # 受注作業料の自動算出額
+
+ne_ship_file = st.file_uploader("①NE出荷確定CSVを選択", type=["csv"], key="invoice_ne_ship")
+if ne_ship_file is not None:
+    try:
+        ne_df = ne_calc.load_shipment(ne_ship_file.getvalue())
+        summary = ne_calc.summarize_shipment(ne_df)
+        auto_ship_count = summary["出荷件数"]
+        c1, c2 = st.columns(2)
+        c1.metric("出荷件数（ユニーク伝票番号）", f"{auto_ship_count:,} 件")
+        c2.metric("受注作業 単価", f"{juchu_unit:,.0f} 円")
+        auto_juchu_amount = round(auto_ship_count * juchu_unit)
+        st.success(f"受注作業料 ＝ {auto_ship_count:,}件 × {juchu_unit:,.0f}円 "
+                   f"＝ {auto_juchu_amount:,}円（⑤の受注作業料に反映）")
+        with st.expander("発送方法別の内訳（参考）", expanded=False):
+            md = summary["発送方法別"]
+            st.dataframe(
+                pd.DataFrame([{"発送方法": k, "件数": v} for k, v in md.items()]),
+                use_container_width=True, hide_index=True)
+    except Exception as e:
+        st.error(f"NE出荷確定CSVの取込に失敗しました: {e}")
+
+
+# ============================================================
+# 5. イレギュラー・その他費目（手入力＋自動算出の反映）
+# ============================================================
+st.header("⑤ その他費目（送料・作業料・値引き等）")
+st.caption("自動算出された値は反映済みです。未対応の費目（送料・出荷作業・資材）は当面手入力してください。")
+
+# 受注作業料は自動算出があれば 単価=受注作業単価・数量=出荷件数 をプリフィル
+if auto_juchu_amount is not None and auto_ship_count > 0:
+    _juchu_row = {"品名": "受注作業料", "単価": juchu_unit, "数量": auto_ship_count}
+else:
+    _juchu_row = {"品名": "受注作業料", "単価": 0, "数量": 1}
 
 other_default = pd.DataFrame([
     {"品名": "送料", "単価": 0, "数量": 1},
     {"品名": "出荷作業料", "単価": 0, "数量": 1},
     {"品名": "資材費", "単価": 0, "数量": 1},
-    {"品名": "受注作業料", "単価": 0, "数量": 1},
+    _juchu_row,
     {"品名": "[汎用]作業料", "単価": 0, "数量": 1},
     {"品名": "その他", "単価": 0, "数量": 1},
     {"品名": "値引き", "単価": 0, "数量": 1},
@@ -431,7 +479,7 @@ other_edited = st.data_editor(
 # ============================================================
 # 5. 品目を組み立ててプレビュー＆CSV出力
 # ============================================================
-st.header("⑤ 請求内容の確認とCSV出力")
+st.header("⑥ 請求内容の確認とCSV出力")
 
 items = []
 # 保管料（出力品名ごとに1行、数量1・単価=合計金額）
@@ -524,7 +572,7 @@ with st.expander("Googleドライブにバックアップ保存（任意）", ex
 # ============================================================
 # 6. Notionへ履歴保存（請求書・見積のスナップショット＋保管内訳）
 # ============================================================
-st.header("⑥ 履歴保存（Notion）")
+st.header("⑦ 履歴保存（Notion）")
 if not notion_ready:
     st.info("Notion未設定のため履歴保存は無効です。Secretsに INVOICE_NOTION_PARENT_PAGE_ID を設定すると有効になります。")
 else:
