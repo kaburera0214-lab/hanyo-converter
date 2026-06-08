@@ -126,13 +126,37 @@ if mode.startswith("かんたん"):
         })
 
     if st.button(f"💾 {period_name}を保存", key="stk_q_save", type="primary"):
+        # 必須チェック（入力のある行は 種別・エリア・ロケーション・数量 が必須）
+        recs, errors = [], []
+        for i, (_, e) in enumerate(edited.iterrows(), start=1):
+            e = dict(e)
+            shubetsu = str(e.get("種別") or "").strip()
+            area = str(e.get("エリア") or "").strip()
+            loc = str(e.get("ロケーション") or "").strip()
+            qty = float(e.get("数量") or 0)
+            note = str(e.get("備考") or "").strip()
+            # すべて空の行はスキップ（未入力の空行）
+            if not any([shubetsu, area, loc, qty, note]):
+                continue
+            missing = []
+            if not shubetsu:
+                missing.append("種別")
+            if not area:
+                missing.append("エリア")
+            if not loc:
+                missing.append("ロケーション")
+            if qty <= 0:
+                missing.append("数量")
+            if missing:
+                errors.append(f"{i}行目：{'・'.join(missing)} が未入力です。")
+            e["期"] = period_name
+            e["カウント日"] = cdate.strftime("%Y/%m/%d")
+            recs.append(e)
+        if errors:
+            for er in errors:
+                st.error(er)
+            st.stop()
         try:
-            recs = []
-            for _, e in edited.iterrows():
-                e = dict(e)
-                e["期"] = period_name
-                e["カウント日"] = cdate.strftime("%Y/%m/%d")
-                recs.append(e)
             res = notion_store.save_storage_counts(
                 db_ids, client_name, recs, loaded_ids, ym)
             st.session_state.pop(f"stk_lines_{client_name}_{ym}", None)
