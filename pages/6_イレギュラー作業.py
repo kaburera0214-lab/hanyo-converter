@@ -235,11 +235,12 @@ _scope_label = "全期間" if show_all else f"{int(year)}-{start_month:02d}〜{e
 st.markdown(f"#### {client_name} の作業記録（{_scope_label}）")
 st.caption(f"日付が読めない行の保存先は {fallback_ym}。各行は『日付』の月に振り分けて保存されます。"
            "　行を消して保存すると、その記録は削除されます（表示中の範囲のみ対象）。")
+_editor_ver = st.session_state.get("irr_editor_ver", 0)
 edited = st.data_editor(
     base_df,
     num_rows="dynamic",
     use_container_width=True,
-    key=f"irr_editor_{client_name}_{scope_sig}",
+    key=f"irr_editor_{client_name}_{scope_sig}_{_editor_ver}",
     column_config={
         "id": None,
         "日付": st.column_config.TextColumn("日付", help="例: 2026/04/14"),
@@ -306,7 +307,10 @@ if st.button("💾 保存", key="irr_save", type="primary"):
 # 削除確認（ポップアップ）
 _pending = st.session_state.get("irr_pending")
 if _pending:
-    _editor_key = f"irr_editor_{client_name}_{scope_sig}"
+    def _reset_editor():
+        # キーのバージョンを上げて、エディタを必ず作り直す（base_dfから再読込）
+        st.session_state["irr_editor_ver"] = \
+            st.session_state.get("irr_editor_ver", 0) + 1
 
     def _render_confirm():
         st.warning(f"⚠️ {_pending['ndel']} 件のレコードを削除します。"
@@ -315,11 +319,11 @@ if _pending:
         if b1.button("✅ 削除して保存", key="irr_confirm_yes", type="primary"):
             _do_save(_pending["recs"])
             st.session_state.pop("irr_pending", None)
-            st.session_state.pop(_editor_key, None)  # エディタを保存後の状態で再読込
+            _reset_editor()  # 保存後の状態で再読込
             st.rerun()
         if b2.button("↩️ やめる（戻る）", key="irr_confirm_no"):
             st.session_state.pop("irr_pending", None)
-            st.session_state.pop(_editor_key, None)  # 削除前の状態に戻す
+            _reset_editor()  # 削除前の状態に戻す
             st.rerun()
 
     _dlg = getattr(st, "dialog", None) or getattr(st, "experimental_dialog", None)
