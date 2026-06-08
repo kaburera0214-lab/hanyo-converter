@@ -50,6 +50,15 @@ def get_soufuda_set(df):
     return set(s[(s != "") & (s.str.lower() != "nan")])
 
 
+def get_ne_denpyo_set(df):
+    """①出荷確定の「伝票番号」（NE伝票番号）の集合を返す。
+    ④発行済データ(品名２)との橋渡しに使う。"""
+    if "伝票番号" not in df.columns:
+        return set()
+    s = df["伝票番号"].astype(str).str.strip()
+    return set(s[(s != "") & (s.str.lower() != "nan")])
+
+
 def classify_delivery_rough(method_name):
     """
     発送方法の文字列から配送区分をざっくり判定（Phase3で⑤と突合する際の補助）。

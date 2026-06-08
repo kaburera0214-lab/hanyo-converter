@@ -423,7 +423,9 @@ auto_juchu_amount = None     # 受注作業料の自動算出額
 auto_souryo = None           # 送料
 auto_shukka = None           # 出荷作業料
 auto_shizai = None           # 資材費
-soufuda_set = set()          # ①の送り状番号集合（⑤絞り込み用）
+soufuda_set = set()          # ①の発送伝票番号（送り状）集合
+ne_denpyo_set = set()        # ①のNE伝票番号集合（④橋渡し用）
+issued_df = None             # ④発行済データ
 
 ne_ship_file = st.file_uploader("①NE出荷確定CSVを選択", type=["csv"], key="invoice_ne_ship")
 if ne_ship_file is not None:
@@ -432,6 +434,7 @@ if ne_ship_file is not None:
         summary = ne_calc.summarize_shipment(ne_df)
         auto_ship_count = summary["出荷件数"]
         soufuda_set = ne_calc.get_soufuda_set(ne_df)
+        ne_denpyo_set = ne_calc.get_ne_denpyo_set(ne_df)
         c1, c2 = st.columns(2)
         c1.metric("出荷件数（ユニーク伝票番号）", f"{auto_ship_count:,} 件")
         c2.metric("受注作業 単価", f"{juchu_unit:,.0f} 円")
@@ -446,9 +449,21 @@ if ne_ship_file is not None:
     except Exception as e:
         st.error(f"NE出荷確定CSVの取込に失敗しました: {e}")
 
+# --- ④発行済データ（NE伝票番号⇔送り状の橋渡し。ネコポス精度に必須） ---
+st.markdown("##### ④ヤマト発行済データCSV（推奨：ネコポスの紐付け精度向上）")
+st.caption("ネコポスはNEの発送番号と実際の送り状がズレるため、④で正しく橋渡しします。"
+           "未アップロードでも動きますが、ネコポスの件数が過少になることがあります。")
+issued_file = st.file_uploader("④ヤマト発行済データCSVを選択", type=["csv"], key="invoice_ya_issued")
+if issued_file is not None:
+    try:
+        issued_df = yamato_calc.load_issued(issued_file.getvalue())
+        st.caption(f"④発行済データ {len(issued_df):,}件を読み込みました。")
+    except Exception as e:
+        st.error(f"④発行済データの取込に失敗しました: {e}")
+
 # --- ⑤ヤマト運賃（全件）→ 送料・出荷作業料・資材費 ---
 st.markdown("##### ⑤ヤマト運賃CSV（全クライアント混在のままでOK）")
-st.caption("①の送り状番号でこのクライアント分だけ絞り込み、サイズ別に出荷作業料・資材費・送料を算出します。"
+st.caption("①（＋④）でこのクライアント分だけ絞り込み、サイズ別に出荷作業料・資材費・送料を算出します。"
            "先に①NE出荷確定を取り込んでください。")
 ya_file = st.file_uploader("⑤ヤマト運賃情報参照CSVを選択", type=["csv"], key="invoice_ya_freight")
 if ya_file is not None:
@@ -459,8 +474,13 @@ if ya_file is not None:
     else:
         try:
             fr_df = yamato_calc.load_freight(ya_file.getvalue())
-            matched, n_match, n_all = yamato_calc.filter_by_soufuda(fr_df, soufuda_set)
-            st.info(f"ヤマト運賃 全{n_all:,}件中、このクライアント分 {n_match:,}件を抽出。")
+            client_keys = yamato_calc.build_client_soufuda(
+                soufuda_set, ne_denpyo_set, issued_df)
+            matched, n_match, n_all = yamato_calc.filter_by_soufuda(fr_df, client_keys)
+            bridge_note = "（①＋④で紐付け）" if issued_df is not None else "（①のみ。④未取込）"
+            st.info(f"ヤマト運賃 全{n_all:,}件中、このクライアント分 {n_match:,}件を抽出 {bridge_note}。")
+            if issued_df is None:
+                st.warning("④発行済データが未取込のため、ネコポスの件数が過少になる可能性があります。")
             # マスタ取得
             pm = notion_store.load_price_master(db_ids, client_name)
             ship_rates = {r["種別"]: r["単価"] for r in pm if r["費目"] == "出荷作業"}

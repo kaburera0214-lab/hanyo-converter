@@ -14,6 +14,8 @@ from . import csv_import
 
 # ⑤運賃CSVの必須列
 REQUIRED_FREIGHT_COLS = ["原票No.", "サイズ"]
+# ④発行済データの必須列（NE伝票番号⇔送り状の橋渡し）
+REQUIRED_ISSUED_COLS = ["伝票番号", "品名２"]
 # 実費送料に使う運賃列（税別。MF側で10%加算されるため税別を使用）
 FREIGHT_AMOUNT_COL = "運賃等合計(税別)"
 PREF_COL = "扱店都道府県"
@@ -47,6 +49,36 @@ def load_freight(file_bytes):
         raise ValueError(
             f"必須列が見つかりません: {', '.join(missing)} / 実際の列: {list(df.columns)}")
     return df
+
+
+def load_issued(file_bytes):
+    """④ヤマト発行済データを読み込む。必須列が無ければValueError。"""
+    df = csv_import.read_csv_auto(file_bytes)
+    df.columns = [str(c).strip() for c in df.columns]
+    missing = [c for c in REQUIRED_ISSUED_COLS if c not in df.columns]
+    if missing:
+        raise ValueError(
+            f"必須列が見つかりません: {', '.join(missing)} / 実際の列: {list(df.columns)}")
+    return df
+
+
+def build_client_soufuda(ne_soufuda_set, ne_denpyo_set, issued_df=None):
+    """
+    このクライアントの送り状番号集合を組み立てる。
+      - ①発送伝票番号（直接） … 非ネコポスは概ねこれで取れる
+      - ④発行済データ経由 … ④品名２(NE伝票番号)が①伝票番号に含まれる行の
+        ④伝票番号(送り状)を追加。ネコポス等でNE発送番号と実送り状がズレる分を回収。
+    ④が無い場合は①発送伝票番号のみ（ネコポスが過少になり得る）。
+    """
+    keys = {_digits(x) for x in ne_soufuda_set if _digits(x)}
+    if issued_df is not None and not issued_df.empty:
+        nd = {_digits(x) for x in ne_denpyo_set if _digits(x)}
+        ne_col = issued_df["品名２"].map(_digits)
+        sf_col = issued_df["伝票番号"].map(_digits)
+        for ne_v, sf_v in zip(ne_col, sf_col):
+            if ne_v in nd and sf_v:
+                keys.add(sf_v)
+    return keys
 
 
 def filter_by_soufuda(freight_df, soufuda_set):
