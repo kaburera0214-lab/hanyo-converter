@@ -120,10 +120,11 @@ else:
     scope_yms = set(range_yms)
 
 base_df = pd.DataFrame(
-    [{"日付": r["日付"], "時間数": r["時間数"], "人数": r["人数"],
+    [{"id": r.get("id", ""), "日付": r["日付"], "時間数": r["時間数"], "人数": r["人数"],
       "作業項目": r["作業項目"], "作業詳細": r["作業詳細"], "備考": r["備考"]}
      for r in existing],
-    columns=["日付", "時間数", "人数", "作業項目", "作業詳細", "備考"])
+    columns=["id", "日付", "時間数", "人数", "作業項目", "作業詳細", "備考"])
+loaded_ids = [r["id"] for r in existing if r.get("id")]
 
 
 # --- CSV取込（既存スプレッドシートからの移行用） ---
@@ -152,6 +153,7 @@ edited = st.data_editor(
     use_container_width=True,
     key=f"irr_editor_{client_name}_{scope_sig}",
     column_config={
+        "id": None,  # 管理用の内部ID（非表示）
         "日付": st.column_config.TextColumn("日付", help="例: 2026/04/14"),
         "時間数": st.column_config.NumberColumn("時間数(h)", step=0.25, min_value=0),
         "人数": st.column_config.NumberColumn("人数", step=1, min_value=0),
@@ -190,15 +192,12 @@ st.caption("各行は『日付』の年月に振り分けて保存されます�
 if st.button("💾 保存", key="irr_save", type="primary"):
     try:
         recs = edited.to_dict("records")
-        # 保存先の月の内訳を表示
-        months = {}
-        for r in recs:
-            ym = notion_store._ym_from_date(r.get("日付", ""), fallback_ym)
-            months[ym] = months.get(ym, 0) + 1
-        n = notion_store.replace_irregular_work(
-            db_ids, client_name, recs, fallback_ym, scope_yms=scope_yms)
+        res = notion_store.save_irregular_work(
+            db_ids, client_name, recs, loaded_ids, fallback_ym)
         st.session_state.pop(all_key, None)
-        st.success(f"{client_name} の作業記録を保存しました（{n}件）。"
-                   f"保存先の月: {months}。請求書発行ページの[汎用]作業料に反映されます。")
+        st.success(
+            f"{client_name} の作業記録を保存しました"
+            f"（新規{res['created']}・更新{res['updated']}・削除{res['deleted']}）。"
+            "請求書発行ページの[汎用]作業料に反映されます。")
     except Exception as e:
         st.error(f"保存に失敗しました: {e}")

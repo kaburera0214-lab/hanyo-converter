@@ -633,6 +633,7 @@ def load_irregular_work(db_ids, client_name, target_ym=None):
         if target_ym and ym != target_ym:
             continue
         rows.append({
+            "id": row["id"],
             "対象年月": ym,
             "日付": _read_rt(p.get("日付")),
             "時間数": _read_num(p.get("時間数")) or 0,
@@ -654,6 +655,68 @@ def _ym_from_date(date_str, fallback):
     if m:
         return f"{int(m.group(1)):04d}-{int(m.group(2)):02d}"
     return fallback
+
+
+def _irregular_props(client_name, r, fallback_ym):
+    """イレギュラー作業1行のNotionプロパティを組み立てる。"""
+    date = str(r.get("日付", "")).strip()
+    item = str(r.get("作業項目", "")).strip()
+    hours = float(r.get("時間数") or 0)
+    people = float(r.get("人数") or 0)
+    ym = _ym_from_date(date, fallback_ym)
+    return {
+        "レコード名": {"title": _title(f"{client_name} {date} {item}")},
+        "クライアント": {"rich_text": _rt(client_name)},
+        "対象年月": {"rich_text": _rt(ym)},
+        "日付": {"rich_text": _rt(date)},
+        "時間数": {"number": hours},
+        "人数": {"number": people},
+        "合計時間": {"number": hours * people},
+        "作業項目": {"rich_text": _rt(item)},
+        "作業詳細": {"rich_text": _rt(r.get("作業詳細", ""))},
+        "備考": {"rich_text": _rt(r.get("備考", ""))},
+    }
+
+
+def save_irregular_work(db_ids, client_name, edited_rows, loaded_ids, fallback_ym):
+    """
+    差分保存。
+      - id付き行 → 更新
+      - id無し行 → 新規作成
+      - loaded_ids のうち今回の行に無いid → アーカイブ（削除）
+    表示中に読み込んだ範囲(loaded_ids)だけを対象にするため、範囲外の月は触らない。
+    返り値: dict(created, updated, deleted)
+    """
+    client = _client()
+    db = db_ids["請求_イレギュラー作業"]
+    kept_ids = set()
+    created = updated = deleted = 0
+
+    for r in edited_rows:
+        date = str(r.get("日付", "")).strip()
+        item = str(r.get("作業項目", "")).strip()
+        hours = float(r.get("時間数") or 0)
+        if not date and not item and hours == 0:
+            continue
+        props = _irregular_props(client_name, r, fallback_ym)
+        rid = r.get("id")
+        rid = str(rid).strip() if rid is not None else ""
+        if rid and rid.lower() != "nan":
+            client.pages.update(page_id=rid, properties=props, archived=False)
+            kept_ids.add(rid)
+            updated += 1
+        else:
+            client.pages.create(parent={"database_id": db}, properties=props)
+            created += 1
+
+    for rid in set(loaded_ids) - kept_ids:
+        try:
+            client.pages.update(page_id=rid, archived=True)
+            deleted += 1
+        except Exception:  # noqa: BLE001
+            pass
+
+    return {"created": created, "updated": updated, "deleted": deleted}
 
 
 def replace_irregular_work(db_ids, client_name, rows, fallback_ym, scope_yms=None):
