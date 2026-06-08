@@ -86,70 +86,64 @@ def _show_summary(ym):
 # かんたん入力モード（1行ずつ追加）
 # ============================================================
 if mode.startswith("かんたん"):
-    st.subheader("➕ カウントを1件追加")
-    st.caption("カウント日・種別・ロケーション・数量を入れて追加するだけ。過去の記録は触れないので安全です。")
+    s1, s2, s3 = st.columns([1, 1, 2])
+    year = s1.number_input("対象年", 2020, 2100, value=today.year, step=1, key="stk_q_year")
+    month = s2.selectbox("対象月", list(range(1, 13)), index=today.month - 1, key="stk_q_month")
+    period = s3.radio("カウント期", ["第1期（15日）", "第2期（末日）"],
+                      horizontal=True, key="stk_q_period")
+    period_name = "第1期" if period.startswith("第1") else "第2期"
+    ym = f"{int(year)}-{int(month):02d}"
+    cdate = st.date_input("カウント日（この期の全行に付きます）", value=today, key="stk_q_date")
 
-    _flash = st.session_state.pop("stk_q_flash", None)
-    if _flash:
-        st.success(_flash)
+    if st.button("🔄 最新に更新", key="stk_q_reload"):
+        st.session_state.pop(f"stk_data_{client_name}_{ym}", None)
+        st.rerun()
+    _, all_rows = _load(ym)
+    period_rows = [r for r in all_rows if r["期"] == period_name]
+    loaded_ids = [r["id"] for r in period_rows if r.get("id")]
 
-    with st.form("stk_quick", clear_on_submit=False):
-        f1, f2, f3 = st.columns(3)
-        d = f1.date_input("カウント日", value=today, key="stk_q_date")
-        period_auto = "第1期" if d.day <= 20 else "第2期"
-        f2.text_input("期（日付から自動）", value=period_auto, disabled=True)
-        qty = f3.number_input("数量", min_value=0.0, step=1.0, value=0.0, key="stk_q_qty")
-        g1, g2 = st.columns(2)
-        type_sel = g1.selectbox("種別", master_names + ["その他"] if master_names else ["その他"],
-                                key="stk_q_type")
-        type_free = g2.text_input("種別（その他の場合は入力）", key="stk_q_typefree")
-        h1, h2 = st.columns(2)
-        loc = h1.text_input("ロケーション", key="stk_q_loc", help="例: TA, TB, ネスティング等")
-        note = h2.text_input("備考（任意）", key="stk_q_note")
-        submitted = st.form_submit_button("➕ この行を追加", type="primary")
+    st.markdown(f"#### {client_name}／{ym}／{period_name} の入力")
+    st.caption("種別ごとに行を足して、ロケーション・数量・備考を入力してください。"
+               "同じ種別を複数行（ロケーション違い）書けます。選んだ期だけ更新されます。")
+    sheet = pd.DataFrame(
+        [{"id": r.get("id", ""), "種別": r["種別"], "ロケーション": r["ロケーション"],
+          "数量": r["数量"], "備考": r["備考"]} for r in period_rows],
+        columns=["id", "種別", "ロケーション", "数量", "備考"])
+    _qver = st.session_state.get("stk_q_ver", 0)
+    type_col = (st.column_config.SelectboxColumn("種別", options=master_names)
+                if master_names else st.column_config.TextColumn("種別"))
+    edited = st.data_editor(
+        sheet, num_rows="dynamic", use_container_width=True, hide_index=True,
+        key=f"stk_q_editor_{client_name}_{ym}_{period_name}_{_qver}",
+        column_config={
+            "id": None,
+            "種別": type_col,
+            "ロケーション": st.column_config.TextColumn("ロケーション", help="例: TA, TB, ネスティング等"),
+            "数量": st.column_config.NumberColumn("数量", min_value=0, step=1),
+            "備考": st.column_config.TextColumn("備考", width="large"),
+        })
 
-    if submitted:
-        shubetsu = type_free.strip() or type_sel
-        errors = []
-        if type_sel == "その他" and not type_free.strip():
-            errors.append("種別で『その他』を選んだ場合は、種別名を入力してください。")
-        if qty <= 0:
-            errors.append("数量を入力してください。")
-        if errors:
-            for e in errors:
-                st.error(e)
-        else:
-            ym = _ym_of(d)
-            try:
-                notion_store.add_storage_count(db_ids, client_name, {
-                    "カウント日": d.strftime("%Y/%m/%d"), "期": period_auto,
-                    "種別": shubetsu, "ロケーション": loc.strip(),
-                    "数量": qty, "備考": note.strip()}, ym)
-                st.session_state.pop(f"stk_data_{client_name}_{ym}", None)
-                st.session_state["stk_q_flash"] = (
-                    f"追加しました：{d.strftime('%Y/%m/%d')}（{period_auto}）"
-                    f"{shubetsu} {loc} {qty:g}")
-                for k in ("stk_q_qty", "stk_q_loc", "stk_q_note", "stk_q_typefree"):
-                    st.session_state.pop(k, None)
-                st.rerun()
-            except Exception as e:
-                st.error(f"追加に失敗しました: {e}")
+    if st.button(f"💾 {period_name}を保存", key="stk_q_save", type="primary"):
+        try:
+            recs = []
+            for _, e in edited.iterrows():
+                e = dict(e)
+                e["期"] = period_name
+                e["カウント日"] = cdate.strftime("%Y/%m/%d")
+                recs.append(e)
+            res = notion_store.save_storage_counts(
+                db_ids, client_name, recs, loaded_ids, ym)
+            st.session_state.pop(f"stk_data_{client_name}_{ym}", None)
+            st.session_state["stk_q_ver"] = _qver + 1
+            st.success(f"{period_name}を保存しました"
+                       f"（新規{res['created']}・更新{res['updated']}・削除{res['deleted']}）。")
+            st.rerun()
+        except Exception as e:
+            st.error(f"保存に失敗しました: {e}")
 
     st.markdown("---")
-    cur_ym = _ym_of(today)
-    st.markdown(f"#### {client_name}／{cur_ym} の記録（確認用・編集不可）")
-    if st.button("🔄 最新に更新", key="stk_q_reload"):
-        st.session_state.pop(f"stk_data_{client_name}_{cur_ym}", None)
-        st.rerun()
-    _, rows = _load(cur_ym)
-    if rows:
-        st.dataframe(
-            pd.DataFrame([{"カウント日": r["カウント日"], "期": r["期"], "種別": r["種別"],
-                           "ロケーション": r["ロケーション"], "数量": r["数量"],
-                           "備考": r["備考"]} for r in rows]),
-            use_container_width=True, hide_index=True)
-    st.markdown("##### 2期平均→保管料（自動計算）")
-    _show_summary(cur_ym)
+    st.markdown(f"#### {ym} のカウント状況（2期平均→保管料）")
+    _show_summary(ym)
     st.stop()
 
 
