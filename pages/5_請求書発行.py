@@ -456,9 +456,27 @@ st.caption("出荷作業料はPCS（商品点数）×サイズ別単価で算出
 
 drive_folder = st.secrets.get("INVOICE_GDRIVE_FOLDER_ID", "")
 
-# ③商品マスタ：session_state→Drive の順で取得
+# ③商品マスタ：session_state → 共有master.csv → Drive の順で取得
 prod_df = st.session_state.get("invoice_prod_df")
 prod_meta = st.session_state.get("invoice_prod_meta", "")
+
+# 1) 汎用マスタ変換と共有の master.csv（項目1列があれば優先利用）
+if prod_df is None:
+    try:
+        import os
+        mpath = os.path.join(os.path.dirname(__file__), "..", "master.csv")
+        if os.path.exists(mpath):
+            mdf = ne_calc._norm_columns(
+                csv_import.read_csv_auto(open(mpath, "rb").read()))
+            if "商品コード" in mdf.columns and "項目1" in mdf.columns:
+                prod_df = mdf
+                prod_meta = f"共有master.csv（汎用と共通・{len(mdf):,}件）"
+                st.session_state["invoice_prod_df"] = prod_df
+                st.session_state["invoice_prod_meta"] = prod_meta
+    except Exception as e:
+        st.caption(f"（共有master.csvの読込をスキップ: {e}）")
+
+# 2) Drive保存版（master.csvに項目1が無い場合のフォールバック）
 if prod_df is None and drive_folder:
     try:
         f = drive_master.find_file(drive_master.PRODUCT_MASTER_NAME, drive_folder)
@@ -472,6 +490,10 @@ if prod_df is None and drive_folder:
 
 with st.expander("③商品マスタの管理（毎回アップ不要・Drive保存）",
                  expanded=(prod_df is None)):
+    st.caption("商品マスタは汎用マスタ変換の master.csv と共有できます。"
+               "master.csv に「項目1（サイズ）」列を含めて汎用側で更新すれば、"
+               "請求書側も自動で最新になります（更新点が1つに）。"
+               "項目1列が無い間は、下のDriveアップロード版を使います。")
     if prod_df is not None:
         st.success(f"③商品マスタ利用中: {prod_meta}")
     else:
