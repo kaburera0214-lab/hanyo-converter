@@ -22,13 +22,61 @@ st.title("請求書発行")
 st.caption("倉庫業務クライアント向けの請求書を作成し、MFクラウド取込用CSVを出力します。（Phase1）")
 
 # --- 専用モジュール（遅延import） ---
-from lib.invoice import mf_export, invoice_number, store
+from lib.invoice import mf_export, invoice_number, store, notion_store
+
+
+# ============================================================
+# 0. Notion初期化（マスタ・履歴の永続化）
+#    エラー時はローカル既定値にフォールバックし、ページは必ず動作させる。
+# ============================================================
+def init_notion():
+    """DBを冪等生成し db_ids を返す。session_stateにキャッシュ。"""
+    if st.session_state.get("invoice_db_ids"):
+        return st.session_state["invoice_db_ids"]
+    db_ids = notion_store.ensure_databases()
+    notion_store.seed_clients_if_empty(db_ids, store.DEFAULT_CLIENTS)
+    st.session_state["invoice_db_ids"] = db_ids
+    return db_ids
+
+
+notion_ready = False
+db_ids = None
+if not st.secrets.get("INVOICE_NOTION_PARENT_PAGE_ID", ""):
+    st.warning("Notion未設定のため、ローカル既定値で動作中です（編集内容や履歴は保存されません）。"
+               "Secrets に INVOICE_NOTION_PARENT_PAGE_ID を設定すると永続化されます。")
+else:
+    try:
+        db_ids = init_notion()
+        notion_ready = True
+    except Exception as e:
+        st.error(f"Notion初期化に失敗しました（ローカル既定値で続行）: {e}")
+
+col_reload, _ = st.columns([1, 5])
+with col_reload:
+    if st.button("🔄 マスタ再読込", key="invoice_reload"):
+        for k in ("invoice_db_ids", "invoice_clients_cache"):
+            st.session_state.pop(k, None)
+        st.rerun()
 
 
 # ============================================================
 # 1. クライアント選択
 # ============================================================
-clients = store.load_clients()
+def get_clients():
+    """Notionからクライアントを読む（キャッシュ）。失敗時はローカル既定値。"""
+    if notion_ready:
+        if "invoice_clients_cache" not in st.session_state:
+            try:
+                loaded = notion_store.load_clients(db_ids)
+                st.session_state["invoice_clients_cache"] = loaded or store.load_clients()
+            except Exception as e:
+                st.error(f"クライアント読込に失敗（ローカル既定値で続行）: {e}")
+                st.session_state["invoice_clients_cache"] = store.load_clients()
+        return st.session_state["invoice_clients_cache"]
+    return store.load_clients()
+
+
+clients = get_clients()
 client_names = list(clients.keys())
 
 st.header("① クライアント・対象月")
@@ -87,12 +135,30 @@ with st.expander("取引先の詳細情報（住所・備考・振込先）", ex
 st.header("③ 保管料（2期制：15日・末日）")
 st.caption("各種別について15日時点と末日時点の数量を入力すると、平均×単価で自動計算します。")
 
-master = client.get("保管料マスタ", [])
-storage_default = pd.DataFrame([
-    {"種別名": m["種別名"], "15日数量": 0, "末日数量": 0,
-     "単価": m["単価"], "出力品名": m["出力品名"]}
-    for m in master
-])
+target_ym = f"{int(year)}-{int(month):02d}"
+
+# 当月の保管内訳履歴があれば数量をプリフィルする
+history_rows = []
+if notion_ready:
+    try:
+        history_rows = notion_store.load_storage_history(db_ids, client_name, target_ym)
+    except Exception as e:
+        st.caption(f"（履歴の読込はスキップしました: {e}）")
+
+if history_rows:
+    st.caption(f"📌 {target_ym} の保管内訳履歴を読み込みました（編集して再保存できます）。")
+    storage_default = pd.DataFrame([
+        {"種別名": r["種別名"], "15日数量": r["15日数量"], "末日数量": r["末日数量"],
+         "単価": r["単価"], "出力品名": r["出力品名"]}
+        for r in history_rows
+    ])
+else:
+    master = client.get("保管料マスタ", [])
+    storage_default = pd.DataFrame([
+        {"種別名": m["種別名"], "15日数量": 0, "末日数量": 0,
+         "単価": m["単価"], "出力品名": m["出力品名"]}
+        for m in master
+    ])
 if storage_default.empty:
     storage_default = pd.DataFrame(
         columns=["種別名", "15日数量", "末日数量", "単価", "出力品名"])
@@ -125,8 +191,8 @@ for _, row in storage_edited.iterrows():
     avg = (q15 + qend) / 2
     amount = round(avg * price)
     storage_preview.append({
-        "種別名": name, "平均数量": avg, "単価": price,
-        "金額": amount, "出力品名": out_name})
+        "種別名": name, "15日数量": q15, "末日数量": qend, "平均数量": avg,
+        "単価": price, "金額": amount, "出力品名": out_name})
     storage_lines[out_name] = storage_lines.get(out_name, 0) + amount
 
 if storage_preview:
@@ -252,3 +318,36 @@ with st.expander("Googleドライブにバックアップ保存（任意）", ex
                 st.success(f"Driveへ保存しました（ファイルID: {fid}）")
             except Exception as e:
                 st.error(f"Drive保存に失敗しました: {e}")
+
+
+# ============================================================
+# 6. Notionへ履歴保存（請求書・見積のスナップショット＋保管内訳）
+# ============================================================
+st.header("⑥ 履歴保存（Notion）")
+if not notion_ready:
+    st.info("Notion未設定のため履歴保存は無効です。Secretsに INVOICE_NOTION_PARENT_PAGE_ID を設定すると有効になります。")
+else:
+    st.caption("発行時点の内容をそのまま記録します。後でマスタ単価を変えても、この履歴は当時の内容のまま残ります。")
+    scol1, scol2 = st.columns(2)
+
+    def _do_save(kind):
+        try:
+            notion_store.save_issue_history(
+                db_ids, invoice_no=inv_no, client_name=client_name,
+                target_ym=target_ym, kind=kind, issue_date=issue_date,
+                due_date=due_date, subtotal=subtotal, tax=tax, total=total,
+                items=items)
+            if storage_preview:
+                notion_store.save_storage_history(
+                    db_ids, client_name=client_name, target_ym=target_ym,
+                    storage_rows=storage_preview)
+            st.success(f"{kind}として履歴に保存しました（{inv_no} / {target_ym}）。")
+        except Exception as e:
+            st.error(f"履歴保存に失敗しました: {e}")
+
+    with scol1:
+        if st.button("💾 請求書として履歴に保存", key="invoice_save_bill", type="primary"):
+            _do_save("請求")
+    with scol2:
+        if st.button("📝 見積として履歴に保存", key="invoice_save_quote"):
+            _do_save("見積")
