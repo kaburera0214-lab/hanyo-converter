@@ -92,11 +92,15 @@ if all_key not in st.session_state:
         st.error(f"読込に失敗: {e}")
 all_rows = st.session_state[all_key]
 
+# 実日付から月を判定してフィルタ（保存済み対象年月が古くてもOK）
+def _eff_ym(r):
+    return notion_store._ym_from_date(r.get("日付", ""), r.get("対象年月", ""))
+
 if show_all:
     existing = all_rows
-    scope_yms = {r["対象年月"] for r in all_rows} or {fallback_ym}
+    scope_yms = {_eff_ym(r) for r in all_rows} or {fallback_ym}
 else:
-    existing = [r for r in all_rows if r.get("対象年月") in range_yms]
+    existing = [r for r in all_rows if _eff_ym(r) in range_yms]
     scope_yms = set(range_yms)
 
 base_df = pd.DataFrame(

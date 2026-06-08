@@ -682,11 +682,14 @@ def replace_irregular_work(db_ids, client_name, rows, fallback_ym, scope_yms=Non
     if not target_yms:
         target_yms = {fallback_ym}
 
-    # 対象月の既存データをアーカイブ（既にアーカイブ済みは無視）
+    # 既存データを「日付から判定した月」でアーカイブ判定（保存済み対象年月が
+    # 古くてズレていても、実日付の月で正しく置き換えられる）
     for row in _query_all(db):
         p = row["properties"]
-        if (_read_rt(p.get("クライアント")) == client_name
-                and _read_rt(p.get("対象年月")) in target_yms):
+        if _read_rt(p.get("クライアント")) != client_name:
+            continue
+        eff_ym = _ym_from_date(_read_rt(p.get("日付")), _read_rt(p.get("対象年月")))
+        if eff_ym in target_yms:
             try:
                 client.pages.update(page_id=row["id"], archived=True)
             except Exception:  # noqa: BLE001
