@@ -130,14 +130,9 @@ def compute_charges(matched_df, *, ship_rates, material_rates,
         types = matched_df["サイズ"].map(size_to_delivery_type)
     count_by_type = types.value_counts().to_dict()
 
-    # 出荷作業料・資材費（配送種別ごと件数×単価）
-    ship_total = 0.0
+    # 資材費（配送種別ごと件数×単価）。※出荷作業料は②③のPCSベースで別途算出。
     mat_total = 0.0
     for t, cnt in count_by_type.items():
-        if t in ship_rates:
-            ship_total += cnt * float(ship_rates[t])
-        else:
-            warnings.append(f"出荷作業料: 配送種別 '{t}'({cnt}件) の単価が未登録")
         if t in material_rates:
             mat_total += cnt * float(material_rates[t])
         else:
@@ -178,7 +173,6 @@ def compute_charges(matched_df, *, ship_rates, material_rates,
 
     return {
         "送料": round(ship_fee),
-        "出荷作業料": round(ship_total),
         "資材費": round(mat_total),
         "種別別件数": count_by_type,
         "警告": warnings,

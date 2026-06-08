@@ -6,8 +6,19 @@ Phase2: ①出荷確定CSVから出荷件数を集計し、受注作業料(件�
 列順は端末ごとにズレ得るため列名で参照し、必須列が無ければエラーにする。
 """
 import re
+import unicodedata
 import pandas as pd
 from . import csv_import
+
+
+def _norm(s):
+    """全角/半角カナの揺れを吸収（NFKC）して前後空白除去。"""
+    return unicodedata.normalize("NFKC", str(s)).strip()
+
+
+def _norm_columns(df):
+    df.columns = [_norm(c) for c in df.columns]
+    return df
 
 # ①出荷確定CSVの必須列（これが無ければ取込エラー）
 REQUIRED_SHIPMENT_COLS = ["伝票番号", "発送方法"]
@@ -55,6 +66,61 @@ def get_soufuda_set(df):
             if t and t.lower() != "nan":
                 result.add(t)
     return result
+
+
+def load_order_detail(file_bytes):
+    """②受注明細一覧を読み込む。商品コード・受注数が必須。列名はNFKC正規化。"""
+    df = _norm_columns(csv_import.read_csv_auto(file_bytes))
+    for col in ("商品コード", "受注数"):
+        if col not in df.columns:
+            raise ValueError(
+                f"②に必須列が見つかりません: {col} / 実際の列: {list(df.columns)}")
+    return df
+
+
+def load_product_master(file_bytes):
+    """③NEカスタム(商品マスタ)を読み込む。商品コード・項目1が必須。"""
+    df = _norm_columns(csv_import.read_csv_auto(file_bytes))
+    for col in ("商品コード", "項目1"):
+        if col not in df.columns:
+            raise ValueError(
+                f"③に必須列が見つかりません: {col} / 実際の列: {list(df.columns)}")
+    return df
+
+
+def compute_picking_charge(order_df, product_df, ship_rates):
+    """
+    出荷作業料 ＝ Σ 受注数(PCS) × 出荷作業単価(項目1サイズ)。
+    商品コードで②と③を突合し、③の項目1をサイズとして単価を引く。
+
+    ship_rates: {サイズ(=配送種別): 単価}（例 nekop=52, 60=84 ...）
+    返り値: dict(出荷作業料, サイズ別PCS, 未マッチ商品数, 単価未登録サイズ)
+    """
+    size_map = dict(zip(product_df["商品コード"].map(_norm),
+                        product_df["項目1"].map(_norm)))
+    codes = order_df["商品コード"].map(_norm)
+    pcs = pd.to_numeric(order_df["受注数"], errors="coerce").fillna(0)
+    sizes = codes.map(size_map)
+
+    unmatched = int(sizes.isna().sum())
+    by_size = {}
+    for size, q in zip(sizes, pcs):
+        key = "(不明)" if (size is None or str(size) == "" or str(size) == "nan") else str(size)
+        by_size[key] = by_size.get(key, 0) + float(q)
+
+    total = 0.0
+    missing_rate = set()
+    for size, q in by_size.items():
+        if size in ship_rates:
+            total += q * float(ship_rates[size])
+        else:
+            missing_rate.add(size)
+    return {
+        "出荷作業料": round(total),
+        "サイズ別PCS": {k: int(v) for k, v in by_size.items()},
+        "未マッチ商品数": unmatched,
+        "単価未登録サイズ": sorted(missing_rate),
+    }
 
 
 def get_ne_denpyo_set(df):

@@ -449,6 +449,40 @@ if ne_ship_file is not None:
     except Exception as e:
         st.error(f"NE出荷確定CSVの取込に失敗しました: {e}")
 
+# --- ②受注明細＋③商品マスタ → 出荷作業料（PCS×サイズ別単価） ---
+st.markdown("##### ②受注明細一覧 ＋ ③NEカスタム(商品マスタ) → 出荷作業料")
+st.caption("出荷作業料はPCS（商品点数）×サイズ別単価で算出します。"
+           "②はクライアント別、③はNE共通の商品マスタ（商品コード→項目1サイズ）です。")
+oc1, oc2 = st.columns(2)
+order_file = oc1.file_uploader("②受注明細一覧CSV", type=["csv"], key="invoice_ne_order")
+prod_file = oc2.file_uploader("③NEカスタム(商品マスタ)CSV", type=["csv"], key="invoice_ne_prod")
+if order_file is not None and prod_file is not None:
+    if not notion_ready:
+        st.warning("Notion未設定のため出荷作業単価を参照できません。")
+    else:
+        try:
+            order_df = ne_calc.load_order_detail(order_file.getvalue())
+            prod_df = ne_calc.load_product_master(prod_file.getvalue())
+            ship_rates = {}
+            for r in notion_store.load_price_master(db_ids, client_name):
+                if r["費目"] == "出荷作業":
+                    ship_rates[r["種別"]] = r["単価"]
+            pres = ne_calc.compute_picking_charge(order_df, prod_df, ship_rates)
+            auto_shukka = pres["出荷作業料"]
+            st.success(f"出荷作業料 ＝ {auto_shukka:,}円（PCS合計 "
+                       f"{sum(pres['サイズ別PCS'].values()):,}）（⑤に反映）")
+            with st.expander("サイズ別PCS（参考）", expanded=False):
+                st.dataframe(
+                    pd.DataFrame([{"サイズ": k, "PCS": v}
+                                  for k, v in pres["サイズ別PCS"].items()]),
+                    use_container_width=True, hide_index=True)
+            if pres["未マッチ商品数"]:
+                st.warning(f"③商品マスタに無い商品が {pres['未マッチ商品数']} 行（サイズ不明として集計）")
+            if pres["単価未登録サイズ"]:
+                st.warning(f"出荷作業単価が未登録のサイズ: {pres['単価未登録サイズ']}")
+        except Exception as e:
+            st.error(f"出荷作業料の算出に失敗しました: {e}")
+
 # --- ④発行済データ（NE伝票番号⇔送り状の橋渡し。ネコポス精度に必須） ---
 st.markdown("##### ④ヤマト発行済データCSV（推奨：ネコポスの紐付け精度向上）")
 st.caption("ネコポスはNEの発送番号と実際の送り状がズレるため、④で正しく橋渡しします。"
@@ -495,11 +529,9 @@ if ya_file is not None:
                 area_map=amap2, margin_rate=sm2["送料マージン率"],
                 addon=sm2["送料加算額"])
             auto_souryo = res["送料"]
-            auto_shukka = res["出荷作業料"]
             auto_shizai = res["資材費"]
-            m1, m2, m3 = st.columns(3)
+            m1, m3 = st.columns(2)
             m1.metric("送料", f"{auto_souryo:,} 円")
-            m2.metric("出荷作業料", f"{auto_shukka:,} 円")
             m3.metric("資材費", f"{auto_shizai:,} 円")
             st.caption(f"送料方式: {sm2['送料方式']}")
             with st.expander("配送種別別の件数（参考）", expanded=False):
