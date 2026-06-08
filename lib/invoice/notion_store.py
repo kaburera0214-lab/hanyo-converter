@@ -27,6 +27,13 @@ DB_SCHEMAS = {
         "備考": {"rich_text": {}},
         "振込先": {"rich_text": {}},
         "自社担当者": {"rich_text": {}},
+        # 送料の請求方式（クライアント別）
+        "送料方式": {"select": {"options": [
+            {"name": "送料表", "color": "blue"},
+            {"name": "実費マージン", "color": "green"},
+        ]}},
+        "送料マージン率": {"number": {}},
+        "送料加算額": {"number": {}},
     },
     "請求_単価マスタ": {
         "項目名": {"title": {}},
@@ -75,6 +82,26 @@ DB_SCHEMAS = {
         "発行日時": {"rich_text": {}},
     },
 }
+
+
+# 送料表DB・地域マスタDBは可変列（地域）を含むため、storeの定義から動的生成
+from . import store as _store  # storeはnotionを参照しないので循環しない
+
+DB_SCHEMAS["請求_地域マスタ"] = {
+    "都道府県": {"title": {}},
+    "エリア": {"rich_text": {}},
+}
+
+_shipping_props = {
+    "行キー": {"title": {}},
+    "クライアント": {"rich_text": {}},
+    "配送業者": {"rich_text": {}},
+    "配送区分": {"rich_text": {}},
+    "サイズ": {"rich_text": {}},
+}
+for _area in _store.SHIPPING_AREAS:
+    _shipping_props[_area] = {"number": {}}
+DB_SCHEMAS["請求_送料表"] = _shipping_props
 
 
 def _get_key():
@@ -153,6 +180,7 @@ def ensure_databases():
     for title, props in DB_SCHEMAS.items():
         if title in existing:
             result[title] = existing[title]
+            _sync_db_properties(client, existing[title], props)
         else:
             created = client.databases.create(
                 parent={"type": "page_id", "page_id": parent},
@@ -161,6 +189,21 @@ def ensure_databases():
             )
             result[title] = created["id"]
     return result
+
+
+def _sync_db_properties(client, db_id, schema):
+    """既存DBに不足しているプロパティ（title型を除く）を追加する。"""
+    db = client.databases.retrieve(database_id=db_id)
+    existing_props = db.get("properties", {})
+    missing = {}
+    for name, spec in schema.items():
+        if name in existing_props:
+            continue
+        if "title" in spec:  # title型は既存があるはずなので追加しない
+            continue
+        missing[name] = spec
+    if missing:
+        client.databases.update(database_id=db_id, properties=missing)
 
 
 def _query_all(db_id):
@@ -332,6 +375,136 @@ def save_storage_history(db_ids, *, client_name, target_ym, storage_rows):
             "金額": {"number": int(r.get("金額", 0))},
             "出力品名": {"rich_text": _rt(r.get("出力品名", ""))},
         })
+
+
+# ============================================================
+# 送料方式（クライアント別）の読込・保存
+# ============================================================
+def load_client_shipping_method(db_ids, client_name):
+    """クライアントの送料方式・マージン率・加算額を返す。"""
+    for row in _query_all(db_ids["請求_クライアントマスタ"]):
+        p = row["properties"]
+        if _read_title(p.get("クライアント名")) == client_name:
+            return {
+                "page_id": row["id"],
+                "送料方式": _read_select(p.get("送料方式")) or "実費マージン",
+                "送料マージン率": _read_num(p.get("送料マージン率")) or 0,
+                "送料加算額": _read_num(p.get("送料加算額")) or 0,
+            }
+    return {"page_id": None, "送料方式": "実費マージン", "送料マージン率": 0, "送料加算額": 0}
+
+
+def save_client_shipping_method(db_ids, client_name, method, margin, addon):
+    """クライアントの送料方式を保存（既存ページを更新）。"""
+    info = load_client_shipping_method(db_ids, client_name)
+    if not info["page_id"]:
+        raise RuntimeError(f"クライアント '{client_name}' がマスタに見つかりません。")
+    _client().pages.update(page_id=info["page_id"], properties={
+        "送料方式": {"select": {"name": method}},
+        "送料マージン率": {"number": float(margin or 0)},
+        "送料加算額": {"number": float(addon or 0)},
+    })
+
+
+# ============================================================
+# 地域マスタ（都道府県 -> エリア）の読込・保存・シード
+# ============================================================
+def seed_area_map_if_empty(db_ids, default_map):
+    rows = _query_all(db_ids["請求_地域マスタ"])
+    if rows:
+        return False
+    client = _client()
+    db = db_ids["請求_地域マスタ"]
+    for pref, area in default_map.items():
+        client.pages.create(parent={"database_id": db}, properties={
+            "都道府県": {"title": _title(pref)},
+            "エリア": {"rich_text": _rt(area)},
+        })
+    return True
+
+
+def load_area_map(db_ids):
+    """{都道府県: エリア} を返す。"""
+    result = {}
+    for row in _query_all(db_ids["請求_地域マスタ"]):
+        p = row["properties"]
+        pref = _read_title(p.get("都道府県"))
+        if pref:
+            result[pref] = _read_rt(p.get("エリア"))
+    return result
+
+
+# ============================================================
+# 送料表（サイズ×地域マトリクス）の読込・保存・シード
+# ============================================================
+def seed_shipping_table_if_empty(db_ids, client_name, default_table, areas):
+    rows = [r for r in _query_all(db_ids["請求_送料表"])
+            if _read_rt(r["properties"].get("クライアント")) == client_name]
+    if rows:
+        return False
+    client = _client()
+    db = db_ids["請求_送料表"]
+    for row in default_table:
+        props = {
+            "行キー": {"title": _title(
+                f"{client_name}|{row['配送業者']}|{row['配送区分']}|{row['サイズ']}")},
+            "クライアント": {"rich_text": _rt(client_name)},
+            "配送業者": {"rich_text": _rt(row["配送業者"])},
+            "配送区分": {"rich_text": _rt(row["配送区分"])},
+            "サイズ": {"rich_text": _rt(row["サイズ"])},
+        }
+        for area in areas:
+            props[area] = {"number": float(row.get(area, 0) or 0)}
+        client.pages.create(parent={"database_id": db}, properties=props)
+    return True
+
+
+def load_shipping_table(db_ids, client_name, areas):
+    """送料表を [{配送業者,配送区分,サイズ, 各エリア:運賃}] で返す。"""
+    rows = []
+    for row in _query_all(db_ids["請求_送料表"]):
+        p = row["properties"]
+        if _read_rt(p.get("クライアント")) != client_name:
+            continue
+        rec = {
+            "配送業者": _read_rt(p.get("配送業者")),
+            "配送区分": _read_rt(p.get("配送区分")),
+            "サイズ": _read_rt(p.get("サイズ")),
+        }
+        for area in areas:
+            rec[area] = _read_num(p.get(area)) or 0
+        rows.append(rec)
+    return rows
+
+
+def replace_shipping_table(db_ids, client_name, rows, areas):
+    """送料表をクライアント単位で置き換える（既存アーカイブ→新規作成）。"""
+    client = _client()
+    db = db_ids["請求_送料表"]
+    for row in _query_all(db):
+        p = row["properties"]
+        if _read_rt(p.get("クライアント")) == client_name:
+            client.pages.update(page_id=row["id"], archived=True)
+    saved = 0
+    for r in rows:
+        size = str(r.get("サイズ", "")).strip()
+        if not size:
+            continue
+        carrier = str(r.get("配送業者", "")).strip()
+        kubun = str(r.get("配送区分", "")).strip()
+        props = {
+            "行キー": {"title": _title(f"{client_name}|{carrier}|{kubun}|{size}")},
+            "クライアント": {"rich_text": _rt(client_name)},
+            "配送業者": {"rich_text": _rt(carrier)},
+            "配送区分": {"rich_text": _rt(kubun)},
+            "サイズ": {"rich_text": _rt(size)},
+        }
+        for area in areas:
+            val = r.get(area)
+            props[area] = {"number": float(val) if val not in (None, "") else 0}
+        client.pages.create(parent={"database_id": db}, properties=props)
+        saved += 1
+    return saved
 
 
 # ============================================================

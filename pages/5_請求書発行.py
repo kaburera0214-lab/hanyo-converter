@@ -35,6 +35,10 @@ def init_notion():
         return st.session_state["invoice_db_ids"]
     db_ids = notion_store.ensure_databases()
     notion_store.seed_clients_if_empty(db_ids, store.DEFAULT_CLIENTS)
+    notion_store.seed_area_map_if_empty(db_ids, store.DEFAULT_AREA_MAP)
+    # 送料表の初期値はTeam-ECに投入（他クライアントは空から編集）
+    notion_store.seed_shipping_table_if_empty(
+        db_ids, "Team-EC", store.DEFAULT_SHIPPING_TABLE, store.SHIPPING_AREAS)
     st.session_state["invoice_db_ids"] = db_ids
     return db_ids
 
@@ -169,6 +173,73 @@ with st.expander("🛠 単価マスタ管理（クライアント別：送料・
                 st.success(f"単価マスタを保存しました（{n}件）。")
             except Exception as e:
                 st.error(f"保存に失敗しました: {e}")
+
+        # --- 送料方式（クライアント別） ---
+        st.markdown("---")
+        st.markdown("##### 送料の請求方式")
+        try:
+            sm = notion_store.load_client_shipping_method(db_ids, client_name)
+        except Exception as e:
+            sm = {"送料方式": "実費マージン", "送料マージン率": 0, "送料加算額": 0}
+            st.error(f"送料方式の読込に失敗: {e}")
+        smcol1, smcol2, smcol3 = st.columns(3)
+        method = smcol1.selectbox(
+            "送料方式", ["送料表", "実費マージン"],
+            index=0 if sm["送料方式"] == "送料表" else 1, key="invoice_ship_method")
+        margin = smcol2.number_input(
+            "マージン率(%)（実費方式時）", value=float(sm["送料マージン率"] or 0),
+            step=1.0, key="invoice_ship_margin")
+        addon = smcol3.number_input(
+            "加算額（実費方式時・件あたり）", value=float(sm["送料加算額"] or 0),
+            step=1.0, key="invoice_ship_addon")
+        if st.button("💾 送料方式を保存", key="invoice_sm_save"):
+            try:
+                notion_store.save_client_shipping_method(
+                    db_ids, client_name, method, margin, addon)
+                st.success("送料方式を保存しました。")
+            except Exception as e:
+                st.error(f"保存に失敗しました: {e}")
+
+        # --- 送料表（サイズ×地域マトリクス） ---
+        st.markdown("---")
+        st.markdown("##### 送料表（サイズ × 地域）")
+        st.caption("「送料表」方式のときに使用します。行＝サイズ、列＝地域。"
+                   "都道府県→地域の対応は下の地域マスタで管理します。")
+        try:
+            st_rows = notion_store.load_shipping_table(
+                db_ids, client_name, store.SHIPPING_AREAS)
+        except Exception as e:
+            st_rows = []
+            st.error(f"送料表の読込に失敗: {e}")
+        st_cols = ["配送業者", "配送区分", "サイズ"] + store.SHIPPING_AREAS
+        st_df = pd.DataFrame(st_rows, columns=st_cols)
+        st_edited = st.data_editor(
+            st_df, num_rows="dynamic", use_container_width=True,
+            key="invoice_shiptable_editor")
+        if st.button("💾 送料表を保存", key="invoice_st_save"):
+            try:
+                n = notion_store.replace_shipping_table(
+                    db_ids, client_name, st_edited.to_dict("records"),
+                    store.SHIPPING_AREAS)
+                st.success(f"送料表を保存しました（{n}行）。")
+            except Exception as e:
+                st.error(f"保存に失敗しました: {e}")
+
+        # --- 地域マスタ（都道府県→エリア） ---
+        st.markdown("---")
+        st.markdown("##### 地域マスタ（都道府県 → エリア）")
+        st.caption("ヤマト運賃CSVの「扱店都道府県」を送料表の地域に変換するための対応表です（全クライアント共通）。")
+        with st.expander("地域マスタを表示・編集", expanded=False):
+            try:
+                amap = notion_store.load_area_map(db_ids)
+            except Exception as e:
+                amap = {}
+                st.error(f"地域マスタの読込に失敗: {e}")
+            am_df = pd.DataFrame(
+                [{"都道府県": k, "エリア": v} for k, v in amap.items()],
+                columns=["都道府県", "エリア"])
+            st.dataframe(am_df, use_container_width=True, hide_index=True)
+            st.caption("※ 編集機能はPhase3で追加予定。現状は初期値（47都道府県→ヤマト地域）を使用します。")
 
 st.header("③ 保管料（2期制：15日・末日）")
 st.caption("各種別について15日時点と末日時点の数量を入力すると、平均×単価で自動計算します。")
