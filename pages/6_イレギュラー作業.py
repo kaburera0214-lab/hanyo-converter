@@ -86,7 +86,12 @@ if mode.startswith("かんたん"):
     st.subheader("➕ 作業を1件追加")
     st.caption("日付・時間・内容を入れて『追加』を押すだけ。過去の記録は触れないので安全です。")
 
-    with st.form("irr_quick", clear_on_submit=True):
+    # 直前の追加成功メッセージ（クリア＋再実行後に表示）
+    _flash = st.session_state.pop("irr_q_flash_msg", None)
+    if _flash:
+        st.success(_flash)
+
+    with st.form("irr_quick", clear_on_submit=False):
         f1, f2, f3 = st.columns(3)
         d = f1.date_input("日付", value=today, key="irr_q_date")
         hours = f2.number_input("時間数(h)", min_value=0.0, step=0.25,
@@ -100,18 +105,31 @@ if mode.startswith("かんたん"):
         submitted = st.form_submit_button("➕ この作業を追加", type="primary")
 
     if submitted:
-        item = item_free.strip() or item_sel
+        errors = []
         if hours <= 0:
-            st.warning("時間数を入力してください。")
+            errors.append("時間数を入力してください。")
+        if item_sel == "その他" and not item_free.strip():
+            errors.append("作業項目で『その他』を選んだ場合は、右の欄に作業項目を入力してください。")
+        if not detail.strip():
+            errors.append("作業詳細は必須です。入力してください。")
+        if errors:
+            for e in errors:
+                st.error(e)
         else:
+            item = item_free.strip() or item_sel
             try:
                 notion_store.add_irregular_work(db_ids, client_name, {
                     "日付": d.strftime("%Y/%m/%d"),
                     "時間数": hours, "人数": people,
-                    "作業項目": item, "作業詳細": detail, "備考": note})
+                    "作業項目": item, "作業詳細": detail.strip(), "備考": note})
                 st.session_state.pop(f"irr_all_{client_name}", None)
-                st.success(f"追加しました：{d.strftime('%Y/%m/%d')} {item} "
-                           f"{hours}h×{people}人")
+                st.session_state["irr_q_flash_msg"] = (
+                    f"追加しました：{d.strftime('%Y/%m/%d')} {item} {hours}h×{people}人")
+                # 入力欄をクリア（成功時のみ）して再実行
+                for k in ("irr_q_hours", "irr_q_item", "irr_q_itemfree",
+                          "irr_q_detail", "irr_q_note"):
+                    st.session_state.pop(k, None)
+                st.rerun()
             except Exception as e:
                 st.error(f"追加に失敗しました: {e}")
 
