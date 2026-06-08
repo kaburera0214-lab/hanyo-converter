@@ -216,8 +216,14 @@ def suggest_column(field, columns):
 # ── ユーティリティ ─────────────────────────────────────────
 def to_int(val):
     try:
-        return int(str(val).strip()) if val is not None and str(val).strip() else 0
-    except (ValueError, AttributeError):
+        if val is None:
+            return 0
+        s = str(val).strip()
+        if not s or s.lower() == "nan":
+            return 0
+        # "4.0" のような浮動小数点文字列にも対応
+        return int(float(s))
+    except (ValueError, AttributeError, TypeError):
         return 0
 
 
