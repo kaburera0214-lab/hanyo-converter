@@ -50,7 +50,8 @@ mode = cc2.radio("モード", ["かんたん入力（カウント記録）", "�
                  horizontal=True, key="stk_mode")
 
 master = clients.get(client_name, {}).get("保管料マスタ", [])
-master_names = [m["種別名"] for m in master]
+# 種別名は重複排除（マスタに同名が複数あってもプルダウンは1つにする）
+master_names = list(dict.fromkeys(m["種別名"] for m in master if m.get("種別名")))
 master_price = {m["種別名"]: m["単価"] for m in master}
 master_out = {m["種別名"]: m["出力品名"] for m in master}
 
@@ -117,7 +118,7 @@ if mode.startswith("かんたん"):
         key=f"stk_q_editor_{client_name}_{ym}_{period_name}_{_qver}",
         column_config={
             "id": None,
-            "種別": st.column_config.SelectboxColumn("種別", options=_type_opts, width="large"),
+            "種別": st.column_config.SelectboxColumn("種別", options=_type_opts, width="medium"),
             "エリア": st.column_config.SelectboxColumn("エリア", options=store.STORAGE_AREAS),
             "ロケーション": st.column_config.TextColumn("ロケーション", help="例: TA, TB（自由記入）"),
             "数量": st.column_config.NumberColumn("数量", min_value=0, step=1),
@@ -197,7 +198,7 @@ edited = st.data_editor(
         "期": st.column_config.SelectboxColumn("期", options=["第1期", "第2期"]),
         "種別": st.column_config.SelectboxColumn(
             "種別", options=(master_names + ["その他"]) if master_names else ["その他"],
-            width="large"),
+            width="medium"),
         "エリア": st.column_config.SelectboxColumn("エリア", options=store.STORAGE_AREAS),
         "ロケーション": st.column_config.TextColumn("ロケーション"),
         "数量": st.column_config.NumberColumn("数量", step=1),
