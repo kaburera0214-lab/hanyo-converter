@@ -162,7 +162,7 @@ with st.expander("🛠 単価マスタ管理（クライアント別：送料・
                 "費目": st.column_config.SelectboxColumn(
                     "費目", options=["保管", "送料", "出荷作業", "資材", "受注作業", "その他"]),
                 "種別": st.column_config.TextColumn("種別（配送種別など）"),
-                "単価": st.column_config.NumberColumn("単価", step=1),
+                "単価": st.column_config.NumberColumn("単価", step=0.01, format="%.2f"),
                 "出力品名": st.column_config.TextColumn("出力品名（MF品目名）"),
                 "マージン率": st.column_config.NumberColumn("マージン率(%)", step=1),
                 "加算額": st.column_config.NumberColumn("加算額", step=1),
