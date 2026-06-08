@@ -433,8 +433,12 @@ ne_ship_files = st.file_uploader(
     type=["csv"], key="invoice_ne_ship", accept_multiple_files=True)
 if ne_ship_files:
     try:
-        ne_df = csv_import.load_concat(ne_ship_files, ne_calc.load_shipment)
-        st.caption(f"①を {len(ne_ship_files)} ファイル結合（計 {len(ne_df):,} 行）")
+        ne_df, _errs = csv_import.load_concat(ne_ship_files, ne_calc.load_shipment)
+        for _nm, _er in _errs:
+            st.error(f"『{_nm}』の読込に失敗: {_er}")
+        if ne_df is None:
+            raise ValueError("有効な①ファイルがありません。")
+        st.caption(f"①を {len(ne_ship_files) - len(_errs)} ファイル結合（計 {len(ne_df):,} 行）")
         summary = ne_calc.summarize_shipment(ne_df)
         auto_ship_count = summary["出荷件数"]
         soufuda_set = ne_calc.get_soufuda_set(ne_df)
@@ -554,7 +558,11 @@ if order_files:
         st.warning("Notion未設定のため出荷作業単価を参照できません。")
     else:
         try:
-            order_df = csv_import.load_concat(order_files, ne_calc.load_order_detail)
+            order_df, _oerrs = csv_import.load_concat(order_files, ne_calc.load_order_detail)
+            for _nm, _er in _oerrs:
+                st.error(f"『{_nm}』の読込に失敗: {_er}")
+            if order_df is None:
+                raise ValueError("有効な②ファイルがありません。")
             ship_rates = {}
             for r in notion_store.load_price_master(db_ids, client_name):
                 if r["費目"] == "出荷作業":
@@ -601,8 +609,11 @@ issued_files = st.file_uploader(
     type=["csv"], key="invoice_ya_issued", accept_multiple_files=True)
 if issued_files:
     try:
-        issued_df = csv_import.load_concat(issued_files, yamato_calc.load_issued)
-        st.caption(f"④発行済データ {len(issued_df):,}件を読み込みました（{len(issued_files)}ファイル）。")
+        issued_df, _ierrs = csv_import.load_concat(issued_files, yamato_calc.load_issued)
+        for _nm, _er in _ierrs:
+            st.error(f"『{_nm}』の読込に失敗: {_er}")
+        if issued_df is not None:
+            st.caption(f"④発行済データ {len(issued_df):,}件を読み込みました。")
     except Exception as e:
         st.error(f"④発行済データの取込に失敗しました: {e}")
 
@@ -620,7 +631,11 @@ if ya_files:
         st.warning("Notion未設定のため単価マスタを参照できません。")
     else:
         try:
-            fr_df = csv_import.load_concat(ya_files, yamato_calc.load_freight)
+            fr_df, _ferrs = csv_import.load_concat(ya_files, yamato_calc.load_freight)
+            for _nm, _er in _ferrs:
+                st.error(f"『{_nm}』の読込に失敗: {_er}")
+            if fr_df is None:
+                raise ValueError("有効な⑤ファイルがありません。")
             client_keys = yamato_calc.build_client_soufuda(
                 soufuda_set, ne_denpyo_set, issued_df)
             matched, n_match, n_all = yamato_calc.filter_by_soufuda(fr_df, client_keys)

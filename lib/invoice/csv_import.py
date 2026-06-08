@@ -16,12 +16,20 @@ def load_concat(uploaded_files, loader):
     複数のアップロードファイルを loader で読み込み、縦に結合して返す。
     loader: bytes -> DataFrame（各CSVの検証もloaderが行う）。
     NEの出荷確定など、1000件単位で分割されたファイルをまとめて扱うため。
+
+    1ファイルが失敗しても他は活かす。返り値: (結合DataFrame or None, errors)
+      errors: [(ファイル名, エラー文), ...]
     """
     import pandas as pd
-    dfs = [loader(f.getvalue()) for f in uploaded_files]
-    if not dfs:
-        return None
-    return pd.concat(dfs, ignore_index=True)
+    dfs, errors = [], []
+    for f in uploaded_files:
+        name = getattr(f, "name", "(ファイル)")
+        try:
+            dfs.append(loader(f.getvalue()))
+        except Exception as e:  # noqa: BLE001
+            errors.append((name, str(e)))
+    df = pd.concat(dfs, ignore_index=True) if dfs else None
+    return df, errors
 
 
 def read_csv_auto(file_bytes):
@@ -31,11 +39,14 @@ def read_csv_auto(file_bytes):
     """
     last_err = None
     for enc in ("utf-8-sig", "cp932", "utf-8"):
-        try:
-            return pd.read_csv(io.BytesIO(file_bytes), dtype=str, encoding=enc).fillna("")
-        except Exception as e:  # noqa: BLE001
-            last_err = e
-    raise ValueError(f"CSVを読み込めませんでした（文字コード不明）: {last_err}")
+        # まず標準(C)パーサ、ダメなら寛容なPythonパーサで再試行（行のばらつき対策）
+        for kwargs in ({}, {"engine": "python", "on_bad_lines": "skip"}):
+            try:
+                return pd.read_csv(
+                    io.BytesIO(file_bytes), dtype=str, encoding=enc, **kwargs).fillna("")
+            except Exception as e:  # noqa: BLE001
+                last_err = e
+    raise ValueError(f"CSVを読み込めませんでした（文字コード/形式不明）: {last_err}")
 
 
 def _to_number(value):
