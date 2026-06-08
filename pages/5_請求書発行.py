@@ -689,12 +689,32 @@ def _auto_row(name, amount):
     """自動算出額があれば 単価=金額・数量=1 でプリフィル、無ければ0。"""
     return {"品名": name, "単価": amount if amount is not None else 0, "数量": 1}
 
+# [汎用]作業料：イレギュラー作業（Notion）の月次合計人時 × 時給単価
+_hanyo_unit = 0.0
+_hanyo_hours = 0.0
+if notion_ready:
+    try:
+        for r in notion_store.load_price_master(db_ids, client_name):
+            if r["費目"] == "その他" and "[汎用]" in str(r["種別"]):
+                _hanyo_unit = float(r["単価"] or 0)
+                break
+        _irr = notion_store.load_irregular_work(db_ids, client_name, target_ym)
+        _hanyo_hours = sum(float(x["合計時間"] or 0) for x in _irr)
+    except Exception as e:
+        st.caption(f"（イレギュラー作業の読込をスキップ: {e}）")
+if _hanyo_hours > 0:
+    _hanyo_row = {"品名": "[汎用]作業料", "単価": _hanyo_unit, "数量": _hanyo_hours}
+    st.caption(f"[汎用]作業料: {_hanyo_hours:g}人時 × {_hanyo_unit:,.0f}円 = "
+               f"{round(_hanyo_hours * _hanyo_unit):,}円（イレギュラー作業ページの入力を反映）")
+else:
+    _hanyo_row = {"品名": "[汎用]作業料", "単価": 0, "数量": 1}
+
 other_default = pd.DataFrame([
     _auto_row("送料", auto_souryo),
     _auto_row("出荷作業料", auto_shukka),
     _auto_row("資材費", auto_shizai),
     _juchu_row,
-    {"品名": "[汎用]作業料", "単価": 0, "数量": 1},
+    _hanyo_row,
     {"品名": "その他", "単価": 0, "数量": 1},
     {"品名": "値引き", "単価": 0, "数量": 1},
 ])

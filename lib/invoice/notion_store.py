@@ -65,6 +65,18 @@ DB_SCHEMAS = {
         "金額": {"number": {}},
         "出力品名": {"rich_text": {}},
     },
+    "請求_イレギュラー作業": {
+        "レコード名": {"title": {}},
+        "クライアント": {"rich_text": {}},
+        "対象年月": {"rich_text": {}},
+        "日付": {"rich_text": {}},
+        "時間数": {"number": {}},
+        "人数": {"number": {}},
+        "合計時間": {"number": {}},
+        "作業項目": {"rich_text": {}},
+        "作業詳細": {"rich_text": {}},
+        "備考": {"rich_text": {}},
+    },
     "請求_発行履歴": {
         "請求書番号": {"title": {}},
         "クライアント": {"rich_text": {}},
@@ -598,6 +610,73 @@ def replace_price_rows(db_ids, client_name, himoku_set, rows):
             "種別": {"rich_text": _rt(shubetsu)},
             "単価": {"number": float(r.get("単価") or 0)},
             "出力品名": {"rich_text": _rt(r.get("出力品名", ""))},
+        })
+        saved += 1
+    return saved
+
+
+# ============================================================
+# イレギュラー作業（[汎用]作業料の元データ）
+# ============================================================
+def load_irregular_work(db_ids, client_name, target_ym=None):
+    """
+    指定クライアント（任意で対象年月）のイレギュラー作業を返す。
+    [{日付,時間数,人数,合計時間,作業項目,作業詳細,備考}]
+    """
+    rows = []
+    for row in _query_all(db_ids["請求_イレギュラー作業"]):
+        p = row["properties"]
+        if _read_rt(p.get("クライアント")) != client_name:
+            continue
+        ym = _read_rt(p.get("対象年月"))
+        if target_ym and ym != target_ym:
+            continue
+        rows.append({
+            "日付": _read_rt(p.get("日付")),
+            "時間数": _read_num(p.get("時間数")) or 0,
+            "人数": _read_num(p.get("人数")) or 0,
+            "合計時間": _read_num(p.get("合計時間")) or 0,
+            "作業項目": _read_rt(p.get("作業項目")),
+            "作業詳細": _read_rt(p.get("作業詳細")),
+            "備考": _read_rt(p.get("備考")),
+        })
+    # 日付順に並べる
+    rows.sort(key=lambda r: r["日付"])
+    return rows
+
+
+def replace_irregular_work(db_ids, client_name, target_ym, rows):
+    """
+    指定クライアント×対象年月のイレギュラー作業を丸ごと置き換える。
+    rows: [{日付,時間数,人数,作業項目,作業詳細,備考}]（合計時間は時間数×人数で再計算）
+    """
+    client = _client()
+    db = db_ids["請求_イレギュラー作業"]
+    for row in _query_all(db):
+        p = row["properties"]
+        if (_read_rt(p.get("クライアント")) == client_name
+                and _read_rt(p.get("対象年月")) == target_ym):
+            client.pages.update(page_id=row["id"], archived=True)
+    saved = 0
+    for r in rows:
+        date = str(r.get("日付", "")).strip()
+        item = str(r.get("作業項目", "")).strip()
+        hours = float(r.get("時間数") or 0)
+        people = float(r.get("人数") or 0)
+        if not date and not item and hours == 0:
+            continue
+        total = hours * people
+        client.pages.create(parent={"database_id": db}, properties={
+            "レコード名": {"title": _title(f"{client_name} {date} {item}")},
+            "クライアント": {"rich_text": _rt(client_name)},
+            "対象年月": {"rich_text": _rt(target_ym)},
+            "日付": {"rich_text": _rt(date)},
+            "時間数": {"number": hours},
+            "人数": {"number": people},
+            "合計時間": {"number": total},
+            "作業項目": {"rich_text": _rt(item)},
+            "作業詳細": {"rich_text": _rt(r.get("作業詳細", ""))},
+            "備考": {"rich_text": _rt(r.get("備考", ""))},
         })
         saved += 1
     return saved

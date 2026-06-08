@@ -100,6 +100,52 @@ def parse_shipping_table_csv(file_bytes, areas):
     return rows
 
 
+def parse_irregular_csv(file_bytes):
+    """
+    イレギュラー作業のスプレッドシートCSVを取り込む。
+    [{日付,時間数,人数,作業項目,作業詳細,備考}]
+    列名の表記ゆれ（時間数(h)等）を吸収。合計時間は取込側で再計算するため無視。
+    """
+    import unicodedata
+    df = read_csv_auto(file_bytes)
+    cols = {unicodedata.normalize("NFKC", str(c)).strip(): c for c in df.columns}
+
+    def pick(*cands):
+        for c in cands:
+            if c in cols:
+                return cols[c]
+        # 部分一致
+        for key, orig in cols.items():
+            if any(c in key for c in cands):
+                return orig
+        return None
+
+    c_date = pick("日付", "日付")
+    c_hours = pick("時間数(h)", "時間数", "時間")
+    c_people = pick("人数")
+    c_item = pick("作業項目", "項目")
+    c_detail = pick("作業詳細", "詳細")
+    c_note = pick("備考")
+
+    rows = []
+    for _, r in df.iterrows():
+        date = str(r[c_date]).strip() if c_date else ""
+        item = str(r[c_item]).strip() if c_item else ""
+        hours = _to_number(r[c_hours]) if c_hours else 0
+        people = _to_number(r[c_people]) if c_people else 0
+        if not date and not item and not hours:
+            continue
+        rows.append({
+            "日付": date,
+            "時間数": hours,
+            "人数": people if people else 1,
+            "作業項目": item,
+            "作業詳細": str(r[c_detail]).strip() if c_detail else "",
+            "備考": str(r[c_note]).strip() if c_note else "",
+        })
+    return rows
+
+
 def parse_size_rate_csv(file_bytes):
     """
     配送種別単価CSVを取り込み、[{配送種別, 出荷作業料, 資材費}] を返す。
