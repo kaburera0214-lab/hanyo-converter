@@ -5,6 +5,7 @@
 Phase2: ①出荷確定CSVから出荷件数を集計し、受注作業料(件数×単価)を算出する。
 列順は端末ごとにズレ得るため列名で参照し、必須列が無ければエラーにする。
 """
+import re
 import pandas as pd
 from . import csv_import
 
@@ -43,11 +44,17 @@ def summarize_shipment(df):
 
 def get_soufuda_set(df):
     """①出荷確定の「発送伝票番号」（ヤマト送り状番号）の集合を返す。
+    生データでは複数個口の場合カンマ等区切りで複数の送り状が入るため展開する。
     ⑤運賃の絞り込みに使う。列が無ければ空集合。"""
     if "発送伝票番号" not in df.columns:
         return set()
-    s = df["発送伝票番号"].astype(str).str.strip()
-    return set(s[(s != "") & (s.str.lower() != "nan")])
+    result = set()
+    for v in df["発送伝票番号"].astype(str):
+        for token in re.split(r"[,、\s/]+", v):
+            t = token.strip()
+            if t and t.lower() != "nan":
+                result.add(t)
+    return result
 
 
 def get_ne_denpyo_set(df):
