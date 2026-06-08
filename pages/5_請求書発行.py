@@ -22,7 +22,8 @@ st.title("請求書発行")
 st.caption("倉庫業務クライアント向けの請求書を作成し、MFクラウド取込用CSVを出力します。（Phase1）")
 
 # --- 専用モジュール（遅延import） ---
-from lib.invoice import mf_export, invoice_number, store, notion_store, csv_import, ne_calc
+from lib.invoice import (mf_export, invoice_number, store, notion_store,
+                         csv_import, ne_calc, yamato_calc)
 
 
 # ============================================================
@@ -404,8 +405,7 @@ if storage_preview:
 # 4. データ取込・自動算出（NE）
 # ============================================================
 st.header("④ データ取込・自動算出（NE）")
-st.caption("①NE出荷確定CSVを取り込むと、出荷件数から受注作業料を自動算出して下の⑤に反映します。"
-           "出荷作業料・資材費・送料は配送種別が必要なため、⑤ヤマト運賃と紐付けるPhase3で対応します。")
+st.caption("①NE出荷確定で受注作業料を、⑤ヤマト運賃で送料・出荷作業料・資材費を自動算出し、下の⑤費目に反映します。")
 
 # 受注作業の単価をマスタから取得
 juchu_unit = 0.0
@@ -420,6 +420,10 @@ if notion_ready:
 
 auto_ship_count = 0          # 出荷件数
 auto_juchu_amount = None     # 受注作業料の自動算出額
+auto_souryo = None           # 送料
+auto_shukka = None           # 出荷作業料
+auto_shizai = None           # 資材費
+soufuda_set = set()          # ①の送り状番号集合（⑤絞り込み用）
 
 ne_ship_file = st.file_uploader("①NE出荷確定CSVを選択", type=["csv"], key="invoice_ne_ship")
 if ne_ship_file is not None:
@@ -427,6 +431,7 @@ if ne_ship_file is not None:
         ne_df = ne_calc.load_shipment(ne_ship_file.getvalue())
         summary = ne_calc.summarize_shipment(ne_df)
         auto_ship_count = summary["出荷件数"]
+        soufuda_set = ne_calc.get_soufuda_set(ne_df)
         c1, c2 = st.columns(2)
         c1.metric("出荷件数（ユニーク伝票番号）", f"{auto_ship_count:,} 件")
         c2.metric("受注作業 単価", f"{juchu_unit:,.0f} 円")
@@ -441,6 +446,52 @@ if ne_ship_file is not None:
     except Exception as e:
         st.error(f"NE出荷確定CSVの取込に失敗しました: {e}")
 
+# --- ⑤ヤマト運賃（全件）→ 送料・出荷作業料・資材費 ---
+st.markdown("##### ⑤ヤマト運賃CSV（全クライアント混在のままでOK）")
+st.caption("①の送り状番号でこのクライアント分だけ絞り込み、サイズ別に出荷作業料・資材費・送料を算出します。"
+           "先に①NE出荷確定を取り込んでください。")
+ya_file = st.file_uploader("⑤ヤマト運賃情報参照CSVを選択", type=["csv"], key="invoice_ya_freight")
+if ya_file is not None:
+    if not soufuda_set:
+        st.warning("先に①NE出荷確定CSVを取り込んでください（送り状番号で絞り込みます）。")
+    elif not notion_ready:
+        st.warning("Notion未設定のため単価マスタを参照できません。")
+    else:
+        try:
+            fr_df = yamato_calc.load_freight(ya_file.getvalue())
+            matched, n_match, n_all = yamato_calc.filter_by_soufuda(fr_df, soufuda_set)
+            st.info(f"ヤマト運賃 全{n_all:,}件中、このクライアント分 {n_match:,}件を抽出。")
+            # マスタ取得
+            pm = notion_store.load_price_master(db_ids, client_name)
+            ship_rates = {r["種別"]: r["単価"] for r in pm if r["費目"] == "出荷作業"}
+            mat_rates = {r["種別"]: r["単価"] for r in pm if r["費目"] == "資材"}
+            sm2 = notion_store.load_client_shipping_method(db_ids, client_name)
+            ship_table = notion_store.load_shipping_table(
+                db_ids, client_name, store.SHIPPING_AREAS)
+            amap2 = notion_store.load_area_map(db_ids)
+            res = yamato_calc.compute_charges(
+                matched, ship_rates=ship_rates, material_rates=mat_rates,
+                shipping_method=sm2["送料方式"], shipping_table=ship_table,
+                area_map=amap2, margin_rate=sm2["送料マージン率"],
+                addon=sm2["送料加算額"])
+            auto_souryo = res["送料"]
+            auto_shukka = res["出荷作業料"]
+            auto_shizai = res["資材費"]
+            m1, m2, m3 = st.columns(3)
+            m1.metric("送料", f"{auto_souryo:,} 円")
+            m2.metric("出荷作業料", f"{auto_shukka:,} 円")
+            m3.metric("資材費", f"{auto_shizai:,} 円")
+            st.caption(f"送料方式: {sm2['送料方式']}")
+            with st.expander("配送種別別の件数（参考）", expanded=False):
+                st.dataframe(
+                    pd.DataFrame([{"配送種別": k, "件数": v}
+                                  for k, v in res["種別別件数"].items()]),
+                    use_container_width=True, hide_index=True)
+            for w in res["警告"]:
+                st.warning(w)
+        except Exception as e:
+            st.error(f"ヤマト運賃CSVの取込・算出に失敗しました: {e}")
+
 
 # ============================================================
 # 5. イレギュラー・その他費目（手入力＋自動算出の反映）
@@ -454,10 +505,14 @@ if auto_juchu_amount is not None and auto_ship_count > 0:
 else:
     _juchu_row = {"品名": "受注作業料", "単価": 0, "数量": 1}
 
+def _auto_row(name, amount):
+    """自動算出額があれば 単価=金額・数量=1 でプリフィル、無ければ0。"""
+    return {"品名": name, "単価": amount if amount is not None else 0, "数量": 1}
+
 other_default = pd.DataFrame([
-    {"品名": "送料", "単価": 0, "数量": 1},
-    {"品名": "出荷作業料", "単価": 0, "数量": 1},
-    {"品名": "資材費", "単価": 0, "数量": 1},
+    _auto_row("送料", auto_souryo),
+    _auto_row("出荷作業料", auto_shukka),
+    _auto_row("資材費", auto_shizai),
     _juchu_row,
     {"品名": "[汎用]作業料", "単価": 0, "数量": 1},
     {"品名": "その他", "単価": 0, "数量": 1},

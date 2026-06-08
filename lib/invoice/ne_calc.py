@@ -41,6 +41,15 @@ def summarize_shipment(df):
     return {"出荷件数": count, "発送方法別": by_method}
 
 
+def get_soufuda_set(df):
+    """①出荷確定の「発送伝票番号」（ヤマト送り状番号）の集合を返す。
+    ⑤運賃の絞り込みに使う。列が無ければ空集合。"""
+    if "発送伝票番号" not in df.columns:
+        return set()
+    s = df["発送伝票番号"].astype(str).str.strip()
+    return set(s[(s != "") & (s.str.lower() != "nan")])
+
+
 def classify_delivery_rough(method_name):
     """
     発送方法の文字列から配送区分をざっくり判定（Phase3で⑤と突合する際の補助）。
