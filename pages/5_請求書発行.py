@@ -338,61 +338,28 @@ with st.expander("🛠 単価マスタ管理（クライアント別：送料・
             st.caption("※ 編集機能はPhase3で追加予定。現状は初期値（47都道府県→ヤマト地域）を使用します。")
 
 st.header("③ 保管料（2期制：15日・末日）")
-st.caption("各種別について15日時点と末日時点の数量を入力すると、平均×単価で自動計算します。")
+st.caption("数量の入力は左メニュー「保管カウント」ページで行います。ここは保存済みカウントの自動計算結果（表示のみ）です。")
 
 target_ym = f"{int(year)}-{int(month):02d}"
 
-# 当月の保管内訳履歴があれば数量をプリフィルする
+# 保管カウント（保存済み）を読み込み、2期平均×単価で集計（表示のみ）
 history_rows = []
 if notion_ready:
     try:
         history_rows = notion_store.load_storage_history(db_ids, client_name, target_ym)
     except Exception as e:
-        st.caption(f"（履歴の読込はスキップしました: {e}）")
+        st.caption(f"（保管カウントの読込はスキップしました: {e}）")
 
-if history_rows:
-    st.caption(f"📌 {target_ym} の保管内訳履歴を読み込みました（編集して再保存できます）。")
-    storage_default = pd.DataFrame([
-        {"種別名": r["種別名"], "15日数量": r["15日数量"], "末日数量": r["末日数量"],
-         "単価": r["単価"], "出力品名": r["出力品名"]}
-        for r in history_rows
-    ])
-else:
-    master = client.get("保管料マスタ", [])
-    storage_default = pd.DataFrame([
-        {"種別名": m["種別名"], "15日数量": 0, "末日数量": 0,
-         "単価": m["単価"], "出力品名": m["出力品名"]}
-        for m in master
-    ])
-if storage_default.empty:
-    storage_default = pd.DataFrame(
-        columns=["種別名", "15日数量", "末日数量", "単価", "出力品名"])
-
-storage_edited = st.data_editor(
-    storage_default,
-    num_rows="dynamic",
-    use_container_width=True,
-    key="invoice_storage_editor",
-    column_config={
-        "種別名": st.column_config.TextColumn("種別名", width="medium"),
-        "15日数量": st.column_config.NumberColumn("15日数量", min_value=0, step=1),
-        "末日数量": st.column_config.NumberColumn("末日数量", min_value=0, step=1),
-        "単価": st.column_config.NumberColumn("単価", min_value=0, step=10),
-        "出力品名": st.column_config.TextColumn("出力品名（MF品目名）", width="medium"),
-    },
-)
-
-# 平均・金額を計算し、出力品名ごとに集計
 storage_lines = {}   # 出力品名 -> 金額合計
 storage_preview = []
-for _, row in storage_edited.iterrows():
-    name = str(row.get("種別名", "")).strip()
+for r in history_rows:
+    name = str(r.get("種別名", "")).strip()
     if not name:
         continue
-    q15 = float(row.get("15日数量") or 0)
-    qend = float(row.get("末日数量") or 0)
-    price = float(row.get("単価") or 0)
-    out_name = str(row.get("出力品名", "")).strip() or "保管料"
+    q15 = float(r.get("15日数量") or 0)
+    qend = float(r.get("末日数量") or 0)
+    price = float(r.get("単価") or 0)
+    out_name = str(r.get("出力品名", "")).strip() or "保管料"
     avg = (q15 + qend) / 2
     amount = round(avg * price)
     storage_preview.append({
@@ -402,6 +369,9 @@ for _, row in storage_edited.iterrows():
 
 if storage_preview:
     st.dataframe(pd.DataFrame(storage_preview), use_container_width=True, hide_index=True)
+    st.caption(f"保管料 合計: {sum(storage_lines.values()):,} 円")
+else:
+    st.info(f"{target_ym} の保管カウントがありません。「保管カウント」ページで入力してください。")
 
 
 # ============================================================
@@ -843,10 +813,7 @@ else:
                 target_ym=target_ym, kind=kind, issue_date=issue_date,
                 due_date=due_date, subtotal=subtotal, tax=tax, total=total,
                 items=items)
-            if storage_preview:
-                notion_store.save_storage_history(
-                    db_ids, client_name=client_name, target_ym=target_ym,
-                    storage_rows=storage_preview)
+            # 保管カウントは専用ページが管理するため、ここでは再保存しない
             st.success(f"{kind}として履歴に保存しました（{inv_no} / {target_ym}）。")
         except Exception as e:
             st.error(f"履歴保存に失敗しました: {e}")
