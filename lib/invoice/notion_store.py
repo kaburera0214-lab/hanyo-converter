@@ -645,19 +645,27 @@ def load_irregular_work(db_ids, client_name, target_ym=None):
     return rows
 
 
-def replace_irregular_work(db_ids, client_name, target_ym, rows):
+def _ym_from_date(date_str, fallback):
+    """ '2026/03/12'・'2026-3-12' 等から '2026-03' を作る。失敗時はfallback。"""
+    import re
+    m = re.match(r"\s*(\d{4})\D+(\d{1,2})", str(date_str))
+    if m:
+        return f"{int(m.group(1)):04d}-{int(m.group(2)):02d}"
+    return fallback
+
+
+def replace_irregular_work(db_ids, client_name, rows, fallback_ym):
     """
-    指定クライアント×対象年月のイレギュラー作業を丸ごと置き換える。
-    rows: [{日付,時間数,人数,作業項目,作業詳細,備考}]（合計時間は時間数×人数で再計算）
+    イレギュラー作業を保存する。各行の対象年月は日付から自動判定し、
+    判定できた月（＋日付不明分はfallback_ym）のクライアント既存データを
+    置き換える。日付が複数月にまたがるCSV取込にも対応。
+    rows: [{日付,時間数,人数,作業項目,作業詳細,備考}]
     """
     client = _client()
     db = db_ids["請求_イレギュラー作業"]
-    for row in _query_all(db):
-        p = row["properties"]
-        if (_read_rt(p.get("クライアント")) == client_name
-                and _read_rt(p.get("対象年月")) == target_ym):
-            client.pages.update(page_id=row["id"], archived=True)
-    saved = 0
+
+    # 各行に対象年月を付与
+    prepared = []
     for r in rows:
         date = str(r.get("日付", "")).strip()
         item = str(r.get("作業項目", "")).strip()
@@ -665,11 +673,28 @@ def replace_irregular_work(db_ids, client_name, target_ym, rows):
         people = float(r.get("人数") or 0)
         if not date and not item and hours == 0:
             continue
+        ym = _ym_from_date(date, fallback_ym)
+        prepared.append((ym, date, item, hours, people, r))
+
+    target_yms = {ym for ym, *_ in prepared} or {fallback_ym}
+
+    # 対象月の既存データをアーカイブ（既にアーカイブ済みは無視）
+    for row in _query_all(db):
+        p = row["properties"]
+        if (_read_rt(p.get("クライアント")) == client_name
+                and _read_rt(p.get("対象年月")) in target_yms):
+            try:
+                client.pages.update(page_id=row["id"], archived=True)
+            except Exception:  # noqa: BLE001
+                pass
+
+    saved = 0
+    for ym, date, item, hours, people, r in prepared:
         total = hours * people
         client.pages.create(parent={"database_id": db}, properties={
             "レコード名": {"title": _title(f"{client_name} {date} {item}")},
             "クライアント": {"rich_text": _rt(client_name)},
-            "対象年月": {"rich_text": _rt(target_ym)},
+            "対象年月": {"rich_text": _rt(ym)},
             "日付": {"rich_text": _rt(date)},
             "時間数": {"number": hours},
             "人数": {"number": people},

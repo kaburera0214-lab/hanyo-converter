@@ -130,12 +130,23 @@ m1.metric("合計人時", f"{total_hours:g} h")
 m2.metric("時給単価", f"{hourly:,.0f} 円/h")
 m3.metric("[汎用]作業料（概算）", f"{amount:,} 円")
 
+st.caption("各行は『日付』の年月に振り分けて保存されます（複数月のCSVを取り込んでもOK）。"
+           "日付が読めない行は選択中の対象月に保存します。")
+
 if st.button("💾 保存", key="irr_save", type="primary"):
     try:
+        recs = edited.to_dict("records")
+        # 保存先の月の内訳を表示
+        months = {}
+        for r in recs:
+            ym = notion_store._ym_from_date(r.get("日付", ""), target_ym)
+            months[ym] = months.get(ym, 0) + 1
         n = notion_store.replace_irregular_work(
-            db_ids, client_name, target_ym, edited.to_dict("records"))
-        st.session_state.pop(reload_key, None)
-        st.success(f"{client_name}／{target_ym} の作業記録を保存しました（{n}件）。"
-                   "請求書発行ページの[汎用]作業料に反映されます。")
+            db_ids, client_name, recs, target_ym)
+        for k in list(st.session_state.keys()):
+            if k.startswith("irr_loaded_"):
+                st.session_state.pop(k, None)
+        st.success(f"{client_name} の作業記録を保存しました（{n}件）。"
+                   f"保存先の月: {months}。請求書発行ページの[汎用]作業料に反映されます。")
     except Exception as e:
         st.error(f"保存に失敗しました: {e}")
