@@ -306,6 +306,8 @@ if st.button("💾 保存", key="irr_save", type="primary"):
 # 削除確認（ポップアップ）
 _pending = st.session_state.get("irr_pending")
 if _pending:
+    _editor_key = f"irr_editor_{client_name}_{scope_sig}"
+
     def _render_confirm():
         st.warning(f"⚠️ {_pending['ndel']} 件のレコードを削除します。"
                    "この操作は取り消せません。よろしいですか？")
@@ -313,9 +315,11 @@ if _pending:
         if b1.button("✅ 削除して保存", key="irr_confirm_yes", type="primary"):
             _do_save(_pending["recs"])
             st.session_state.pop("irr_pending", None)
+            st.session_state.pop(_editor_key, None)  # エディタを保存後の状態で再読込
             st.rerun()
         if b2.button("↩️ やめる（戻る）", key="irr_confirm_no"):
             st.session_state.pop("irr_pending", None)
+            st.session_state.pop(_editor_key, None)  # 削除前の状態に戻す
             st.rerun()
 
     _dlg = getattr(st, "dialog", None) or getattr(st, "experimental_dialog", None)
