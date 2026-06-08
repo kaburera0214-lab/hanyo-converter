@@ -98,28 +98,50 @@ def compute_picking_charge(order_df, product_df, ship_rates):
     """
     size_map = dict(zip(product_df["商品コード"].map(_norm),
                         product_df["項目1"].map(_norm)))
+    has_name = "商品名" in order_df.columns
     codes = order_df["商品コード"].map(_norm)
     pcs = pd.to_numeric(order_df["受注数"], errors="coerce").fillna(0)
-    sizes = codes.map(size_map)
+    names = order_df["商品名"].astype(str) if has_name else None
 
-    unmatched = int(sizes.isna().sum())
+    unmatched = 0
     by_size = {}
-    for size, q in zip(sizes, pcs):
-        key = "(不明)" if (size is None or str(size) == "" or str(size) == "nan") else str(size)
-        by_size[key] = by_size.get(key, 0) + float(q)
-
+    problem_rows = []   # 単価が引けなかった明細（サイズ不明 or 単価未登録）
     total = 0.0
-    missing_rate = set()
-    for size, q in by_size.items():
-        if size in ship_rates:
-            total += q * float(ship_rates[size])
+    for i in range(len(order_df)):
+        code = codes.iloc[i]
+        q = float(pcs.iloc[i])
+        raw_size = size_map.get(code)
+        in_master = code in size_map
+        if not in_master:
+            unmatched += 1
+        if raw_size is None or str(raw_size) in ("", "nan"):
+            key = "(不明)"
         else:
-            missing_rate.add(size)
+            key = str(raw_size)
+        by_size[key] = by_size.get(key, 0) + q
+
+        rate = ship_rates.get(key)
+        if rate is None:
+            reason = ("③商品マスタに無い" if not in_master
+                      else "項目1（サイズ）が空" if key == "(不明)"
+                      else f"単価マスタにサイズ'{key}'の単価が無い")
+            problem_rows.append({
+                "商品コード": order_df["商品コード"].iloc[i],
+                "商品名": names.iloc[i] if has_name else "",
+                "サイズ(項目1)": key,
+                "受注数(PCS)": int(q),
+                "理由": reason,
+            })
+        else:
+            total += q * float(rate)
+
+    missing_rate = sorted({r["サイズ(項目1)"] for r in problem_rows})
     return {
         "出荷作業料": round(total),
         "サイズ別PCS": {k: int(v) for k, v in by_size.items()},
         "未マッチ商品数": unmatched,
-        "単価未登録サイズ": sorted(missing_rate),
+        "単価未登録サイズ": missing_rate,
+        "未登録明細": problem_rows,
     }
 
 

@@ -556,8 +556,14 @@ if order_file is not None:
                     pd.DataFrame([{"サイズ": k, "PCS": v}
                                   for k, v in pres["サイズ別PCS"].items()]),
                     use_container_width=True, hide_index=True)
-            if pres["単価未登録サイズ"]:
-                st.warning(f"出荷作業単価が未登録のサイズ: {pres['単価未登録サイズ']}")
+            if pres["未登録明細"]:
+                st.warning(
+                    f"出荷作業料を計上できなかった商品が {len(pres['未登録明細'])} 件あります"
+                    f"（サイズ: {pres['単価未登録サイズ']}）。"
+                    "下記の商品について、③のサイズ設定または単価マスタを確認してください。")
+                st.dataframe(
+                    pd.DataFrame(pres["未登録明細"]),
+                    use_container_width=True, hide_index=True)
         except Exception as e:
             st.error(f"出荷作業料の算出に失敗しました: {e}")
 
