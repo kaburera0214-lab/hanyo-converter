@@ -68,7 +68,6 @@ DB_SCHEMAS = {
     "請求_イレギュラー作業": {
         "レコード名": {"title": {}},
         "クライアント": {"rich_text": {}},
-        "対象年月": {"rich_text": {}},
         "日付": {"rich_text": {}},
         "時間数": {"number": {}},
         "人数": {"number": {}},
@@ -628,13 +627,13 @@ def load_irregular_work(db_ids, client_name, target_ym=None):
         p = row["properties"]
         if _read_rt(p.get("クライアント")) != client_name:
             continue
-        # 実日付から月を判定（保存済み対象年月が古くてズレていても正す）
-        ym = _ym_from_date(_read_rt(p.get("日付")), _read_rt(p.get("対象年月")))
+        # 月は実日付から判定（対象年月という保存項目は廃止）
+        ym = _ym_from_date(_read_rt(p.get("日付")), "")
         if target_ym and ym != target_ym:
             continue
         rows.append({
             "id": row["id"],
-            "対象年月": ym,
+            "対象年月": ym,  # 日付から計算した請求対象月（保存はしない）
             "日付": _read_rt(p.get("日付")),
             "時間数": _read_num(p.get("時間数")) or 0,
             "人数": _read_num(p.get("人数")) or 0,
@@ -663,11 +662,9 @@ def _irregular_props(client_name, r, fallback_ym):
     item = str(r.get("作業項目", "")).strip()
     hours = float(r.get("時間数") or 0)
     people = float(r.get("人数") or 0)
-    ym = _ym_from_date(date, fallback_ym)
     return {
         "レコード名": {"title": _title(f"{client_name} {date} {item}")},
         "クライアント": {"rich_text": _rt(client_name)},
-        "対象年月": {"rich_text": _rt(ym)},
         "日付": {"rich_text": _rt(date)},
         "時間数": {"number": hours},
         "人数": {"number": people},
@@ -717,65 +714,6 @@ def save_irregular_work(db_ids, client_name, edited_rows, loaded_ids, fallback_y
             pass
 
     return {"created": created, "updated": updated, "deleted": deleted}
-
-
-def replace_irregular_work(db_ids, client_name, rows, fallback_ym, scope_yms=None):
-    """
-    イレギュラー作業を保存する。各行の対象年月は日付から自動判定。
-    scope_yms（表示中の月範囲）＋新規行の月のクライアント既存データを
-    置き換える。scope_ymsを渡すと、行を削除した月も正しく空にできる。
-    rows: [{日付,時間数,人数,作業項目,作業詳細,備考}]
-    """
-    client = _client()
-    db = db_ids["請求_イレギュラー作業"]
-
-    # 各行に対象年月を付与
-    prepared = []
-    for r in rows:
-        date = str(r.get("日付", "")).strip()
-        item = str(r.get("作業項目", "")).strip()
-        hours = float(r.get("時間数") or 0)
-        people = float(r.get("人数") or 0)
-        if not date and not item and hours == 0:
-            continue
-        ym = _ym_from_date(date, fallback_ym)
-        prepared.append((ym, date, item, hours, people, r))
-
-    # 置き換え対象の月＝表示範囲(scope_yms)＋新規行の月
-    target_yms = set(scope_yms or set()) | {ym for ym, *_ in prepared}
-    if not target_yms:
-        target_yms = {fallback_ym}
-
-    # 既存データを「日付から判定した月」でアーカイブ判定（保存済み対象年月が
-    # 古くてズレていても、実日付の月で正しく置き換えられる）
-    for row in _query_all(db):
-        p = row["properties"]
-        if _read_rt(p.get("クライアント")) != client_name:
-            continue
-        eff_ym = _ym_from_date(_read_rt(p.get("日付")), _read_rt(p.get("対象年月")))
-        if eff_ym in target_yms:
-            try:
-                client.pages.update(page_id=row["id"], archived=True)
-            except Exception:  # noqa: BLE001
-                pass
-
-    saved = 0
-    for ym, date, item, hours, people, r in prepared:
-        total = hours * people
-        client.pages.create(parent={"database_id": db}, properties={
-            "レコード名": {"title": _title(f"{client_name} {date} {item}")},
-            "クライアント": {"rich_text": _rt(client_name)},
-            "対象年月": {"rich_text": _rt(ym)},
-            "日付": {"rich_text": _rt(date)},
-            "時間数": {"number": hours},
-            "人数": {"number": people},
-            "合計時間": {"number": total},
-            "作業項目": {"rich_text": _rt(item)},
-            "作業詳細": {"rich_text": _rt(r.get("作業詳細", ""))},
-            "備考": {"rich_text": _rt(r.get("備考", ""))},
-        })
-        saved += 1
-    return saved
 
 
 def load_storage_history(db_ids, client_name, target_ym):
