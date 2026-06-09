@@ -869,9 +869,9 @@ _cflash = st.session_state.pop("invoice_confirm_flash", None)
 if _cflash:
     getattr(st, _cflash[0])(_cflash[1])
 
-# 確定ボタン：請求履歴保存＋Driveバックアップ。確定後にDLボタンが出る。
-if st.button("📦 請求を確定（履歴保存＋Driveバックアップ）", key="invoice_confirm",
-             type="primary", use_container_width=True):
+# 確定ボタン：1クリックで「CSV＋内訳のDL／請求履歴保存／Driveバックアップ」を実行
+if st.button("📦 請求を確定（CSV・内訳をDL＋履歴保存＋Driveバックアップ）",
+             key="invoice_confirm", type="primary", use_container_width=True):
     msgs = []
     ok = True
     if notion_ready:
@@ -903,20 +903,43 @@ if st.button("📦 請求を確定（履歴保存＋Driveバックアップ）",
     st.session_state["invoice_confirm_flash"] = (
         "success" if ok else "warning", "／".join(msgs))
     st.session_state["invoice_confirmed_no"] = inv_no
+    st.session_state["invoice_autodl_pending"] = True  # ブラウザ自動DLを1回だけ起動
     st.rerun()
 
-# 確定後にダウンロードボタンを表示（MF CSV・内訳Excel）
+# 確定直後：ブラウザ側でCSVと内訳Excelを自動ダウンロード（ZIPなし・1クリック相当）
+if st.session_state.pop("invoice_autodl_pending", False):
+    import base64 as _b64
+    import streamlit.components.v1 as _components
+    _csv_b64 = _b64.b64encode(csv_bytes).decode()
+    _xlsx_b64 = _b64.b64encode(xlsx_bytes or b"").decode()
+    _html = f"""
+    <script>
+    function _dl(name, mime, b64){{
+      var a=document.createElement('a');
+      a.href='data:'+mime+';base64,'+b64; a.download=name;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    }}
+    _dl({csv_name!r}, 'text/csv', {_csv_b64!r});
+    setTimeout(function(){{ _dl({xlsx_name!r}, {_XLSX_MIME!r}, {_xlsx_b64!r}); }}, 700);
+    </script>
+    """
+    _components.html(_html, height=0)
+    st.success("CSVと内訳Excelのダウンロードを開始しました"
+               "（ブラウザが『複数ファイルのDLを許可しますか？』と聞いたら許可してください）。")
+
+# 自動DLが効かない環境向けの手動DL（フォールバック）
 if st.session_state.get("invoice_confirmed_no") == inv_no:
-    st.markdown("**この請求書を確定しました。下記をダウンロードしてください。**")
-    d1, d2 = st.columns(2)
-    with d1:
-        st.download_button("⬇️ MF請求書CSV", data=csv_bytes, file_name=csv_name,
-                           mime="text/csv", key="invoice_dl_csv", use_container_width=True)
-    with d2:
-        st.download_button("⬇️ 内訳明細書（Excel）",
-                           data=(xlsx_bytes or b""), file_name=xlsx_name, mime=_XLSX_MIME,
-                           key="invoice_dl_xlsx", use_container_width=True,
-                           disabled=(xlsx_bytes is None))
+    with st.expander("ダウンロードされない場合（手動DL）", expanded=False):
+        d1, d2 = st.columns(2)
+        with d1:
+            st.download_button("⬇️ MF請求書CSV", data=csv_bytes, file_name=csv_name,
+                               mime="text/csv", key="invoice_dl_csv",
+                               use_container_width=True)
+        with d2:
+            st.download_button("⬇️ 内訳明細書（Excel）",
+                               data=(xlsx_bytes or b""), file_name=xlsx_name,
+                               mime=_XLSX_MIME, key="invoice_dl_xlsx",
+                               use_container_width=True, disabled=(xlsx_bytes is None))
 else:
-    st.caption("※ 「請求を確定」を押すと、請求履歴の保存・Driveバックアップ（MF CSV・内訳・"
-               "①②③元ファイル）を行い、MF CSVと内訳Excelのダウンロードボタンが表示されます。")
+    st.caption("※ 「請求を確定」を押すと、CSVと内訳ExcelのDL・請求履歴の保存・"
+               "Driveバックアップ（MF CSV・内訳・①②③元ファイル）を一度に行います。")
