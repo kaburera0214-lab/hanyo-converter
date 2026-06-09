@@ -378,6 +378,39 @@ def save_issue_history(db_ids, *, invoice_no, client_name, target_ym, kind,
     })
 
 
+def load_issue_history(db_ids, client_name=None, target_ym=None):
+    """発行履歴（請求/見積のスナップショット）を新しい順で返す。"""
+    rows = []
+    for row in _query_all(db_ids["請求_発行履歴"]):
+        p = row["properties"]
+        cn = _read_rt(p.get("クライアント"))
+        if client_name and cn != client_name:
+            continue
+        ym = _read_rt(p.get("対象年月"))
+        if target_ym and ym != target_ym:
+            continue
+        try:
+            items = json.loads(_read_rt(p.get("品目JSON")) or "[]")
+        except Exception:  # noqa: BLE001
+            items = []
+        rows.append({
+            "id": row["id"],
+            "請求書番号": _read_title(p.get("請求書番号")),
+            "クライアント": cn,
+            "対象年月": ym,
+            "区分": _read_select(p.get("区分")),
+            "請求日": _read_rt(p.get("請求日")),
+            "支払期限": _read_rt(p.get("支払期限")),
+            "小計": _read_num(p.get("小計")) or 0,
+            "消費税": _read_num(p.get("消費税")) or 0,
+            "合計金額": _read_num(p.get("合計金額")) or 0,
+            "品目": items,
+            "発行日時": _read_rt(p.get("発行日時")),
+        })
+    rows.sort(key=lambda r: r["発行日時"], reverse=True)
+    return rows
+
+
 def save_storage_history(db_ids, *, client_name, target_ym, storage_rows):
     """
     保管内訳履歴に、対象年月の明細を追加する。

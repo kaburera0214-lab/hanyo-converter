@@ -108,6 +108,39 @@ with col3:
 client = clients[client_name]
 client_code = client.get("略号", "XX")
 
+# --- クライアント設定チェック（新規立ち上げ時の抜け漏れ防止） ---
+if notion_ready:
+    _miss = []
+    _h = client.get("header", {})
+    if not _h.get("取引先名称"):
+        _miss.append("取引先名称")
+    if not _h.get("振込先"):
+        _miss.append("振込先")
+    if not client.get("略号"):
+        _miss.append("略号")
+    if not client.get("保管料マスタ"):
+        _miss.append("保管料マスタ（種別）")
+    try:
+        _pm_chk = notion_store.load_price_master(db_ids, client_name)
+        _himoku = {r["費目"] for r in _pm_chk}
+        _out = {str(r.get("出力品名", "")) for r in _pm_chk}
+        for _need, _label in [("受注作業", "受注作業の単価"), ("出荷作業", "出荷作業の単価"),
+                              ("資材", "資材の単価"), ("送料", "送料の設定")]:
+            if _need not in _himoku:
+                _miss.append(_label)
+        if not any("[汎用]作業料" in o for o in _out):
+            _miss.append("[汎用]作業料の時給単価")
+        _sm = notion_store.load_client_shipping_method(db_ids, client_name)
+        if not _sm.get("送料方式"):
+            _miss.append("送料方式")
+    except Exception:
+        pass
+    if _miss:
+        with st.expander(f"⚠️ {client_name} は未設定の項目があります（{len(_miss)}件）", expanded=True):
+            st.warning("以下が未設定です。請求金額が0や欠落になる恐れがあります。"
+                       "「🛠 単価マスタ管理」等で設定してください。")
+            st.write("・" + "\n・".join(_miss))
+
 # --- 採番・日付の初期値 ---
 auto_no = invoice_number.generate_invoice_number(int(year), int(month), client_code)
 auto_dates = invoice_number.default_dates(int(year), int(month))
@@ -754,6 +787,44 @@ mcol1, mcol2, mcol3 = st.columns(3)
 mcol1.metric("小計", f"{subtotal:,} 円")
 mcol2.metric("消費税(10%)", f"{tax:,} 円")
 mcol3.metric("合計金額", f"{total:,} 円")
+
+# --- 請求前サニティチェック（異常検知） ---
+_amount = {it["品名"]: it["金額"] for it in items}
+_checks = []
+if auto_ship_count > 0:
+    if not _amount.get("送料"):
+        _checks.append("出荷があるのに**送料が0**です（③ヤマト運賃の取込漏れ？）。")
+    if not _amount.get("出荷作業料"):
+        _checks.append("出荷があるのに**出荷作業料が0**です（②受注明細・商品マスタの取込漏れ？）。")
+    if not _amount.get("資材費"):
+        _checks.append("出荷があるのに**資材費が0**です。")
+if not storage_lines:
+    _checks.append(f"**保管料が0**です（{target_ym}の保管カウント未入力？）。")
+if total <= 0:
+    _checks.append("**合計金額が0以下**です。費目を確認してください。")
+for it in items:
+    if it["品名"] not in ("値引き",) and it["金額"] < 0:
+        _checks.append(f"**{it['品名']}がマイナス**です（{it['金額']:,}円）。意図通りか確認を。")
+# 前月比
+if notion_ready:
+    try:
+        _y, _m = int(target_ym[:4]), int(target_ym[5:7])
+        _pm_ym = f"{_y - 1}-12" if _m == 1 else f"{_y}-{_m - 1:02d}"
+        _prev = notion_store.load_issue_history(db_ids, client_name, _pm_ym)
+        _prev = [r for r in _prev if r["区分"] == "請求"]
+        if _prev:
+            _pt = _prev[0]["合計金額"]
+            if _pt and abs(total - _pt) / _pt > 0.5:
+                _checks.append(
+                    f"前月（{_pm_ym}）の合計 {int(_pt):,}円 と **{(total / _pt - 1) * 100:+.0f}%** 乖離。確認推奨。")
+    except Exception:
+        pass
+if _checks:
+    with st.expander(f"⚠️ 請求前チェック：気になる点が {len(_checks)}件", expanded=True):
+        for _c in _checks:
+            st.warning(_c)
+else:
+    st.success("✅ 請求前チェック：明らかな異常は見つかりませんでした。")
 
 # CSV生成
 header = {
