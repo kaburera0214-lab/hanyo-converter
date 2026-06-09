@@ -585,6 +585,33 @@ def replace_shipping_table(db_ids, client_name, rows, areas):
 # ============================================================
 # 単価マスタの読込・保存（クライアント別）
 # ============================================================
+def create_client(db_ids, name, ryaku, header):
+    """新規クライアントを クライアントマスタ に追加する。
+    既に同名があればRuntimeError。header: 取引先名称/件名/郵便番号/都道府県/
+    住所1/住所2/備考/振込先/自社担当者氏名 等の辞書。"""
+    name = str(name).strip()
+    if not name:
+        raise RuntimeError("クライアント名を入力してください。")
+    for row in _query_all(db_ids["請求_クライアントマスタ"]):
+        if _read_title(row["properties"].get("クライアント名")) == name:
+            raise RuntimeError(f"クライアント '{name}' は既に存在します。")
+    _client().pages.create(
+        parent={"database_id": db_ids["請求_クライアントマスタ"]},
+        properties={
+            "クライアント名": {"title": _title(name)},
+            "略号": {"rich_text": _rt(ryaku)},
+            "取引先名称": {"rich_text": _rt(header.get("取引先名称", ""))},
+            "郵便番号": {"rich_text": _rt(header.get("取引先郵便番号", ""))},
+            "都道府県": {"rich_text": _rt(header.get("取引先都道府県", ""))},
+            "住所1": {"rich_text": _rt(header.get("取引先住所1", ""))},
+            "住所2": {"rich_text": _rt(header.get("取引先住所2", ""))},
+            "件名": {"rich_text": _rt(header.get("件名", "物流業務委託費"))},
+            "備考": {"rich_text": _rt(header.get("備考", ""))},
+            "振込先": {"rich_text": _rt(header.get("振込先", ""))},
+            "自社担当者": {"rich_text": _rt(header.get("自社担当者氏名", ""))},
+        })
+
+
 def load_price_master(db_ids, client_name):
     """
     指定クライアントの単価マスタ全行を返す。

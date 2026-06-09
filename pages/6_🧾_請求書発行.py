@@ -108,6 +108,39 @@ with col3:
 client = clients[client_name]
 client_code = client.get("略号", "XX")
 
+# --- 新規クライアント追加 ---
+with st.expander("➕ 新規クライアントを追加", expanded=False):
+    if not notion_ready:
+        st.info("Notion未設定のため追加できません。")
+    else:
+        st.caption("基本情報を登録します。単価・送料方式・保管種別は登録後に"
+                   "「🛠 単価マスタ管理」等で設定してください。")
+        nc1, nc2 = st.columns(2)
+        nc_name = nc1.text_input("クライアント名（必須・一覧に表示）", key="newc_name")
+        nc_ryaku = nc2.text_input("略号（請求書番号に使用・例 TE）", key="newc_ryaku")
+        nc_corp = st.text_input("取引先名称（正式社名）", key="newc_corp")
+        nz1, nz2 = st.columns(2)
+        nc_zip = nz1.text_input("郵便番号", key="newc_zip")
+        nc_pref = nz2.text_input("都道府県", key="newc_pref")
+        nc_ad1 = st.text_input("住所1", key="newc_ad1")
+        nc_ad2 = st.text_input("住所2", key="newc_ad2")
+        nc_subj = st.text_input("件名", value="物流業務委託費", key="newc_subj")
+        nc_furi = st.text_area("振込先", key="newc_furi", height=70)
+        nc_biko = st.text_input("備考", key="newc_biko")
+        if st.button("➕ このクライアントを追加", key="newc_save", type="primary"):
+            try:
+                notion_store.create_client(
+                    db_ids, nc_name, nc_ryaku.strip(), {
+                        "取引先名称": nc_corp, "取引先郵便番号": nc_zip,
+                        "取引先都道府県": nc_pref, "取引先住所1": nc_ad1,
+                        "取引先住所2": nc_ad2, "件名": nc_subj,
+                        "振込先": nc_furi, "備考": nc_biko})
+                st.session_state.pop("invoice_clients_cache", None)
+                st.success(f"クライアント『{nc_name}』を追加しました。"
+                           "上のクライアント選択で切り替え、各マスタを設定してください。")
+            except Exception as e:
+                st.error(f"追加に失敗しました: {e}")
+
 # --- クライアント設定チェック（新規立ち上げ時の抜け漏れ防止） ---
 if notion_ready:
     _miss = []
