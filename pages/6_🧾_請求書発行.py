@@ -125,9 +125,10 @@ if notion_ready:
         _himoku = {r["費目"] for r in _pm_chk}
         _out = {str(r.get("出力品名", "")) for r in _pm_chk}
         for _need, _label in [("受注作業", "受注作業の単価"), ("出荷作業", "出荷作業の単価"),
-                              ("資材", "資材の単価"), ("送料", "送料の設定")]:
+                              ("資材", "資材の単価")]:
             if _need not in _himoku:
                 _miss.append(_label)
+        # 送料は単価マスタではなく送料方式で設定する（送料の費目チェックは不要）
         if not any("[汎用]作業料" in o for o in _out):
             _miss.append("[汎用]作業料の時給単価")
         _sm = notion_store.load_client_shipping_method(db_ids, client_name)
@@ -427,6 +428,7 @@ ne_df_full = None            # ①結合（送料明細の受注/伝票引き当
 detail_souryo = None         # 送料フル明細
 detail_shukka = None         # 出荷作業費フル明細
 detail_shizai = None         # 資材費明細（配送種別別）
+blocking_issues = []         # 価格に紐づかない等、確定をブロックする問題
 
 st.markdown("##### ①[NE]出荷確定 → 受注作業料")
 st.caption("出荷件数×受注作業単価で算出します。1000件単位で分割されている場合は複数選択OK。")
@@ -575,6 +577,7 @@ if order_files:
                 order_df, prod_df, ship_rates, issue_date)
             unmatched = pres["未マッチ商品数"]
             if unmatched:
+                blocking_issues.append(f"③商品マスタに無い商品が {unmatched} 件")
                 st.error(
                     f"⚠️ ③商品マスタに無い商品が {unmatched} 件あります。"
                     "③が最新でない可能性が高いです。"
@@ -595,10 +598,12 @@ if order_files:
                                   for k, v in pres["サイズ別PCS"].items()]),
                     use_container_width=True, hide_index=True)
             if pres["未登録明細"]:
-                st.warning(
-                    f"出荷作業料を計上できなかった商品が {len(pres['未登録明細'])} 件あります"
+                blocking_issues.append(
+                    f"出荷作業料の単価未登録サイズ {pres['単価未登録サイズ']}")
+                st.error(
+                    f"⛔ 出荷作業料を計上できなかった商品が {len(pres['未登録明細'])} 件あります"
                     f"（サイズ: {pres['単価未登録サイズ']}）。"
-                    "下記の商品について、③のサイズ設定または単価マスタを確認してください。")
+                    "③のサイズ設定または単価マスタ（出荷作業）を追加してください。")
                 st.dataframe(
                     pd.DataFrame(pres["未登録明細"]),
                     use_container_width=True, hide_index=True)
@@ -684,7 +689,11 @@ if ya_files:
                                   for k, v in res["種別別件数"].items()]),
                     use_container_width=True, hide_index=True)
             for w in res["警告"]:
-                st.warning(w)
+                if "未登録" in w or "引けなかった" in w:
+                    blocking_issues.append(w)
+                    st.error(f"⛔ {w}")
+                else:
+                    st.warning(w)
         except Exception as e:
             st.error(f"ヤマト運賃CSVの取込・算出に失敗しました: {e}")
 
@@ -940,9 +949,15 @@ _cflash = st.session_state.pop("invoice_confirm_flash", None)
 if _cflash:
     getattr(st, _cflash[0])(_cflash[1])
 
+# 価格に紐づかないデータがある場合は確定をブロック
+if blocking_issues:
+    st.error("⛔ 価格に紐づかないデータがあるため確定できません。"
+             "以下を解消してから確定してください：\n・" + "\n・".join(blocking_issues))
+
 # 確定ボタン：1クリックで「CSV＋内訳のDL／請求履歴保存／Driveバックアップ」を実行
 if st.button("📦 請求を確定（CSV・内訳をDL＋履歴保存＋Driveバックアップ）",
-             key="invoice_confirm", type="primary", use_container_width=True):
+             key="invoice_confirm", type="primary", use_container_width=True,
+             disabled=bool(blocking_issues)):
     msgs = []
     ok = True
     if notion_ready:
