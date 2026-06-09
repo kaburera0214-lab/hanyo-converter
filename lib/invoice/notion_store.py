@@ -612,6 +612,26 @@ def create_client(db_ids, name, ryaku, header):
         })
 
 
+def save_client_header(db_ids, client_name, ryaku, header):
+    """既存クライアントの基本情報（略号・取引先情報）を更新する。
+    クライアント名（タイトル）は変更しない。"""
+    info = load_client_shipping_method(db_ids, client_name)
+    if not info["page_id"]:
+        raise RuntimeError(f"クライアント '{client_name}' が見つかりません。")
+    _client().pages.update(page_id=info["page_id"], properties={
+        "略号": {"rich_text": _rt(ryaku)},
+        "取引先名称": {"rich_text": _rt(header.get("取引先名称", ""))},
+        "郵便番号": {"rich_text": _rt(header.get("取引先郵便番号", ""))},
+        "都道府県": {"rich_text": _rt(header.get("取引先都道府県", ""))},
+        "住所1": {"rich_text": _rt(header.get("取引先住所1", ""))},
+        "住所2": {"rich_text": _rt(header.get("取引先住所2", ""))},
+        "件名": {"rich_text": _rt(header.get("件名", ""))},
+        "備考": {"rich_text": _rt(header.get("備考", ""))},
+        "振込先": {"rich_text": _rt(header.get("振込先", ""))},
+        "自社担当者": {"rich_text": _rt(header.get("自社担当者氏名", ""))},
+    })
+
+
 def load_price_master(db_ids, client_name):
     """
     指定クライアントの単価マスタ全行を返す。

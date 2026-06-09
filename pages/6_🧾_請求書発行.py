@@ -141,6 +141,38 @@ with st.expander("➕ 新規クライアントを追加", expanded=False):
             except Exception as e:
                 st.error(f"追加に失敗しました: {e}")
 
+# --- クライアント情報の編集（選択中のクライアント） ---
+with st.expander(f"✏️ {client_name} の情報を編集", expanded=False):
+    if not notion_ready:
+        st.info("Notion未設定のため編集できません。")
+    else:
+        _eh = client.get("header", {})
+        st.caption("クライアント名は変更できません（履歴・マスタの紐付けキーのため）。")
+        ec_ryaku = st.text_input("略号", value=client.get("略号", ""), key="editc_ryaku")
+        ec_corp = st.text_input("取引先名称", value=_eh.get("取引先名称", ""), key="editc_corp")
+        ez1, ez2 = st.columns(2)
+        ec_zip = ez1.text_input("郵便番号", value=_eh.get("取引先郵便番号", ""), key="editc_zip")
+        ec_pref = ez2.text_input("都道府県", value=_eh.get("取引先都道府県", ""), key="editc_pref")
+        ec_ad1 = st.text_input("住所1", value=_eh.get("取引先住所1", ""), key="editc_ad1")
+        ec_ad2 = st.text_input("住所2", value=_eh.get("取引先住所2", ""), key="editc_ad2")
+        ec_subj = st.text_input("件名", value=_eh.get("件名", ""), key="editc_subj")
+        ec_staff = st.text_input("自社担当者氏名", value=_eh.get("自社担当者氏名", ""),
+                                 key="editc_staff")
+        ec_furi = st.text_area("振込先", value=_eh.get("振込先", ""), key="editc_furi", height=70)
+        ec_biko = st.text_input("備考", value=_eh.get("備考", ""), key="editc_biko")
+        if st.button("💾 この内容で更新", key="editc_save", type="primary"):
+            try:
+                notion_store.save_client_header(
+                    db_ids, client_name, ec_ryaku.strip(), {
+                        "取引先名称": ec_corp, "取引先郵便番号": ec_zip,
+                        "取引先都道府県": ec_pref, "取引先住所1": ec_ad1,
+                        "取引先住所2": ec_ad2, "件名": ec_subj,
+                        "自社担当者氏名": ec_staff, "振込先": ec_furi, "備考": ec_biko})
+                st.session_state.pop("invoice_clients_cache", None)
+                st.success(f"{client_name} の情報を更新しました。再読込で反映されます。")
+            except Exception as e:
+                st.error(f"更新に失敗しました: {e}")
+
 # --- クライアント設定チェック（新規立ち上げ時の抜け漏れ防止） ---
 if notion_ready:
     _miss = []
