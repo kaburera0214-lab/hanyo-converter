@@ -149,7 +149,7 @@ with col_reload:
     if st.button("🔄 最新の質問を読み込む"):
         st.rerun()
 with col_hide:
-    hide_done = st.checkbox("✅ 完了を非表示にする", value=False)
+    hide_done = st.checkbox("✅ 完了を非表示にする", value=True)
 
 # ステータス凡例
 st.caption(
