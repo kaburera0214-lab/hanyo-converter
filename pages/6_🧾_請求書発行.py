@@ -88,7 +88,7 @@ def get_clients():
 clients = get_clients()
 client_names = list(clients.keys())
 
-st.header("① クライアント・対象月")
+st.header("【1】クライアント・対象月")
 col1, col2, col3 = st.columns([2, 1, 1])
 with col1:
     _def_idx = client_names.index("Team-EC") if "Team-EC" in client_names else 0
@@ -112,7 +112,7 @@ client_code = client.get("略号", "XX")
 auto_no = invoice_number.generate_invoice_number(int(year), int(month), client_code)
 auto_dates = invoice_number.default_dates(int(year), int(month))
 
-st.header("② 請求書ヘッダ情報")
+st.header("【2】請求書ヘッダ情報")
 hcol1, hcol2, hcol3 = st.columns(3)
 with hcol1:
     inv_no = st.text_input("請求書番号", value=auto_no, key="invoice_no")
@@ -337,7 +337,7 @@ with st.expander("🛠 単価マスタ管理（クライアント別：送料・
             st.dataframe(am_df, use_container_width=True, hide_index=True)
             st.caption("※ 編集機能はPhase3で追加予定。現状は初期値（47都道府県→ヤマト地域）を使用します。")
 
-st.header("③ 保管料（2期制：15日・末日）")
+st.header("【3】保管料（2期制：15日・末日）")
 st.caption("数量の入力は左メニュー「保管カウント」ページで行います。ここは保存済みカウントの自動計算結果（表示のみ）です。")
 
 target_ym = f"{int(year)}-{int(month):02d}"
@@ -367,8 +367,9 @@ else:
 # ============================================================
 # 4. データ取込・自動算出（NE）
 # ============================================================
-st.header("④ データ取込・自動算出（NE）")
-st.caption("①NE出荷確定で受注作業料を、⑤ヤマト運賃で送料・出荷作業料・資材費を自動算出し、下の⑤費目に反映します。")
+st.header("【4】データ取込・自動算出")
+st.caption("①[NE]出荷確定で受注作業料を、②[NE]受注明細＋商品マスタで出荷作業料を、"
+           "③[ヤマト]運賃情報参照で送料・資材費を自動算出し、下の【5】費目に反映します。")
 
 # 受注作業の単価をマスタから取得
 juchu_unit = 0.0
@@ -395,7 +396,7 @@ detail_shukka = None         # 出荷作業費フル明細
 detail_shizai = None         # 資材費明細（配送種別別）
 
 ne_ship_files = st.file_uploader(
-    "①NE出荷確定CSVを選択（1000件単位で分割されている場合は複数選択OK）",
+    "①[NE]出荷確定 CSV（1000件単位で分割されている場合は複数選択OK）",
     type=["csv"], key="invoice_ne_ship_m", accept_multiple_files=True)
 if ne_ship_files:
     try:
@@ -424,10 +425,10 @@ if ne_ship_files:
     except Exception as e:
         st.error(f"NE出荷確定CSVの取込に失敗しました: {e}")
 
-# --- ②受注明細＋③商品マスタ → 出荷作業料（PCS×サイズ別単価） ---
-st.markdown("##### ②受注明細一覧 ＋ ③商品マスタ → 出荷作業料")
+# --- ②受注明細＋商品マスタ → 出荷作業料（PCS×サイズ別単価） ---
+st.markdown("##### ②[NE]受注明細一覧 → 出荷作業料")
 st.caption("出荷作業料はPCS（商品点数）×サイズ別単価で算出します。"
-           "②はクライアント別。③はNE共通の商品マスタで、Driveに保存して毎回のアップは不要です。")
+           "②はクライアント別。商品マスタはNE共通で、Driveに保存して毎回のアップは不要です。")
 
 drive_folder = st.secrets.get("INVOICE_GDRIVE_FOLDER_ID", "")
 
@@ -463,7 +464,7 @@ if prod_df is None and drive_folder:
     except Exception as e:
         st.caption(f"（Driveの③読込をスキップ: {e}）")
 
-with st.expander("③商品マスタの管理（毎回アップ不要・Drive保存）",
+with st.expander("商品マスタの管理（毎回アップ不要・Drive保存）",
                  expanded=(prod_df is None)):
     st.caption("商品マスタは汎用マスタ変換の master.csv と共有できます。"
                "master.csv に「項目1（サイズ）」列を含めて汎用側で更新すれば、"
@@ -496,7 +497,7 @@ with st.expander("③商品マスタの管理（毎回アップ不要・Drive保
     if not drive_folder:
         st.warning("Secretsに INVOICE_GDRIVE_FOLDER_ID が未設定のため、③をDrive保存できません"
                    "（今回のセッションのみ利用）。")
-    new_prod = st.file_uploader("③NEカスタム(商品マスタ)をアップロード／更新",
+    new_prod = st.file_uploader("商品マスタ(NEカスタム)をアップロード／更新",
                                 type=["csv"], key="invoice_prod_upload")
     if new_prod is not None:
         try:
@@ -516,7 +517,7 @@ with st.expander("③商品マスタの管理（毎回アップ不要・Drive保
             st.error(f"③の取込に失敗: {e}")
 
 order_files = st.file_uploader(
-    "②受注明細一覧CSV（複数選択OK）",
+    "②[NE]受注明細一覧 CSV（複数選択OK）",
     type=["csv"], key="invoice_ne_order_m", accept_multiple_files=True)
 if order_files:
     if prod_df is None:
@@ -569,29 +570,31 @@ if order_files:
         except Exception as e:
             st.error(f"出荷作業料の算出に失敗しました: {e}")
 
-# --- ④発行済データ（NE伝票番号⇔送り状の橋渡し。ネコポス精度に必須） ---
-st.markdown("##### ④ヤマト発行済データCSV（推奨：ネコポスの紐付け精度向上）")
-st.caption("ネコポスはNEの発送番号と実際の送り状がズレるため、④で正しく橋渡しします。"
-           "未アップロードでも動きますが、ネコポスの件数が過少になることがあります。")
-issued_files = st.file_uploader(
-    "④ヤマト発行済データCSVを選択（複数選択OK）",
-    type=["csv"], key="invoice_ya_issued_m", accept_multiple_files=True)
-if issued_files:
-    try:
-        issued_df, _ierrs = csv_import.load_concat(issued_files, yamato_calc.load_issued)
-        for _nm, _er in _ierrs:
-            st.error(f"『{_nm}』の読込に失敗: {_er}")
-        if issued_df is not None:
-            st.caption(f"④発行済データ {len(issued_df):,}件を読み込みました。")
-    except Exception as e:
-        st.error(f"④発行済データの取込に失敗しました: {e}")
+# --- ④ヤマト発行済データ（橋渡し用）。現状は不要なため非表示。
+#     必要になったら SHOW_ISSUED = True にすると再表示される。 ---
+SHOW_ISSUED = False
+if SHOW_ISSUED:
+    st.markdown("##### [ヤマト]発行済データCSV（ネコポスの紐付け精度向上）")
+    st.caption("ネコポスはNEの発送番号と実際の送り状がズレるため、発行済データで橋渡しします。")
+    issued_files = st.file_uploader(
+        "[ヤマト]発行済データCSV（複数選択OK）",
+        type=["csv"], key="invoice_ya_issued_m", accept_multiple_files=True)
+    if issued_files:
+        try:
+            issued_df, _ierrs = csv_import.load_concat(issued_files, yamato_calc.load_issued)
+            for _nm, _er in _ierrs:
+                st.error(f"『{_nm}』の読込に失敗: {_er}")
+            if issued_df is not None:
+                st.caption(f"発行済データ {len(issued_df):,}件を読み込みました。")
+        except Exception as e:
+            st.error(f"発行済データの取込に失敗しました: {e}")
 
-# --- ⑤ヤマト運賃（全件）→ 送料・出荷作業料・資材費 ---
-st.markdown("##### ⑤ヤマト運賃CSV（全クライアント混在のままでOK）")
-st.caption("①（＋④）でこのクライアント分だけ絞り込み、サイズ別に出荷作業料・資材費・送料を算出します。"
-           "先に①NE出荷確定を取り込んでください。")
+# --- ③ヤマト運賃（全件）→ 送料・資材費 ---
+st.markdown("##### ③[ヤマト]運賃情報参照CSV（全クライアント混在のままでOK）")
+st.caption("①でこのクライアント分だけ絞り込み、サイズ別に資材費・送料を算出します。"
+           "先に①[NE]出荷確定を取り込んでください。")
 ya_files = st.file_uploader(
-    "⑤ヤマト運賃情報参照CSVを選択（複数選択OK）",
+    "③[ヤマト]運賃情報参照 CSV（複数選択OK）",
     type=["csv"], key="invoice_ya_freight_m", accept_multiple_files=True)
 if ya_files:
     if not soufuda_set:
@@ -608,10 +611,8 @@ if ya_files:
             client_keys = yamato_calc.build_client_soufuda(
                 soufuda_set, ne_denpyo_set, issued_df)
             matched, n_match, n_all = yamato_calc.filter_by_soufuda(fr_df, client_keys)
-            bridge_note = "（①＋④で紐付け）" if issued_df is not None else "（①のみ。④未取込）"
+            bridge_note = "（①＋発行済で紐付け）" if issued_df is not None else "（①で紐付け）"
             st.info(f"ヤマト運賃 全{n_all:,}件中、このクライアント分 {n_match:,}件を抽出 {bridge_note}。")
-            if issued_df is None:
-                st.warning("④発行済データが未取込のため、ネコポスの件数が過少になる可能性があります。")
             # マスタ取得
             pm = notion_store.load_price_master(db_ids, client_name)
             ship_rates = {r["種別"]: r["単価"] for r in pm if r["費目"] == "出荷作業"}
@@ -656,7 +657,7 @@ if ya_files:
 # ============================================================
 # 5. イレギュラー・その他費目（手入力＋自動算出の反映）
 # ============================================================
-st.header("⑤ その他費目（送料・作業料・値引き等）")
+st.header("【5】その他費目（送料・作業料・値引き等）")
 st.caption("自動算出された値は反映済みです。未対応の費目（送料・出荷作業・資材）は当面手入力してください。")
 
 # 受注作業料は自動算出があれば 単価=受注作業単価・数量=出荷件数 をプリフィル
@@ -714,7 +715,7 @@ other_edited = st.data_editor(
 # ============================================================
 # 5. 品目を組み立ててプレビュー＆CSV出力
 # ============================================================
-st.header("⑥ 請求内容の確認とCSV出力")
+st.header("【6】請求内容の確認とCSV出力")
 
 items = []
 # 保管料（出力品名ごとに1行、数量1・単価=合計金額）
@@ -878,7 +879,7 @@ with st.expander("Googleドライブにバックアップ保存（任意）", ex
 # ============================================================
 # 6. Notionへ履歴保存（請求書・見積のスナップショット＋保管内訳）
 # ============================================================
-st.header("⑦ 履歴保存（Notion）")
+st.header("【7】履歴保存（Notion）")
 if not notion_ready:
     st.info("Notion未設定のため履歴保存は無効です。Secretsに INVOICE_NOTION_PARENT_PAGE_ID を設定すると有効になります。")
 else:
