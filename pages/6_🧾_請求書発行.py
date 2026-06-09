@@ -233,15 +233,17 @@ with st.expander("🛠 単価マスタ管理（クライアント別：送料・
     if not notion_ready:
         st.info("Notion未設定のため編集できません。Secretsに INVOICE_NOTION_PARENT_PAGE_ID を設定してください。")
     else:
-        st.caption("費目ごとの単価を編集できます。出荷作業・資材は配送種別(nekop/60/80/100/120/140/160)ごと、"
-                   "送料はマージン率(%)・加算額で設定します。保存するとNotionの単価マスタを更新します。")
+        st.caption("費目ごとの単価を編集できます。その他は『課金区分』で 月額定額／単発 を指定でき、"
+                   "月額定額は請求時に自動計上、単発はプロンプトで拾います。"
+                   "期間限定は有効開始/終了（例 2026-10）で対象月の単価を切替えます。")
         try:
             pm_rows = notion_store.load_price_master(db_ids, client_name)
         except Exception as e:
             pm_rows = []
             st.error(f"単価マスタ読込に失敗: {e}")
         pm_df = pd.DataFrame(pm_rows, columns=[
-            "費目", "種別", "単価", "出力品名", "マージン率", "加算額", "備考"])
+            "費目", "種別", "単価", "出力品名", "マージン率", "加算額",
+            "課金区分", "有効開始", "有効終了", "備考"])
         pm_edited = st.data_editor(
             pm_df,
             num_rows="dynamic",
@@ -255,6 +257,11 @@ with st.expander("🛠 単価マスタ管理（クライアント別：送料・
                 "出力品名": st.column_config.TextColumn("出力品名（MF品目名）"),
                 "マージン率": st.column_config.NumberColumn("マージン率(%)", step=1),
                 "加算額": st.column_config.NumberColumn("加算額", step=1),
+                "課金区分": st.column_config.SelectboxColumn(
+                    "課金区分", options=["通常", "月額定額", "単発"],
+                    help="その他費目: 月額定額=自動計上 / 単発=プロンプトで確認"),
+                "有効開始": st.column_config.TextColumn("有効開始(YYYY-MM)"),
+                "有効終了": st.column_config.TextColumn("有効終了(YYYY-MM)"),
                 "備考": st.column_config.TextColumn("備考"),
             },
         )
@@ -786,15 +793,60 @@ if _hanyo_hours > 0:
 else:
     _hanyo_row = {"品名": "[汎用]作業料", "単価": 0, "数量": 1}
 
-other_default = pd.DataFrame([
-    _auto_row("送料", auto_souryo),
-    _auto_row("出荷作業料", auto_shukka),
-    _auto_row("資材費", auto_shizai),
-    _juchu_row,
-    _hanyo_row,
-    {"品名": "その他", "単価": 0, "数量": 1},
-    {"品名": "値引き", "単価": 0, "数量": 1},
-])
+# その他費目：月額定額（自動計上）＋単発（プロンプトで確認）
+def _ym_valid(start, end, ym):
+    """有効開始/終了(YYYY-MM)が対象月ymを含むか。空欄は無制限。"""
+    s = str(start or "").strip()
+    e = str(end or "").strip()
+    if s and ym < s:
+        return False
+    if e and ym > e:
+        return False
+    return True
+
+_recurring = []   # 月額定額（自動計上）
+_spot_master = []  # 単発候補
+if notion_ready:
+    try:
+        for r in notion_store.load_price_master(db_ids, client_name):
+            if r["費目"] != "その他":
+                continue
+            if "[汎用]作業料" in str(r.get("出力品名", "")):
+                continue
+            kubun = r.get("課金区分", "通常")
+            name = r.get("出力品名") or r.get("種別") or "その他"
+            if kubun == "月額定額":
+                if _ym_valid(r.get("有効開始"), r.get("有効終了"), target_ym):
+                    _recurring.append({"品名": name, "単価": float(r["単価"] or 0), "数量": 1})
+            elif kubun == "単発":
+                _spot_master.append({"品名": name, "単価": float(r["単価"] or 0)})
+    except Exception:
+        pass
+
+# 単発作業の確認プロンプト
+_spot_rows = []
+if _spot_master:
+    with st.expander("💡 今月、単発作業はありましたか？（あれば数量を入力）", expanded=True):
+        st.caption("単発の作業（シール貼替・化粧箱入替など）。数量を入れた分だけ請求に計上されます。")
+        for _i, _sp in enumerate(_spot_master):
+            _q = st.number_input(
+                f"{_sp['品名']}（@{_sp['単価']:,.0f}円）", min_value=0, step=1, value=0,
+                key=f"invoice_spot_{client_name}_{_i}")
+            if _q > 0:
+                _spot_rows.append({"品名": _sp["品名"], "単価": _sp["単価"], "数量": _q})
+
+if _recurring:
+    st.caption("月額定額（自動計上）: "
+               + "／".join(f"{r['品名']} {int(r['単価']):,}円" for r in _recurring))
+
+other_default = pd.DataFrame(
+    [_auto_row("送料", auto_souryo),
+     _auto_row("出荷作業料", auto_shukka),
+     _auto_row("資材費", auto_shizai),
+     _juchu_row, _hanyo_row]
+    + _recurring + _spot_rows
+    + [{"品名": "その他", "単価": 0, "数量": 1},
+       {"品名": "値引き", "単価": 0, "数量": 1}])
 other_edited = st.data_editor(
     other_default,
     num_rows="dynamic",

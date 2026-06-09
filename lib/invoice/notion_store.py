@@ -55,6 +55,14 @@ DB_SCHEMAS = {
         "マージン率": {"number": {}},
         "加算額": {"number": {}},
         "備考": {"rich_text": {}},
+        # その他費目の課金区分・有効期間（月額定額/単発/期間限定）
+        "課金区分": {"select": {"options": [
+            {"name": "通常", "color": "default"},
+            {"name": "月額定額", "color": "blue"},
+            {"name": "単発", "color": "orange"},
+        ]}},
+        "有効開始": {"rich_text": {}},
+        "有効終了": {"rich_text": {}},
     },
     "請求_保管内訳履歴": {
         "レコード名": {"title": {}},
@@ -650,6 +658,9 @@ def load_price_master(db_ids, client_name):
             "マージン率": _read_num(p.get("マージン率")),
             "加算額": _read_num(p.get("加算額")),
             "備考": _read_rt(p.get("備考")),
+            "課金区分": _read_select(p.get("課金区分")) or "通常",
+            "有効開始": _read_rt(p.get("有効開始")),
+            "有効終了": _read_rt(p.get("有効終了")),
         })
     return rows
 
@@ -689,6 +700,11 @@ def replace_price_master(db_ids, client_name, rows):
         addon = r.get("加算額")
         if addon is not None and str(addon) != "":
             props["加算額"] = {"number": float(addon)}
+        kubun = str(r.get("課金区分", "") or "").strip()
+        if kubun:
+            props["課金区分"] = {"select": {"name": kubun}}
+        props["有効開始"] = {"rich_text": _rt(r.get("有効開始", ""))}
+        props["有効終了"] = {"rich_text": _rt(r.get("有効終了", ""))}
         client.pages.create(parent={"database_id": db}, properties=props)
         saved += 1
     return saved
