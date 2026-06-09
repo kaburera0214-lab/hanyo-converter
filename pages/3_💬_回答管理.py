@@ -144,8 +144,18 @@ for i in range(1, 11):
     if name and pw:
         PASSWORDS[pw] = name
 
-if st.button("🔄 最新の質問を読み込む"):
-    st.rerun()
+col_reload, col_hide = st.columns([1, 2])
+with col_reload:
+    if st.button("🔄 最新の質問を読み込む"):
+        st.rerun()
+with col_hide:
+    hide_done = st.checkbox("✅ 完了を非表示にする", value=False)
+
+# ステータス凡例
+st.caption(
+    "🔴 未回答　／　🔵 ドラフト生成済　／　🟠 回答済（インハナ確認待ち）　／　"
+    "🟢 完了　／　🟡 編集中（インハナ編集中）　／　🟣 再質問"
+)
 
 questions = get_questions()
 
@@ -207,6 +217,10 @@ if search_submitted:
         filtered = [q for q in filtered if in_range(q)]
 
 display_questions = filtered if is_filtered else questions
+
+# 完了を非表示
+if hide_done:
+    display_questions = [q for q in display_questions if q["ステータス"] != "完了"]
 
 if is_filtered:
     st.caption(f"検索結果：{len(filtered)}件 / 全{len(questions)}件")
