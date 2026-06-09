@@ -32,6 +32,14 @@ def ensure_properties():
                 updates[prop] = {"rich_text": {}}
         if updates:
             client.databases.update(database_id=DATABASE_ID, properties=updates)
+        # ステータスに「完了」選択肢を追加
+        status_opts = db["properties"].get("ステータス", {}).get("select", {}).get("options", [])
+        names = [o["name"] for o in status_opts]
+        if "完了" not in names:
+            client.databases.update(
+                database_id=DATABASE_ID,
+                properties={"ステータス": {"select": {"options": status_opts + [{"name": "完了", "color": "green"}]}}}
+            )
     except Exception:
         pass
 
@@ -206,7 +214,7 @@ if is_filtered:
 if not display_questions:
     st.info("該当する質問がありません" if is_filtered else "質問がまだありません")
 else:
-    STATUS_EMOJI = {"未回答": "🔴", "ドラフト生成済": "🔵", "回答済": "🟢", "編集中": "🟡", "再質問": "🟠"}
+    STATUS_EMOJI = {"未回答": "🔴", "ドラフト生成済": "🔵", "回答済": "🟠", "完了": "🟢", "編集中": "🟡", "再質問": "🟣"}
     for q in display_questions:
         is_editing = q["ステータス"] == "編集中"
         emoji = STATUS_EMOJI.get(q["ステータス"], "⚪")
@@ -333,7 +341,8 @@ else:
                         st.success("送信しました！")
                         st.rerun()
 
-            elif q["ステータス"] == "回答済":
+            elif q["ステータス"] in ("回答済", "完了"):
+                is_done = q["ステータス"] == "完了"
                 answer_text = q["回答本文"]
                 answer_height = max(150, answer_text.count("\n") * 22 + 100)
 
@@ -350,12 +359,15 @@ else:
                     else:
                         st.markdown("**回答内容：**")
                         st.text_area("", value=answer_text, height=answer_height, key=f"view_{q['id']}", label_visibility="collapsed")
-                    st.success("回答済み")
+                    if is_done:
+                        st.success("✅ 完了")
+                    else:
+                        st.info("🟠 回答済み（インハナさんの確認待ち）")
                     if q["判断理由カテゴリ"]:
                         st.markdown(f"**判断理由：** {', '.join(q['判断理由カテゴリ'])}")
                     if q["判断理由詳細"]:
                         st.markdown(f"**詳細：** {q['判断理由詳細']}")
-                    col_btn1, col_btn2 = st.columns(2)
+                    col_btn1, col_btn2, col_btn3 = st.columns(3)
                     with col_btn1:
                         if st.button("✏️ 回答を修正する", key=f"start_edit_ans_{q['id']}"):
                             st.session_state[edit_key] = "auth"
@@ -364,6 +376,22 @@ else:
                         if st.button("💬 追加質問する", key=f"start_followup_{q['id']}"):
                             st.session_state[edit_key] = "followup"
                             st.rerun()
+                    with col_btn3:
+                        if is_done:
+                            if st.button("↩️ 完了を取り消す", key=f"undone_{q['id']}"):
+                                Client(auth=NOTION_API_KEY).pages.update(
+                                    page_id=q["id"],
+                                    properties={"ステータス": {"select": {"name": "回答済"}}}
+                                )
+                                st.rerun()
+                        else:
+                            if st.button("✅ 完了にする", key=f"done_{q['id']}", type="primary"):
+                                Client(auth=NOTION_API_KEY).pages.update(
+                                    page_id=q["id"],
+                                    properties={"ステータス": {"select": {"name": "完了"}}}
+                                )
+                                st.success("完了にしました。")
+                                st.rerun()
                     if q["編集履歴"]:
                         with st.expander("📋 編集履歴"):
                             st.text(q["編集履歴"])
