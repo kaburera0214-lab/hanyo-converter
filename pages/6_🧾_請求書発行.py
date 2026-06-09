@@ -395,8 +395,10 @@ detail_souryo = None         # 送料フル明細
 detail_shukka = None         # 出荷作業費フル明細
 detail_shizai = None         # 資材費明細（配送種別別）
 
+st.markdown("##### ①[NE]出荷確定 → 受注作業料")
+st.caption("出荷件数×受注作業単価で算出します。1000件単位で分割されている場合は複数選択OK。")
 ne_ship_files = st.file_uploader(
-    "①[NE]出荷確定 CSV（1000件単位で分割されている場合は複数選択OK）",
+    "①[NE]出荷確定 CSV（複数選択OK）",
     type=["csv"], key="invoice_ne_ship_m", accept_multiple_files=True)
 if ne_ship_files:
     try:
@@ -416,7 +418,7 @@ if ne_ship_files:
         c2.metric("受注作業 単価", f"{juchu_unit:,.0f} 円")
         auto_juchu_amount = round(auto_ship_count * juchu_unit)
         st.success(f"受注作業料 ＝ {auto_ship_count:,}件 × {juchu_unit:,.0f}円 "
-                   f"＝ {auto_juchu_amount:,}円（⑤の受注作業料に反映）")
+                   f"＝ {auto_juchu_amount:,}円（【5】の受注作業料に反映）")
         with st.expander("発送方法別の内訳（参考）", expanded=False):
             md = summary["発送方法別"]
             st.dataframe(
@@ -553,7 +555,7 @@ if order_files:
                     st.write(bad)
             auto_shukka = pres["出荷作業料"]
             st.success(f"出荷作業料 ＝ {auto_shukka:,}円（PCS合計 "
-                       f"{sum(pres['サイズ別PCS'].values()):,}）（⑤に反映）")
+                       f"{sum(pres['サイズ別PCS'].values()):,}）（【5】の出荷作業料に反映）")
             with st.expander("サイズ別PCS（参考）", expanded=False):
                 st.dataframe(
                     pd.DataFrame([{"サイズ": k, "PCS": v}
@@ -611,7 +613,7 @@ if ya_files:
             client_keys = yamato_calc.build_client_soufuda(
                 soufuda_set, ne_denpyo_set, issued_df)
             matched, n_match, n_all = yamato_calc.filter_by_soufuda(fr_df, client_keys)
-            bridge_note = "（①＋発行済で紐付け）" if issued_df is not None else "（①で紐付け）"
+            bridge_note = "（①[NE]出荷確定＋発行済で紐付け）" if issued_df is not None else "（①[NE]出荷確定で紐付け）"
             st.info(f"ヤマト運賃 全{n_all:,}件中、このクライアント分 {n_match:,}件を抽出 {bridge_note}。")
             # マスタ取得
             pm = notion_store.load_price_master(db_ids, client_name)
@@ -771,29 +773,20 @@ header = {
     "振込先": st.session_state.get("invoice_furikomi", ""),
 }
 
-st.subheader("CSVダウンロード")
-enc_label = st.radio("文字コード", ["UTF-8(BOM付き)", "Shift-JIS(cp932)"],
+import io as _io
+import zipfile as _zip
+from lib.invoice import excel_export
+
+# --- MFクラウド取込用CSV ---
+enc_label = st.radio("文字コード（MF CSV）", ["UTF-8(BOM付き)", "Shift-JIS(cp932)"],
                      horizontal=True, key="invoice_enc")
 encoding = "cp932" if enc_label.startswith("Shift") else "utf-8-sig"
 csv_bytes = mf_export.to_csv_bytes(header, items, encoding=encoding)
-filename = f"MF請求書_{client_name}_{inv_no}.csv"
+csv_name = f"MF請求書_{client_name}_{inv_no}.csv"
 
-st.download_button(
-    "MFクラウド取込用CSVをダウンロード",
-    data=csv_bytes,
-    file_name=filename,
-    mime="text/csv",
-    key="invoice_download",
-)
-
-# --- 内訳明細書（Excelマルチシート・フル明細） ---
-st.subheader("内訳明細書（Excel）")
-st.caption("先方送付用の内訳をExcelで出力します（サマリ＋費目別シート）。"
-           "送料・出荷・資材の明細は、上の④で①②③⑤を取り込んでいる時のみ含まれます。")
-from lib.invoice import excel_export
-
-# 保管費明細（保管カウントから）
+# --- 内訳明細書（Excel）の組み立て ---
 _stk_detail = None
+_irr_detail = None
 if notion_ready:
     try:
         _counts = notion_store.load_storage_counts(db_ids, client_name, target_ym)
@@ -805,13 +798,6 @@ if notion_ready:
              "小計": round(float(r["数量"] or 0) * float(_mp.get(r["種別"], 0) or 0)),
              "備考": r["備考"]} for r in _counts],
             columns=["カウント日", "種別", "エリア", "ロケーション", "数量", "単価", "小計", "備考"])
-    except Exception:
-        pass
-
-# 汎用作業費明細（イレギュラー作業から）
-_irr_detail = None
-if notion_ready:
-    try:
         _irr = notion_store.load_irregular_work(db_ids, client_name, target_ym)
         _irr_detail = pd.DataFrame([
             {"日付": r["日付"], "時間数": r["時間数"], "人数": r["人数"],
@@ -821,86 +807,110 @@ if notion_ready:
     except Exception:
         pass
 
-# その他明細（手入力費目のうち自動算出以外）
 _auto_names = {"送料", "出荷作業料", "資材費", "受注作業料", "[汎用]作業料"}
 _other_detail = pd.DataFrame(
-    [{"品名": str(r.get("品名", "")).strip(), "単価": r.get("単価"),
-      "数量": r.get("数量"),
+    [{"品名": str(r.get("品名", "")).strip(), "単価": r.get("単価"), "数量": r.get("数量"),
       "金額": round(float(r.get("単価") or 0) * float(r.get("数量") or 0))}
      for _, r in other_edited.iterrows()
      if str(r.get("品名", "")).strip() and str(r.get("品名", "")).strip() not in _auto_names],
     columns=["品名", "単価", "数量", "金額"])
 
-# サマリ（MF品目＝費目別合計）
 summary_rows = [{"費目": it["品名"], "金額": int(it["金額"])} for it in items]
 detail_sheets = [
-    ("保管費", _stk_detail, "小計"),
-    ("送料", detail_souryo, "金額"),
-    ("出荷作業費", detail_shukka, "計"),
-    ("資材費", detail_shizai, "資材費"),
-    ("汎用作業費", _irr_detail, None),
-    ("その他", _other_detail, "金額"),
+    ("保管費", _stk_detail, "小計"), ("送料", detail_souryo, "金額"),
+    ("出荷作業費", detail_shukka, "計"), ("資材費", detail_shizai, "資材費"),
+    ("汎用作業費", _irr_detail, None), ("その他", _other_detail, "金額"),
 ]
 try:
     xlsx_bytes = excel_export.build_breakdown_excel(summary_rows, detail_sheets)
-    st.download_button(
-        "📊 内訳明細書（Excel）をダウンロード",
-        data=xlsx_bytes,
-        file_name=f"内訳明細_{client_name}_{inv_no}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key="invoice_xlsx",
-        type="primary",
-    )
-    _missing = [n for n, d, _ in detail_sheets if d is None or len(d) == 0]
-    if _missing:
-        st.caption(f"（明細が空のシート: {', '.join(_missing)}）")
 except Exception as e:
+    xlsx_bytes = None
     st.error(f"内訳Excelの生成に失敗しました: {e}")
+xlsx_name = f"内訳明細_{client_name}_{inv_no}.xlsx"
 
-# 任意：Driveバックアップ
-with st.expander("Googleドライブにバックアップ保存（任意）", expanded=False):
-    folder_id = st.text_input(
-        "保存先フォルダID（請求書専用フォルダを指定）",
-        value=st.secrets.get("INVOICE_GDRIVE_FOLDER_ID", ""),
-        key="invoice_drive_folder",
-        help="Secretsに INVOICE_GDRIVE_FOLDER_ID を設定すると自動入力されます。",
-    )
-    if st.button("Driveへバックアップ", key="invoice_drive_btn"):
-        if not folder_id:
-            st.error("保存先フォルダIDを入力してください。")
-        else:
-            try:
-                fid = store.backup_to_drive(csv_bytes, filename, folder_id)
-                st.success(f"Driveへ保存しました（ファイルID: {fid}）")
-            except Exception as e:
-                st.error(f"Drive保存に失敗しました: {e}")
+# --- アップロード元ファイル（①②③）を収集 ---
+_src_files = []
+for _label, _flist in (("①", ne_ship_files), ("②", order_files), ("③", ya_files)):
+    for _f in (_flist or []):
+        _src_files.append((f"元データ/{_label}_{_f.name}", _f.getvalue()))
+
+# --- 一式ZIPの組み立て ---
+_zbuf = _io.BytesIO()
+with _zip.ZipFile(_zbuf, "w", _zip.ZIP_DEFLATED) as _z:
+    _z.writestr(csv_name, csv_bytes)
+    if xlsx_bytes:
+        _z.writestr(xlsx_name, xlsx_bytes)
+    for _n, _b in _src_files:
+        _z.writestr(_n, _b)
+zip_bytes = _zbuf.getvalue()
+
+drive_folder = st.secrets.get("INVOICE_GDRIVE_FOLDER_ID", "")
+_XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
-# ============================================================
-# 6. Notionへ履歴保存（請求書・見積のスナップショット＋保管内訳）
-# ============================================================
-st.header("【7】履歴保存（Notion）")
+def _do_backup():
+    """ボタン押下時にDriveへ一括バックアップ（MF CSV・内訳・①②③元ファイル）。"""
+    if not drive_folder:
+        st.session_state["invoice_backup_flash"] = (
+            "warning", "INVOICE_GDRIVE_FOLDER_ID未設定のためDriveバックアップはスキップしました。")
+        return
+    try:
+        sub = drive_master.get_or_create_folder(f"{inv_no}_{client_name}", drive_folder)
+        drive_master.upload_bytes(csv_bytes, csv_name, sub, "text/csv")
+        if xlsx_bytes:
+            drive_master.upload_bytes(xlsx_bytes, xlsx_name, sub, _XLSX_MIME)
+        for _n, _b in _src_files:
+            drive_master.upload_bytes(_b, _n.split("/")[-1], sub, "text/csv")
+        st.session_state["invoice_backup_flash"] = (
+            "success", f"Driveにバックアップしました（フォルダ: {inv_no}_{client_name}・"
+                       f"{2 + len(_src_files)}ファイル）。")
+    except Exception as e:
+        st.session_state["invoice_backup_flash"] = ("error", f"Driveバックアップに失敗: {e}")
+
+
+st.subheader("ダウンロード・保存")
+_flash = st.session_state.pop("invoice_backup_flash", None)
+if _flash:
+    getattr(st, _flash[0])(_flash[1])
+_missing = [n for n, d, _ in detail_sheets if d is None or len(d) == 0]
+if _missing:
+    st.caption(f"（内訳で明細が空のシート: {', '.join(_missing)}　※①②③を取り込むと埋まります）")
+
+b1, b2, b3 = st.columns(3)
+with b1:
+    st.download_button(
+        "📦 請求書一式（DL＋Driveバックアップ）",
+        data=zip_bytes, file_name=f"請求書一式_{client_name}_{inv_no}.zip",
+        mime="application/zip", key="invoice_zip_dl",
+        on_click=_do_backup, type="primary", use_container_width=True)
+    st.caption("MF CSV＋内訳Excel＋①②③元ファイルをZIPでDL／押下時にDriveへ自動保存")
+
+
+def _do_save(kind):
+    try:
+        notion_store.save_issue_history(
+            db_ids, invoice_no=inv_no, client_name=client_name,
+            target_ym=target_ym, kind=kind, issue_date=issue_date,
+            due_date=due_date, subtotal=subtotal, tax=tax, total=total, items=items)
+        st.session_state["invoice_save_flash"] = (
+            "success", f"{kind}として履歴に保存しました（{inv_no} / {target_ym}）。")
+    except Exception as e:
+        st.session_state["invoice_save_flash"] = ("error", f"履歴保存に失敗しました: {e}")
+
+
+with b2:
+    if st.button("💾 請求書として履歴に保存", key="invoice_save_bill",
+                 type="primary", use_container_width=True, disabled=not notion_ready):
+        _do_save("請求")
+        st.rerun()
+with b3:
+    if st.button("📝 見積として履歴に保存", key="invoice_save_quote",
+                 type="primary", use_container_width=True, disabled=not notion_ready):
+        _do_save("見積")
+        st.rerun()
+
+_sflash = st.session_state.pop("invoice_save_flash", None)
+if _sflash:
+    getattr(st, _sflash[0])(_sflash[1])
 if not notion_ready:
-    st.info("Notion未設定のため履歴保存は無効です。Secretsに INVOICE_NOTION_PARENT_PAGE_ID を設定すると有効になります。")
-else:
-    st.caption("発行時点の内容をそのまま記録します。後でマスタ単価を変えても、この履歴は当時の内容のまま残ります。")
-    scol1, scol2 = st.columns(2)
-
-    def _do_save(kind):
-        try:
-            notion_store.save_issue_history(
-                db_ids, invoice_no=inv_no, client_name=client_name,
-                target_ym=target_ym, kind=kind, issue_date=issue_date,
-                due_date=due_date, subtotal=subtotal, tax=tax, total=total,
-                items=items)
-            # 保管カウントは専用ページが管理するため、ここでは再保存しない
-            st.success(f"{kind}として履歴に保存しました（{inv_no} / {target_ym}）。")
-        except Exception as e:
-            st.error(f"履歴保存に失敗しました: {e}")
-
-    with scol1:
-        if st.button("💾 請求書として履歴に保存", key="invoice_save_bill", type="primary"):
-            _do_save("請求")
-    with scol2:
-        if st.button("📝 見積として履歴に保存", key="invoice_save_quote"):
-            _do_save("見積")
+    st.caption("※ 履歴保存はNotion設定時のみ有効です。")
