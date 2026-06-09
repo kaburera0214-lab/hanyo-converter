@@ -837,27 +837,25 @@ _XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 st.subheader("ダウンロード・確定")
 
-# 作業用リンク（クライアント別）
-_upload_link = client["header"].get("アップロードリンク", "")
+# 作業用リンク（CSVアップロード元＝MF共通／内訳格納先＝クライアント別）
+_mf_upload_url = st.secrets.get("MF_UPLOAD_URL", "https://invoice.moneyforward.com/billings")
 _breakdown_link = client["header"].get("内訳格納リンク", "")
 lk1, lk2 = st.columns(2)
 with lk1:
-    if _upload_link:
-        st.link_button("🔗 CSVアップロード元を開く", _upload_link, use_container_width=True)
-    else:
-        st.caption("CSVアップロード用リンク未設定")
+    st.link_button("🔗 MF請求書のCSVアップロード元を開く", _mf_upload_url,
+                   use_container_width=True)
 with lk2:
     if _breakdown_link:
         st.link_button(f"🔗 内訳明細の格納先を開く（{client_name}）", _breakdown_link,
                        use_container_width=True)
     else:
-        st.caption("内訳明細の格納先リンク未設定")
-with st.expander("作業用リンクの設定（クライアント別）", expanded=False):
-    _u = st.text_input("CSVアップロード元リンク", value=_upload_link, key="invoice_link_up")
-    _b = st.text_input("内訳明細の格納先リンク", value=_breakdown_link, key="invoice_link_bd")
+        st.caption("内訳明細の格納先リンク未設定（下で設定）")
+with st.expander("内訳明細の格納先リンク設定（クライアント別）", expanded=False):
+    _b = st.text_input("内訳明細の格納先リンク（このクライアント用）",
+                       value=_breakdown_link, key="invoice_link_bd")
     if st.button("💾 リンクを保存", key="invoice_link_save", disabled=not notion_ready):
         try:
-            notion_store.save_client_links(db_ids, client_name, _u.strip(), _b.strip())
+            notion_store.save_client_links(db_ids, client_name, "", _b.strip())
             st.session_state.pop("invoice_clients_cache", None)
             st.success("リンクを保存しました。再読込で反映されます。")
         except Exception as e:
@@ -867,27 +865,15 @@ _missing = [n for n, d, _ in detail_sheets if d is None or len(d) == 0]
 if _missing:
     st.caption(f"（内訳で明細が空のシート: {', '.join(_missing)}　※①②③を取り込むと埋まります）")
 
-# 2ファイルを個別ダウンロード（ZIPなし）
-d1, d2 = st.columns(2)
-with d1:
-    st.download_button("⬇️ MF請求書CSV", data=csv_bytes, file_name=csv_name,
-                       mime="text/csv", key="invoice_dl_csv", use_container_width=True)
-with d2:
-    st.download_button("⬇️ 内訳明細書（Excel）",
-                       data=(xlsx_bytes or b""), file_name=xlsx_name, mime=_XLSX_MIME,
-                       key="invoice_dl_xlsx", use_container_width=True,
-                       disabled=(xlsx_bytes is None))
-
 _cflash = st.session_state.pop("invoice_confirm_flash", None)
 if _cflash:
     getattr(st, _cflash[0])(_cflash[1])
 
-# 確定ボタン：Driveバックアップ（日時付きフォルダ）＋請求履歴を自動保存
-if st.button("📦 請求を確定（Driveバックアップ＋履歴保存）", key="invoice_confirm",
+# 確定ボタン：請求履歴保存＋Driveバックアップ。確定後にDLボタンが出る。
+if st.button("📦 請求を確定（履歴保存＋Driveバックアップ）", key="invoice_confirm",
              type="primary", use_container_width=True):
     msgs = []
     ok = True
-    # 履歴保存（請求）
     if notion_ready:
         try:
             notion_store.save_issue_history(
@@ -898,7 +884,6 @@ if st.button("📦 請求を確定（Driveバックアップ＋履歴保存）",
         except Exception as e:
             ok = False
             msgs.append(f"履歴保存に失敗: {e}")
-    # Driveバックアップ（毎回別フォルダ＝日時付きで競合回避）
     if drive_folder:
         try:
             _stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -917,6 +902,21 @@ if st.button("📦 請求を確定（Driveバックアップ＋履歴保存）",
         msgs.append("Driveフォルダ未設定のためバックアップはスキップ")
     st.session_state["invoice_confirm_flash"] = (
         "success" if ok else "warning", "／".join(msgs))
+    st.session_state["invoice_confirmed_no"] = inv_no
     st.rerun()
-st.caption("※ 確定すると請求履歴の保存とDriveバックアップ（MF CSV・内訳・①②③元ファイル）を行います。"
-           "ダウンロードは上の2ボタンから。")
+
+# 確定後にダウンロードボタンを表示（MF CSV・内訳Excel）
+if st.session_state.get("invoice_confirmed_no") == inv_no:
+    st.markdown("**この請求書を確定しました。下記をダウンロードしてください。**")
+    d1, d2 = st.columns(2)
+    with d1:
+        st.download_button("⬇️ MF請求書CSV", data=csv_bytes, file_name=csv_name,
+                           mime="text/csv", key="invoice_dl_csv", use_container_width=True)
+    with d2:
+        st.download_button("⬇️ 内訳明細書（Excel）",
+                           data=(xlsx_bytes or b""), file_name=xlsx_name, mime=_XLSX_MIME,
+                           key="invoice_dl_xlsx", use_container_width=True,
+                           disabled=(xlsx_bytes is None))
+else:
+    st.caption("※ 「請求を確定」を押すと、請求履歴の保存・Driveバックアップ（MF CSV・内訳・"
+               "①②③元ファイル）を行い、MF CSVと内訳Excelのダウンロードボタンが表示されます。")
