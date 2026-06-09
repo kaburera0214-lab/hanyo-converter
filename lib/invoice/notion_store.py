@@ -34,6 +34,9 @@ DB_SCHEMAS = {
         ]}},
         "送料マージン率": {"number": {}},
         "送料加算額": {"number": {}},
+        # 画面に表示する作業用リンク（クライアント別）
+        "アップロードリンク": {"rich_text": {}},
+        "内訳格納リンク": {"rich_text": {}},
     },
     "請求_単価マスタ": {
         "項目名": {"title": {}},
@@ -277,6 +280,8 @@ def load_clients(db_ids):
                 "備考": _read_rt(p.get("備考")),
                 "振込先": _read_rt(p.get("振込先")),
                 "自社担当者氏名": _read_rt(p.get("自社担当者")),
+                "アップロードリンク": _read_rt(p.get("アップロードリンク")),
+                "内訳格納リンク": _read_rt(p.get("内訳格納リンク")),
             },
             "保管料マスタ": [],
         }
@@ -418,6 +423,17 @@ def load_client_shipping_method(db_ids, client_name):
                 "送料加算額": _read_num(p.get("送料加算額")) or 0,
             }
     return {"page_id": None, "送料方式": "実費マージン", "送料マージン率": 0, "送料加算額": 0}
+
+
+def save_client_links(db_ids, client_name, upload_url, breakdown_url):
+    """クライアントの作業用リンク（アップロード／内訳格納）を保存。"""
+    info = load_client_shipping_method(db_ids, client_name)
+    if not info["page_id"]:
+        raise RuntimeError(f"クライアント '{client_name}' がマスタに見つかりません。")
+    _client().pages.update(page_id=info["page_id"], properties={
+        "アップロードリンク": {"rich_text": _rt(upload_url)},
+        "内訳格納リンク": {"rich_text": _rt(breakdown_url)},
+    })
 
 
 def save_client_shipping_method(db_ids, client_name, method, margin, addon):

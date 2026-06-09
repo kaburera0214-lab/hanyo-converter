@@ -773,8 +773,6 @@ header = {
     "振込先": st.session_state.get("invoice_furikomi", ""),
 }
 
-import io as _io
-import zipfile as _zip
 from lib.invoice import excel_export
 
 # --- MFクラウド取込用CSV ---
@@ -828,89 +826,97 @@ except Exception as e:
     st.error(f"内訳Excelの生成に失敗しました: {e}")
 xlsx_name = f"内訳明細_{client_name}_{inv_no}.xlsx"
 
-# --- アップロード元ファイル（①②③）を収集 ---
+# --- アップロード元ファイル（①②③）を収集（Driveバックアップ用） ---
 _src_files = []
 for _label, _flist in (("①", ne_ship_files), ("②", order_files), ("③", ya_files)):
     for _f in (_flist or []):
-        _src_files.append((f"元データ/{_label}_{_f.name}", _f.getvalue()))
-
-# --- 一式ZIPの組み立て ---
-_zbuf = _io.BytesIO()
-with _zip.ZipFile(_zbuf, "w", _zip.ZIP_DEFLATED) as _z:
-    _z.writestr(csv_name, csv_bytes)
-    if xlsx_bytes:
-        _z.writestr(xlsx_name, xlsx_bytes)
-    for _n, _b in _src_files:
-        _z.writestr(_n, _b)
-zip_bytes = _zbuf.getvalue()
+        _src_files.append((f"{_label}_{_f.name}", _f.getvalue()))
 
 drive_folder = st.secrets.get("INVOICE_GDRIVE_FOLDER_ID", "")
 _XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
+st.subheader("ダウンロード・確定")
 
-def _do_backup():
-    """ボタン押下時にDriveへ一括バックアップ（MF CSV・内訳・①②③元ファイル）。"""
-    if not drive_folder:
-        st.session_state["invoice_backup_flash"] = (
-            "warning", "INVOICE_GDRIVE_FOLDER_ID未設定のためDriveバックアップはスキップしました。")
-        return
-    try:
-        sub = drive_master.get_or_create_folder(f"{inv_no}_{client_name}", drive_folder)
-        drive_master.upload_bytes(csv_bytes, csv_name, sub, "text/csv")
-        if xlsx_bytes:
-            drive_master.upload_bytes(xlsx_bytes, xlsx_name, sub, _XLSX_MIME)
-        for _n, _b in _src_files:
-            drive_master.upload_bytes(_b, _n.split("/")[-1], sub, "text/csv")
-        st.session_state["invoice_backup_flash"] = (
-            "success", f"Driveにバックアップしました（フォルダ: {inv_no}_{client_name}・"
-                       f"{2 + len(_src_files)}ファイル）。")
-    except Exception as e:
-        st.session_state["invoice_backup_flash"] = ("error", f"Driveバックアップに失敗: {e}")
+# 作業用リンク（クライアント別）
+_upload_link = client["header"].get("アップロードリンク", "")
+_breakdown_link = client["header"].get("内訳格納リンク", "")
+lk1, lk2 = st.columns(2)
+with lk1:
+    if _upload_link:
+        st.link_button("🔗 CSVアップロード元を開く", _upload_link, use_container_width=True)
+    else:
+        st.caption("CSVアップロード用リンク未設定")
+with lk2:
+    if _breakdown_link:
+        st.link_button(f"🔗 内訳明細の格納先を開く（{client_name}）", _breakdown_link,
+                       use_container_width=True)
+    else:
+        st.caption("内訳明細の格納先リンク未設定")
+with st.expander("作業用リンクの設定（クライアント別）", expanded=False):
+    _u = st.text_input("CSVアップロード元リンク", value=_upload_link, key="invoice_link_up")
+    _b = st.text_input("内訳明細の格納先リンク", value=_breakdown_link, key="invoice_link_bd")
+    if st.button("💾 リンクを保存", key="invoice_link_save", disabled=not notion_ready):
+        try:
+            notion_store.save_client_links(db_ids, client_name, _u.strip(), _b.strip())
+            st.session_state.pop("invoice_clients_cache", None)
+            st.success("リンクを保存しました。再読込で反映されます。")
+        except Exception as e:
+            st.error(f"保存に失敗しました: {e}")
 
-
-st.subheader("ダウンロード・保存")
-_flash = st.session_state.pop("invoice_backup_flash", None)
-if _flash:
-    getattr(st, _flash[0])(_flash[1])
 _missing = [n for n, d, _ in detail_sheets if d is None or len(d) == 0]
 if _missing:
     st.caption(f"（内訳で明細が空のシート: {', '.join(_missing)}　※①②③を取り込むと埋まります）")
 
-b1, b2, b3 = st.columns(3)
-with b1:
-    st.download_button(
-        "📦 請求書一式（DL＋Driveバックアップ）",
-        data=zip_bytes, file_name=f"請求書一式_{client_name}_{inv_no}.zip",
-        mime="application/zip", key="invoice_zip_dl",
-        on_click=_do_backup, type="primary", use_container_width=True)
-    st.caption("MF CSV＋内訳Excel＋①②③元ファイルをZIPでDL／押下時にDriveへ自動保存")
+# 2ファイルを個別ダウンロード（ZIPなし）
+d1, d2 = st.columns(2)
+with d1:
+    st.download_button("⬇️ MF請求書CSV", data=csv_bytes, file_name=csv_name,
+                       mime="text/csv", key="invoice_dl_csv", use_container_width=True)
+with d2:
+    st.download_button("⬇️ 内訳明細書（Excel）",
+                       data=(xlsx_bytes or b""), file_name=xlsx_name, mime=_XLSX_MIME,
+                       key="invoice_dl_xlsx", use_container_width=True,
+                       disabled=(xlsx_bytes is None))
 
+_cflash = st.session_state.pop("invoice_confirm_flash", None)
+if _cflash:
+    getattr(st, _cflash[0])(_cflash[1])
 
-def _do_save(kind):
-    try:
-        notion_store.save_issue_history(
-            db_ids, invoice_no=inv_no, client_name=client_name,
-            target_ym=target_ym, kind=kind, issue_date=issue_date,
-            due_date=due_date, subtotal=subtotal, tax=tax, total=total, items=items)
-        st.session_state["invoice_save_flash"] = (
-            "success", f"{kind}として履歴に保存しました（{inv_no} / {target_ym}）。")
-    except Exception as e:
-        st.session_state["invoice_save_flash"] = ("error", f"履歴保存に失敗しました: {e}")
-
-
-with b2:
-    if st.button("💾 請求書として履歴に保存", key="invoice_save_bill",
-                 type="primary", use_container_width=True, disabled=not notion_ready):
-        _do_save("請求")
-        st.rerun()
-with b3:
-    if st.button("📝 見積として履歴に保存", key="invoice_save_quote",
-                 type="primary", use_container_width=True, disabled=not notion_ready):
-        _do_save("見積")
-        st.rerun()
-
-_sflash = st.session_state.pop("invoice_save_flash", None)
-if _sflash:
-    getattr(st, _sflash[0])(_sflash[1])
-if not notion_ready:
-    st.caption("※ 履歴保存はNotion設定時のみ有効です。")
+# 確定ボタン：Driveバックアップ（日時付きフォルダ）＋請求履歴を自動保存
+if st.button("📦 請求を確定（Driveバックアップ＋履歴保存）", key="invoice_confirm",
+             type="primary", use_container_width=True):
+    msgs = []
+    ok = True
+    # 履歴保存（請求）
+    if notion_ready:
+        try:
+            notion_store.save_issue_history(
+                db_ids, invoice_no=inv_no, client_name=client_name,
+                target_ym=target_ym, kind="請求", issue_date=issue_date,
+                due_date=due_date, subtotal=subtotal, tax=tax, total=total, items=items)
+            msgs.append(f"請求履歴を保存（{inv_no}）")
+        except Exception as e:
+            ok = False
+            msgs.append(f"履歴保存に失敗: {e}")
+    # Driveバックアップ（毎回別フォルダ＝日時付きで競合回避）
+    if drive_folder:
+        try:
+            _stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            sub = drive_master.get_or_create_folder(
+                f"{inv_no}_{client_name}_{_stamp}", drive_folder)
+            drive_master.upload_bytes(csv_bytes, csv_name, sub, "text/csv")
+            if xlsx_bytes:
+                drive_master.upload_bytes(xlsx_bytes, xlsx_name, sub, _XLSX_MIME)
+            for _n, _b2 in _src_files:
+                drive_master.upload_bytes(_b2, _n, sub, "text/csv")
+            msgs.append(f"Driveへ保存（{inv_no}_{client_name}_{_stamp}・{2 + len(_src_files)}件）")
+        except Exception as e:
+            ok = False
+            msgs.append(f"Driveバックアップに失敗: {e}")
+    else:
+        msgs.append("Driveフォルダ未設定のためバックアップはスキップ")
+    st.session_state["invoice_confirm_flash"] = (
+        "success" if ok else "warning", "／".join(msgs))
+    st.rerun()
+st.caption("※ 確定すると請求履歴の保存とDriveバックアップ（MF CSV・内訳・①②③元ファイル）を行います。"
+           "ダウンロードは上の2ボタンから。")
