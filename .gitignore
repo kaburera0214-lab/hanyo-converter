@@ -3,3 +3,5 @@ __pycache__/
 *.pyc
 invoice_data/
 引き継ぎメモ.txt
+
+bulk_complete.py
