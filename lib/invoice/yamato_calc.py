@@ -107,6 +107,60 @@ def _to_number(value):
         return 0.0
 
 
+def build_freight_detail(matched_df, ne_df, *, shipping_method,
+                         shipping_table=None, area_map=None,
+                         margin_rate=0.0, addon=0.0, shime_date=""):
+    """
+    送料のフル明細を返す（1行＝1出荷）。
+    列: 締め日, 受注番号, 伝票番号, 送り状番号, 種別, サイズ, 金額
+    ①(ne_df)の発送伝票番号→(受注番号,伝票番号)で受注・伝票を引く。
+    """
+    import pandas as pd
+    # ①: 送り状 -> (受注番号, 伝票番号)
+    send_map = {}
+    if ne_df is not None and "発送伝票番号" in ne_df.columns:
+        jcol = "受注番号" if "受注番号" in ne_df.columns else None
+        dcol = "伝票番号" if "伝票番号" in ne_df.columns else None
+        for _, nr in ne_df.iterrows():
+            for tok in str(nr.get("発送伝票番号", "")).replace("　", " ").split(","):
+                key = _digits(tok)
+                if key:
+                    send_map[key] = (str(nr.get(jcol, "")) if jcol else "",
+                                     str(nr.get(dcol, "")) if dcol else "")
+    # 送料表（配送種別→地域別運賃）
+    table_by_type = {}
+    if shipping_table:
+        for row in shipping_table:
+            table_by_type[size_to_delivery_type(row.get("サイズ", ""))] = row
+
+    rows = []
+    for _, r in matched_df.iterrows():
+        soufuda = _digits(r.get("原票No."))
+        kubun2 = r.get("商品区分2") if "商品区分2" in matched_df.columns else None
+        t = size_to_delivery_type(r.get("サイズ"), kubun2)
+        # 金額
+        if shipping_method == "送料表":
+            pref = str(r.get(PREF_COL, "")).strip()
+            area = (area_map or {}).get(pref)
+            trow = table_by_type.get(t)
+            amt = float(trow.get(area) or 0) if (trow and area and area in trow) else 0
+        else:
+            base = _to_number(r.get(FREIGHT_AMOUNT_COL))
+            amt = base * (1 + float(margin_rate) / 100.0) + float(addon)
+        juchu, denpyo = send_map.get(soufuda, ("", ""))
+        rows.append({
+            "締め日": shime_date,
+            "受注番号": juchu,
+            "伝票番号": denpyo,
+            "送り状番号": soufuda,
+            "種別": str(kubun2 or "").strip(),
+            "サイズ": str(r.get("サイズ", "")).strip(),
+            "金額": round(amt),
+        })
+    return pd.DataFrame(
+        rows, columns=["締め日", "受注番号", "伝票番号", "送り状番号", "種別", "サイズ", "金額"])
+
+
 def compute_charges(matched_df, *, ship_rates, material_rates,
                     shipping_method, shipping_table=None, area_map=None,
                     margin_rate=0.0, addon=0.0):

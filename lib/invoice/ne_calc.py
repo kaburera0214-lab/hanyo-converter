@@ -145,6 +145,35 @@ def compute_picking_charge(order_df, product_df, ship_rates):
     }
 
 
+def build_picking_detail(order_df, product_df, ship_rates, shime_date=""):
+    """
+    出荷作業費のフル明細を返す（1行＝1商品）。
+    列: 日付, 商品コード, 商品名, サイズ, 数量, 単価, 計
+    """
+    size_map = dict(zip(product_df["商品コード"].map(_norm),
+                        product_df["項目1"].map(_norm)))
+    has_name = "商品名" in order_df.columns
+    rows = []
+    for i in range(len(order_df)):
+        code = _norm(order_df["商品コード"].iloc[i])
+        size = size_map.get(code, "")
+        if size in ("", "nan"):
+            size = "(不明)"
+        qty = float(pd.to_numeric(order_df["受注数"], errors="coerce").fillna(0).iloc[i])
+        price = float(ship_rates.get(size, 0))
+        rows.append({
+            "日付": shime_date,
+            "商品コード": str(order_df["商品コード"].iloc[i]),
+            "商品名": str(order_df["商品名"].iloc[i]) if has_name else "",
+            "サイズ": size,
+            "数量": int(qty),
+            "単価": price,
+            "計": round(qty * price),
+        })
+    return pd.DataFrame(
+        rows, columns=["日付", "商品コード", "商品名", "サイズ", "数量", "単価", "計"])
+
+
 def get_ne_denpyo_set(df):
     """①出荷確定の「伝票番号」（NE伝票番号）の集合を返す。
     ④発行済データ(品名２)との橋渡しに使う。"""

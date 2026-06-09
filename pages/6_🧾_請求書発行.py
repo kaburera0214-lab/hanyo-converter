@@ -389,6 +389,10 @@ auto_shizai = None           # 資材費
 soufuda_set = set()          # ①の発送伝票番号（送り状）集合
 ne_denpyo_set = set()        # ①のNE伝票番号集合（④橋渡し用）
 issued_df = None             # ④発行済データ
+ne_df_full = None            # ①結合（送料明細の受注/伝票引き当て用）
+detail_souryo = None         # 送料フル明細
+detail_shukka = None         # 出荷作業費フル明細
+detail_shizai = None         # 資材費明細（配送種別別）
 
 ne_ship_files = st.file_uploader(
     "①NE出荷確定CSVを選択（1000件単位で分割されている場合は複数選択OK）",
@@ -405,6 +409,7 @@ if ne_ship_files:
         auto_ship_count = summary["出荷件数"]
         soufuda_set = ne_calc.get_soufuda_set(ne_df)
         ne_denpyo_set = ne_calc.get_ne_denpyo_set(ne_df)
+        ne_df_full = ne_df
         c1, c2 = st.columns(2)
         c1.metric("出荷件数（ユニーク伝票番号）", f"{auto_ship_count:,} 件")
         c2.metric("受注作業 単価", f"{juchu_unit:,.0f} 円")
@@ -530,6 +535,8 @@ if order_files:
                 if r["費目"] == "出荷作業":
                     ship_rates[r["種別"]] = r["単価"]
             pres = ne_calc.compute_picking_charge(order_df, prod_df, ship_rates)
+            detail_shukka = ne_calc.build_picking_detail(
+                order_df, prod_df, ship_rates, issue_date)
             unmatched = pres["未マッチ商品数"]
             if unmatched:
                 st.error(
@@ -620,6 +627,17 @@ if ya_files:
                 addon=sm2["送料加算額"])
             auto_souryo = res["送料"]
             auto_shizai = res["資材費"]
+            # フル明細（送料・資材費）
+            detail_souryo = yamato_calc.build_freight_detail(
+                matched, ne_df_full, shipping_method=sm2["送料方式"],
+                shipping_table=ship_table, area_map=amap2,
+                margin_rate=sm2["送料マージン率"], addon=sm2["送料加算額"],
+                shime_date=issue_date)
+            detail_shizai = pd.DataFrame(
+                [{"日付": issue_date, "配送種別": t, "個数": c,
+                  "資材単価": mat_rates.get(t, 0), "資材費": round(c * mat_rates.get(t, 0))}
+                 for t, c in res["種別別件数"].items()],
+                columns=["日付", "配送種別", "個数", "資材単価", "資材費"])
             m1, m3 = st.columns(2)
             m1.metric("送料", f"{auto_souryo:,} 円")
             m3.metric("資材費", f"{auto_shizai:,} 円")
@@ -766,6 +784,77 @@ st.download_button(
     mime="text/csv",
     key="invoice_download",
 )
+
+# --- 内訳明細書（Excelマルチシート・フル明細） ---
+st.subheader("内訳明細書（Excel）")
+st.caption("先方送付用の内訳をExcelで出力します（サマリ＋費目別シート）。"
+           "送料・出荷・資材の明細は、上の④で①②③⑤を取り込んでいる時のみ含まれます。")
+from lib.invoice import excel_export
+
+# 保管費明細（保管カウントから）
+_stk_detail = None
+if notion_ready:
+    try:
+        _counts = notion_store.load_storage_counts(db_ids, client_name, target_ym)
+        _mp = {m["種別名"]: m["単価"] for m in client.get("保管料マスタ", [])}
+        _stk_detail = pd.DataFrame([
+            {"カウント日": r["カウント日"], "種別": r["種別"], "エリア": r.get("エリア", ""),
+             "ロケーション": r["ロケーション"], "数量": r["数量"],
+             "単価": _mp.get(r["種別"], 0),
+             "小計": round(float(r["数量"] or 0) * float(_mp.get(r["種別"], 0) or 0)),
+             "備考": r["備考"]} for r in _counts],
+            columns=["カウント日", "種別", "エリア", "ロケーション", "数量", "単価", "小計", "備考"])
+    except Exception:
+        pass
+
+# 汎用作業費明細（イレギュラー作業から）
+_irr_detail = None
+if notion_ready:
+    try:
+        _irr = notion_store.load_irregular_work(db_ids, client_name, target_ym)
+        _irr_detail = pd.DataFrame([
+            {"日付": r["日付"], "時間数": r["時間数"], "人数": r["人数"],
+             "合計時間": r["合計時間"], "作業項目": r["作業項目"],
+             "作業詳細": r["作業詳細"], "備考": r["備考"]} for r in _irr],
+            columns=["日付", "時間数", "人数", "合計時間", "作業項目", "作業詳細", "備考"])
+    except Exception:
+        pass
+
+# その他明細（手入力費目のうち自動算出以外）
+_auto_names = {"送料", "出荷作業料", "資材費", "受注作業料", "[汎用]作業料"}
+_other_detail = pd.DataFrame(
+    [{"品名": str(r.get("品名", "")).strip(), "単価": r.get("単価"),
+      "数量": r.get("数量"),
+      "金額": round(float(r.get("単価") or 0) * float(r.get("数量") or 0))}
+     for _, r in other_edited.iterrows()
+     if str(r.get("品名", "")).strip() and str(r.get("品名", "")).strip() not in _auto_names],
+    columns=["品名", "単価", "数量", "金額"])
+
+# サマリ（MF品目＝費目別合計）
+summary_rows = [{"費目": it["品名"], "金額": int(it["金額"])} for it in items]
+detail_sheets = [
+    ("保管費", _stk_detail, "小計"),
+    ("送料", detail_souryo, "金額"),
+    ("出荷作業費", detail_shukka, "計"),
+    ("資材費", detail_shizai, "資材費"),
+    ("汎用作業費", _irr_detail, None),
+    ("その他", _other_detail, "金額"),
+]
+try:
+    xlsx_bytes = excel_export.build_breakdown_excel(summary_rows, detail_sheets)
+    st.download_button(
+        "📊 内訳明細書（Excel）をダウンロード",
+        data=xlsx_bytes,
+        file_name=f"内訳明細_{client_name}_{inv_no}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="invoice_xlsx",
+        type="primary",
+    )
+    _missing = [n for n, d, _ in detail_sheets if d is None or len(d) == 0]
+    if _missing:
+        st.caption(f"（明細が空のシート: {', '.join(_missing)}）")
+except Exception as e:
+    st.error(f"内訳Excelの生成に失敗しました: {e}")
 
 # 任意：Driveバックアップ
 with st.expander("Googleドライブにバックアップ保存（任意）", expanded=False):
