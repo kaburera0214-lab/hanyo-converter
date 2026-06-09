@@ -141,38 +141,6 @@ with st.expander("➕ 新規クライアントを追加", expanded=False):
             except Exception as e:
                 st.error(f"追加に失敗しました: {e}")
 
-# --- クライアント情報の編集（選択中のクライアント） ---
-with st.expander(f"✏️ {client_name} の情報を編集", expanded=False):
-    if not notion_ready:
-        st.info("Notion未設定のため編集できません。")
-    else:
-        _eh = client.get("header", {})
-        st.caption("クライアント名は変更できません（履歴・マスタの紐付けキーのため）。")
-        ec_ryaku = st.text_input("略号", value=client.get("略号", ""), key="editc_ryaku")
-        ec_corp = st.text_input("取引先名称", value=_eh.get("取引先名称", ""), key="editc_corp")
-        ez1, ez2 = st.columns(2)
-        ec_zip = ez1.text_input("郵便番号", value=_eh.get("取引先郵便番号", ""), key="editc_zip")
-        ec_pref = ez2.text_input("都道府県", value=_eh.get("取引先都道府県", ""), key="editc_pref")
-        ec_ad1 = st.text_input("住所1", value=_eh.get("取引先住所1", ""), key="editc_ad1")
-        ec_ad2 = st.text_input("住所2", value=_eh.get("取引先住所2", ""), key="editc_ad2")
-        ec_subj = st.text_input("件名", value=_eh.get("件名", ""), key="editc_subj")
-        ec_staff = st.text_input("自社担当者氏名", value=_eh.get("自社担当者氏名", ""),
-                                 key="editc_staff")
-        ec_furi = st.text_area("振込先", value=_eh.get("振込先", ""), key="editc_furi", height=70)
-        ec_biko = st.text_input("備考", value=_eh.get("備考", ""), key="editc_biko")
-        if st.button("💾 この内容で更新", key="editc_save", type="primary"):
-            try:
-                notion_store.save_client_header(
-                    db_ids, client_name, ec_ryaku.strip(), {
-                        "取引先名称": ec_corp, "取引先郵便番号": ec_zip,
-                        "取引先都道府県": ec_pref, "取引先住所1": ec_ad1,
-                        "取引先住所2": ec_ad2, "件名": ec_subj,
-                        "自社担当者氏名": ec_staff, "振込先": ec_furi, "備考": ec_biko})
-                st.session_state.pop("invoice_clients_cache", None)
-                st.success(f"{client_name} の情報を更新しました。再読込で反映されます。")
-            except Exception as e:
-                st.error(f"更新に失敗しました: {e}")
-
 # --- クライアント設定チェック（新規立ち上げ時の抜け漏れ防止） ---
 if notion_ready:
     _miss = []
@@ -212,31 +180,50 @@ auto_no = invoice_number.generate_invoice_number(int(year), int(month), client_c
 auto_dates = invoice_number.default_dates(int(year), int(month))
 
 st.header("【2】請求書ヘッダ情報")
+st.caption("取引先情報はクライアントマスタから読み込みます。ここで編集して「マスタに保存」すると次回以降も反映されます。")
+h = client["header"]
+# クライアント別キー（クライアント切替で最新のマスタ値を読み込む）
+_k = client_name
 hcol1, hcol2, hcol3 = st.columns(3)
 with hcol1:
-    inv_no = st.text_input("請求書番号", value=auto_no, key="invoice_no")
-    issue_date = st.text_input("請求日", value=auto_dates["請求日"], key="invoice_issue")
+    inv_no = st.text_input("請求書番号", value=auto_no, key=f"invoice_no_{_k}")
+    issue_date = st.text_input("請求日", value=auto_dates["請求日"], key=f"invoice_issue_{_k}")
 with hcol2:
-    due_date = st.text_input("お支払期限", value=auto_dates["お支払期限"], key="invoice_due")
-    sales_date = st.text_input("売上計上日", value=auto_dates["売上計上日"], key="invoice_sales")
+    due_date = st.text_input("お支払期限", value=auto_dates["お支払期限"], key=f"invoice_due_{_k}")
+    sales_date = st.text_input("売上計上日", value=auto_dates["売上計上日"], key=f"invoice_sales_{_k}")
 with hcol3:
-    subject = st.text_input("件名", value=client["header"].get("件名", ""), key="invoice_subject")
-    staff = st.text_input("自社担当者氏名", value=client["header"].get("自社担当者氏名", ""),
-                          key="invoice_staff")
+    subject = st.text_input("件名", value=h.get("件名", ""), key=f"invoice_subject_{_k}")
+    staff = st.text_input("自社担当者氏名", value=h.get("自社担当者氏名", ""),
+                          key=f"invoice_staff_{_k}")
 
-with st.expander("取引先の詳細情報（住所・備考・振込先）", expanded=False):
-    h = client["header"]
+with st.expander("取引先の詳細情報（住所・備考・振込先）＋マスタ保存", expanded=False):
     ec1, ec2 = st.columns(2)
     with ec1:
-        corp_name = st.text_input("取引先名称", value=h.get("取引先名称", ""), key="invoice_corp")
-        zip_code = st.text_input("取引先郵便番号", value=h.get("取引先郵便番号", ""), key="invoice_zip")
-        pref = st.text_input("取引先都道府県", value=h.get("取引先都道府県", ""), key="invoice_pref")
-        addr1 = st.text_input("取引先住所1", value=h.get("取引先住所1", ""), key="invoice_addr1")
-        addr2 = st.text_input("取引先住所2", value=h.get("取引先住所2", ""), key="invoice_addr2")
+        ryaku_in = st.text_input("略号（請求書番号に使用）", value=client.get("略号", ""),
+                                 key=f"invoice_ryaku_{_k}")
+        corp_name = st.text_input("取引先名称", value=h.get("取引先名称", ""), key=f"invoice_corp_{_k}")
+        zip_code = st.text_input("取引先郵便番号", value=h.get("取引先郵便番号", ""), key=f"invoice_zip_{_k}")
+        pref = st.text_input("取引先都道府県", value=h.get("取引先都道府県", ""), key=f"invoice_pref_{_k}")
+        addr1 = st.text_input("取引先住所1", value=h.get("取引先住所1", ""), key=f"invoice_addr1_{_k}")
+        addr2 = st.text_input("取引先住所2", value=h.get("取引先住所2", ""), key=f"invoice_addr2_{_k}")
     with ec2:
-        keisho = st.text_input("取引先敬称", value=h.get("取引先敬称", ""), key="invoice_keisho")
-        biko = st.text_area("備考", value=h.get("備考", ""), key="invoice_biko", height=80)
-        furikomi = st.text_area("振込先", value=h.get("振込先", ""), key="invoice_furikomi", height=80)
+        keisho = st.text_input("取引先敬称", value=h.get("取引先敬称", ""), key=f"invoice_keisho_{_k}")
+        biko = st.text_area("備考", value=h.get("備考", ""), key=f"invoice_biko_{_k}", height=80)
+        furikomi = st.text_area("振込先", value=h.get("振込先", ""), key=f"invoice_furikomi_{_k}", height=80)
+    if st.button("💾 取引先情報をマスタに保存", key=f"invoice_header_save_{_k}",
+                 disabled=not notion_ready):
+        try:
+            notion_store.save_client_header(
+                db_ids, client_name, ryaku_in.strip(), {
+                    "取引先名称": corp_name, "取引先郵便番号": zip_code,
+                    "取引先都道府県": pref, "取引先住所1": addr1, "取引先住所2": addr2,
+                    "件名": subject, "自社担当者氏名": staff,
+                    "振込先": furikomi, "備考": biko})
+            st.session_state.pop("invoice_clients_cache", None)
+            st.success(f"{client_name} の取引先情報をマスタに保存しました。"
+                       "「🔄 マスタ再読込」で請求書番号の略号等も反映されます。")
+        except Exception as e:
+            st.error(f"保存に失敗しました: {e}")
 
 
 # ============================================================
@@ -900,22 +887,22 @@ if _checks:
 else:
     st.success("✅ 請求前チェック：明らかな異常は見つかりませんでした。")
 
-# CSV生成
+# CSV生成（取引先情報は【2】の入力＝マスタ由来の値を使用）
 header = {
-    "取引先名称": st.session_state.get("invoice_corp", client["header"].get("取引先名称", "")),
+    "取引先名称": corp_name,
     "件名": subject,
     "請求日": issue_date,
     "お支払期限": due_date,
     "請求書番号": inv_no,
     "売上計上日": sales_date,
-    "取引先敬称": st.session_state.get("invoice_keisho", ""),
-    "取引先郵便番号": st.session_state.get("invoice_zip", ""),
-    "取引先都道府県": st.session_state.get("invoice_pref", ""),
-    "取引先住所1": st.session_state.get("invoice_addr1", ""),
-    "取引先住所2": st.session_state.get("invoice_addr2", ""),
+    "取引先敬称": keisho,
+    "取引先郵便番号": zip_code,
+    "取引先都道府県": pref,
+    "取引先住所1": addr1,
+    "取引先住所2": addr2,
     "自社担当者氏名": staff,
-    "備考": st.session_state.get("invoice_biko", ""),
-    "振込先": st.session_state.get("invoice_furikomi", ""),
+    "備考": biko,
+    "振込先": furikomi,
 }
 
 from lib.invoice import excel_export
