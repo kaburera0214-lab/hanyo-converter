@@ -58,8 +58,8 @@ df = pd.DataFrame(view)
 if df.empty:
     st.info("該当する取引先がありません。")
 else:
-    edit_cols = ["id", "会社名", "別名", "NE仕入先cd", "科目", "支払方法", "支払日",
-                 "銀行", "支店", "銀行番号", "支店番号", "預金種目", "口座番号",
+    edit_cols = ["id", "会社名", "別名", "NE仕入先cd", "支払区分", "科目", "支払方法",
+                 "支払日", "銀行", "支店", "銀行番号", "支店番号", "預金種目", "口座番号",
                  "受取人口座名", "顧客番号", "固定額", "除外フラグ", "支払元銀行", "備考"]
     for c in edit_cols:
         if c not in df.columns:
@@ -71,6 +71,9 @@ else:
             "id": st.column_config.TextColumn("id", disabled=True, width="small"),
             "別名": st.column_config.TextColumn("別名（請求書表記ゆれ。;区切り）"),
             "NE仕入先cd": st.column_config.TextColumn("NE仕入先cd"),
+            "支払区分": st.column_config.SelectboxColumn(
+                "支払区分", options=["銀行振込", "カード払い"],
+                help="カード払いは楽天振込CSVの対象外"),
             "預金種目": st.column_config.SelectboxColumn("預金種目", options=["", "普通", "当座"]),
             "除外フラグ": st.column_config.TextColumn("除外", help="✓で振込CSV対象外"),
         },

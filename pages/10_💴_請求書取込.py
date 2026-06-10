@@ -212,85 +212,120 @@ def _preview(fname, idx):
 st.markdown("### 2. 読取結果の確認")
 st.caption("内容を確認し、必要なら金額・会社名を修正してから登録してください。")
 
-rows_for_save = []
+def _file_issue(data):
+    """このファイルに警告/エラーがあるか(アコーディオン展開判定)。
+    複数口座でもマスタ口座が一致していれば警告にしない。"""
+    if data.get("_error"):
+        return True
+    m0 = look["by_norm"].get(matching.normalize_name(data.get("会社名", "")))
+    mism0, _ = _account_mismatch(m0, data)
+    return (m0 is None) or mism0
+
+
+def _render_file(idx, data):
+    """1ファイル分の読取結果UIを描画し、rows_for_saveへ追記する。"""
+    fn = data.get("_file", f"file{idx}")
+    if data.get("_error"):
+        st.error(data["_error"])
+        return
+    hc1, hc2 = st.columns([3, 2])
+    skip = hc1.checkbox("このファイルは登録しない（内訳・重複など読み飛ばす）",
+                        key=f"pay_skip_{idx}")
+    show_prev = hc2.toggle("📄 プレビュー表示", key=f"pay_prev_{idx}")
+    if show_prev:
+        _preview(fn, idx)
+    if skip:
+        st.caption("→ このファイルは登録対象から除外します。")
+        return
+    comp = st.text_input("会社名", value=data.get("会社名", ""), key=f"pay_comp_{idx}")
+    cc0, cc1, cc2, cc3 = st.columns(4)
+    cur_ex = cc0.number_input("当月税抜額（突合用）", value=int(data.get("当月税抜額", 0) or 0),
+                              step=1, key=f"pay_curex_{idx}",
+                              help="NE発注は税抜のため、突合はこの税抜額で行います。")
+    cur = cc1.number_input("当月請求額（税込・振込用）", value=int(data.get("当月請求額", 0) or 0),
+                           step=1, key=f"pay_cur_{idx}")
+    tot = cc2.number_input("今回請求額(繰越込)", value=int(data.get("今回請求額", 0) or 0),
+                           step=1, key=f"pay_tot_{idx}")
+    carry = cc3.number_input("前月繰越額", value=int(data.get("前月繰越額", 0) or 0),
+                             step=1, key=f"pay_carry_{idx}")
+    cd1, cd2, cd3 = st.columns(3)
+    bill_date = cd1.text_input("請求日", value=data.get("請求日", ""), key=f"pay_bd_{idx}")
+    due = cd2.text_input("支払期日", value=data.get("支払期日", ""), key=f"pay_due_{idx}")
+    cat = cd3.selectbox("カテゴリ", ["", "WEB発行", "郵送", "前払い"], key=f"pay_cat_{idx}")
+    tax_bd = st.text_input("税内訳（税率別。軽減税率対応）",
+                           value=data.get("税内訳", ""), key=f"pay_tax_{idx}")
+    if data.get("軽減税率"):
+        st.caption("🍱 軽減税率(8%)対象品目を含む請求書です。")
+
+    # マスタ照合
+    m = look["by_norm"].get(matching.normalize_name(comp))
+    mism, note = _account_mismatch(m, data)
+    if m:
+        if str(m.get("支払区分", "")) == "カード払い":
+            st.info(f"💳 マスタ照合: {m['会社名']}（カード払い・楽天振込CSVの対象外）")
+        else:
+            extra = "（複数口座中のマスタ口座に一致）" if data.get("複数口座") and not mism else ""
+            st.success(f"マスタ照合: {m['会社名']}（{m.get('銀行','')} {m.get('支店','')} "
+                       f"{m.get('預金種目','')} {m.get('口座番号','')}）{extra}")
+    else:
+        st.warning("⚠️ マスタ未登録の会社です。新規取引先の可能性。"
+                   "「取引先マスタ」ページで登録するまで振込CSVには出ません。")
+    if mism:
+        st.error(f"⚠️ 口座変更の可能性: {note}")
+    elif data.get("複数口座") and not m:
+        # マスタ未登録で複数口座のときだけ注意喚起
+        st.warning("請求書に複数の振込先口座が記載されています。どれに振込むか要確認。")
+    if data.get("信頼度メモ"):
+        st.caption(f"AIメモ: {data.get('信頼度メモ')}")
+
+    rows_for_save.append({
+        "会社名": comp, "当月請求額": cur, "当月税抜額": cur_ex,
+        "今回請求額": tot, "前月繰越額": carry,
+        "消費税額": data.get("消費税額", 0), "税内訳": tax_bd,
+        "軽減税率": data.get("軽減税率", False),
+        "請求日": bill_date, "支払期日": due, "カテゴリ": cat,
+        "抽出_銀行": data.get("振込先銀行", ""), "抽出_支店": data.get("振込先支店", ""),
+        "抽出_預金種目": data.get("預金種目", ""), "抽出_口座番号": data.get("口座番号", ""),
+        "抽出_口座名義": data.get("口座名義", ""),
+        "口座相違フラグ": mism,
+        "抽出メモ": data.get("信頼度メモ", ""),
+        "ファイルリンク": fn,
+        "ステータス": "読取済", "突合状態": "未突合",
+        "対象月": target_ym,
+        "_ai会社名": data.get("_ai会社名", ""),
+    })
+
+
+# 同一フォルダのファイルは1つのアコーディオンにまとめる(判定は各ファイル個別)
+from collections import OrderedDict
+_groups = OrderedDict()
 for idx, data in enumerate(results):
     fn = data.get("_file", f"file{idx}")
-    # アコーディオン初期状態: エラー/警告があるものだけ開く
-    if data.get("_error"):
-        has_issue = True
-        head_icon = "⛔"
+    folder = fn.rsplit("/", 1)[0] if "/" in fn else None
+    gkey = ("folder", folder) if folder else ("single", idx)
+    _groups.setdefault(gkey, []).append((idx, data))
+
+rows_for_save = []
+for gkey, items in _groups.items():
+    grp_issue = any(_file_issue(d) for _, d in items)
+    if gkey[0] == "folder":
+        icon = "⚠️" if grp_issue else "✅"
+        title = f"{icon} 📁 {gkey[1]}（{len(items)}ファイル）"
+        multi = True
     else:
-        m0 = look["by_norm"].get(matching.normalize_name(data.get("会社名", "")))
-        mism0, _ = _account_mismatch(m0, data)
-        has_issue = (m0 is None) or mism0 or bool(data.get("複数口座"))
-        head_icon = "⚠️" if has_issue else "✅"
-    with st.expander(f"{head_icon} {fn} — {data.get('会社名', '(会社名不明)')}",
-                     expanded=has_issue):
-        if data.get("_error"):
-            st.error(data["_error"])
-            continue
-        hc1, hc2 = st.columns([3, 2])
-        skip = hc1.checkbox("このファイルは登録しない（内訳・重複など読み飛ばす）",
-                            key=f"pay_skip_{idx}")
-        show_prev = hc2.toggle("📄 プレビュー表示", key=f"pay_prev_{idx}")
-        if show_prev:
-            _preview(fn, idx)
-        if skip:
-            st.caption("→ このファイルは登録対象から除外します。")
-            continue
-        comp = st.text_input("会社名", value=data.get("会社名", ""), key=f"pay_comp_{idx}")
-        cc0, cc1, cc2, cc3 = st.columns(4)
-        cur_ex = cc0.number_input("当月税抜額（突合用）", value=int(data.get("当月税抜額", 0) or 0),
-                                  step=1, key=f"pay_curex_{idx}",
-                                  help="NE発注は税抜のため、突合はこの税抜額で行います。")
-        cur = cc1.number_input("当月請求額（税込・振込用）", value=int(data.get("当月請求額", 0) or 0),
-                               step=1, key=f"pay_cur_{idx}")
-        tot = cc2.number_input("今回請求額(繰越込)", value=int(data.get("今回請求額", 0) or 0),
-                               step=1, key=f"pay_tot_{idx}")
-        carry = cc3.number_input("前月繰越額", value=int(data.get("前月繰越額", 0) or 0),
-                                 step=1, key=f"pay_carry_{idx}")
-        cd1, cd2, cd3 = st.columns(3)
-        bill_date = cd1.text_input("請求日", value=data.get("請求日", ""), key=f"pay_bd_{idx}")
-        due = cd2.text_input("支払期日", value=data.get("支払期日", ""), key=f"pay_due_{idx}")
-        cat = cd3.selectbox("カテゴリ", ["", "WEB発行", "郵送", "前払い"],
-                            key=f"pay_cat_{idx}")
-        tax_bd = st.text_input("税内訳（税率別。軽減税率対応）",
-                               value=data.get("税内訳", ""), key=f"pay_tax_{idx}")
-        if data.get("軽減税率"):
-            st.caption("🍱 軽減税率(8%)対象品目を含む請求書です。")
-
-        # マスタ照合
-        m = look["by_norm"].get(matching.normalize_name(comp))
-        if m:
-            st.success(f"マスタ照合: {m['会社名']}（{m.get('銀行','')} {m.get('支店','')} "
-                       f"{m.get('預金種目','')} {m.get('口座番号','')}）")
-        else:
-            st.warning("⚠️ マスタ未登録の会社です。新規取引先の可能性。"
-                       "「取引先マスタ」ページで登録するまで振込CSVには出ません。")
-        mism, note = _account_mismatch(m, data)
-        if mism:
-            st.error(f"⚠️ 口座変更の可能性: {note}")
-        if data.get("複数口座"):
-            st.warning("請求書に複数の振込先口座が記載されています。どれに振込むか要確認。")
-        if data.get("信頼度メモ"):
-            st.caption(f"AIメモ: {data.get('信頼度メモ')}")
-
-        rows_for_save.append({
-            "会社名": comp, "当月請求額": cur, "当月税抜額": cur_ex,
-            "今回請求額": tot, "前月繰越額": carry,
-            "消費税額": data.get("消費税額", 0), "税内訳": tax_bd,
-            "軽減税率": data.get("軽減税率", False),
-            "請求日": bill_date, "支払期日": due, "カテゴリ": cat,
-            "抽出_銀行": data.get("振込先銀行", ""), "抽出_支店": data.get("振込先支店", ""),
-            "抽出_預金種目": data.get("預金種目", ""), "抽出_口座番号": data.get("口座番号", ""),
-            "抽出_口座名義": data.get("口座名義", ""),
-            "口座相違フラグ": mism,
-            "抽出メモ": data.get("信頼度メモ", ""),
-            "ファイルリンク": fn,
-            "ステータス": "読取済", "突合状態": "未突合",
-            "対象月": target_ym,
-            "_ai会社名": data.get("_ai会社名", ""),
-        })
+        idx, d = items[0]
+        icon = "⛔" if d.get("_error") else ("⚠️" if grp_issue else "✅")
+        title = f"{icon} {d.get('_file','')} — {d.get('会社名', '(会社名不明)')}"
+        multi = False
+    with st.expander(title, expanded=grp_issue):
+        for idx, d in items:
+            if multi:
+                fi = "⛔" if d.get("_error") else ("⚠️" if _file_issue(d) else "✅")
+                st.markdown(f"#### {fi} {d.get('_file','').rsplit('/', 1)[-1]} "
+                            f"— {d.get('会社名', '(会社名不明)')}")
+            _render_file(idx, d)
+            if multi:
+                st.divider()
 
 st.markdown("---")
 if st.button("💾 読取済として登録", type="primary", key="payable_save_btn"):

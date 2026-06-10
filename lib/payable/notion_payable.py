@@ -10,13 +10,17 @@ import json
 
 # スキーマ(列)を変更したらこの版数を上げる。app_initがセッションキャッシュを
 # 無視して ensure_databases(不足列の自動追加) を再実行する。
-SCHEMA_VERSION = "2026-06-09d"
+SCHEMA_VERSION = "2026-06-09e"
 
 DB_SCHEMAS = {
     "支払_取引先マスタ": {
         "会社名": {"title": {}},
         "別名": {"rich_text": {}},
         "NE仕入先cd": {"rich_text": {}},
+        "支払区分": {"select": {"options": [
+            {"name": "銀行振込", "color": "blue"},
+            {"name": "カード払い", "color": "orange"},
+        ]}},
         "科目": {"rich_text": {}},
         "支払方法": {"rich_text": {}},
         "支払日": {"rich_text": {}},
@@ -205,8 +209,8 @@ def _query_all(db_id):
 # ============================================================
 # 取引先マスタ
 # ============================================================
-MASTER_FIELDS = ["会社名", "別名", "NE仕入先cd", "科目", "支払方法", "支払日", "銀行",
-                 "支店", "銀行番号", "支店番号", "預金種目", "口座番号", "受取人口座名",
+MASTER_FIELDS = ["会社名", "別名", "NE仕入先cd", "支払区分", "科目", "支払方法", "支払日",
+                 "銀行", "支店", "銀行番号", "支店番号", "預金種目", "口座番号", "受取人口座名",
                  "顧客番号", "固定額", "除外フラグ", "支払元銀行", "備考"]
 
 
@@ -220,6 +224,7 @@ def load_master(db_ids):
             "会社名": _read_title(p.get("会社名")),
             "別名": _read_rt(p.get("別名")),
             "NE仕入先cd": _read_rt(p.get("NE仕入先cd")),
+            "支払区分": _read_select(p.get("支払区分")) or "銀行振込",
             "科目": _read_rt(p.get("科目")),
             "支払方法": _read_rt(p.get("支払方法")),
             "支払日": _read_rt(p.get("支払日")),
@@ -250,6 +255,7 @@ def _master_props(r):
         "会社名": {"title": _title(r.get("会社名", ""))},
         "別名": {"rich_text": _rt(r.get("別名", ""))},
         "NE仕入先cd": {"rich_text": _rt(r.get("NE仕入先cd", ""))},
+        "支払区分": {"select": {"name": r["支払区分"]}} if str(r.get("支払区分", "")).strip() in ("銀行振込", "カード払い") else {"select": {"name": "銀行振込"}},
         "科目": {"rich_text": _rt(r.get("科目", ""))},
         "支払方法": {"rich_text": _rt(r.get("支払方法", ""))},
         "支払日": {"rich_text": _rt(r.get("支払日", ""))},
