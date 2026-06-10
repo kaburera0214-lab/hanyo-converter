@@ -258,6 +258,24 @@ def seed_master_if_empty(db_ids, seed_rows):
     """マスタが空のときだけ seed_rows(辞書リスト) を投入する。"""
     if _query_all(db_ids["支払_取引先マスタ"]):
         return 0
+    return _seed_create(db_ids, seed_rows)
+
+
+def seed_master_missing(db_ids, seed_rows):
+    """
+    既に存在する会社名はスキップし、未登録の会社名だけを追加する(冪等)。
+    二重seedによる重複を防ぐため、空判定ではなく会社名集合で判定する。
+    """
+    existing = set()
+    for row in _query_all(db_ids["支払_取引先マスタ"]):
+        nm = _read_title(row["properties"].get("会社名")).strip()
+        if nm:
+            existing.add(nm)
+    rows = [r for r in seed_rows if str(r.get("会社名", "")).strip() not in existing]
+    return _seed_create(db_ids, rows)
+
+
+def _seed_create(db_ids, seed_rows):
     client = _client()
     db = db_ids["支払_取引先マスタ"]
     n = 0
@@ -267,6 +285,68 @@ def seed_master_if_empty(db_ids, seed_rows):
         client.pages.create(parent={"database_id": db}, properties=_master_props(r))
         n += 1
     return n
+
+
+# マージ対象のデータ列(id/表示用の除外フラグ表記を除く実データ)
+_MERGE_FIELDS = ["別名", "NE仕入先cd", "科目", "支払方法", "支払日", "銀行",
+                 "銀行番号", "支店番号", "預金種目", "口座番号", "受取人口座名",
+                 "顧客番号", "固定額", "除外フラグ", "備考"]
+
+
+def dedupe_master(db_ids):
+    """
+    会社名が重複したレコードを整理する。
+      - 全項目が同一 → 1件に統合(他はアーカイブ)
+      - 差分はあるが、各項目で非空値が1種類だけ(項目かぶりなし) → 結合して1件に
+      - いずれかの項目で非空値が2種類以上(どちらが正か不明) → そのグループは残す
+    戻り値: {"統合":n, "結合":n, "競合保留":n, "削除":n, "詳細":[...]}
+    """
+    client = _client()
+    rows = load_master(db_ids)
+    groups = {}
+    for r in rows:
+        key = r["会社名"].strip()
+        if key:
+            groups.setdefault(key, []).append(r)
+
+    report = {"統合": 0, "結合": 0, "競合保留": 0, "削除": 0, "詳細": []}
+    for name, recs in groups.items():
+        if len(recs) < 2:
+            continue
+        # 各項目の非空値の集合
+        conflict = False
+        merged = {"会社名": name}
+        for f in _MERGE_FIELDS:
+            vals = []
+            for r in recs:
+                v = str(r.get(f, "")).strip()
+                if v and v not in vals:
+                    vals.append(v)
+            if len(vals) >= 2:
+                conflict = True
+                break
+            merged[f] = vals[0] if vals else ""
+        if conflict:
+            report["競合保留"] += 1
+            report["詳細"].append(f"競合保留: {name}（{len(recs)}件、項目に複数値あり）")
+            continue
+        # 全同一か(結合不要か)の判定
+        identical = all(
+            all(str(r.get(f, "")).strip() == merged[f] for f in _MERGE_FIELDS)
+            for r in recs)
+        keep = recs[0]
+        merged["id"] = keep["id"]
+        upsert_master_row(db_ids, merged)
+        for r in recs[1:]:
+            client.pages.update(page_id=r["id"], archived=True)
+            report["削除"] += 1
+        if identical:
+            report["統合"] += 1
+            report["詳細"].append(f"統合: {name}（{len(recs)}件→1件）")
+        else:
+            report["結合"] += 1
+            report["詳細"].append(f"結合: {name}（{len(recs)}件→1件、項目を結合）")
+    return report
 
 
 def upsert_master_row(db_ids, r):

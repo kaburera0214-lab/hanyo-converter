@@ -13,30 +13,46 @@ import json
 HAIKU = "claude-haiku-4-5"
 SONNET = "claude-sonnet-4-6"
 
+# Claudeのツール定義はプロパティのキーがASCII(^[a-zA-Z0-9_.-]{1,64}$)である
+# 必要があるため、英語キーで定義し、抽出後に日本語キーへ変換する。
 EXTRACT_TOOL = {
     "name": "record_invoice",
     "description": "請求書から読み取った内容を構造化して記録する",
     "input_schema": {
         "type": "object",
         "properties": {
-            "会社名": {"type": "string", "description": "請求元(取引先)の会社名。株式会社等の法人格は付けたまま"},
-            "当月請求額": {"type": "integer", "description": "当月分の請求額(今回御買上・当月商品代金等、税込)。繰越を含めない当月発生分"},
-            "今回請求額": {"type": "integer", "description": "今回御請求額(前月繰越を含む総額、税込)。請求書の最終支払額"},
-            "前月繰越額": {"type": "integer", "description": "前月残・前回繰越額。無ければ0"},
-            "消費税額": {"type": "integer", "description": "消費税額。不明なら0"},
-            "請求日": {"type": "string", "description": "請求日・締日(YYYY/MM/DD)。無ければ空"},
-            "支払期日": {"type": "string", "description": "支払期限(YYYY/MM/DD)。無ければ空"},
-            "振込先銀行": {"type": "string", "description": "振込先の銀行名。無ければ空"},
-            "振込先支店": {"type": "string", "description": "支店名。無ければ空"},
-            "預金種目": {"type": "string", "enum": ["普通", "当座", ""], "description": "預金種目"},
-            "口座番号": {"type": "string", "description": "口座番号(数字のみ)。無ければ空"},
-            "口座名義": {"type": "string", "description": "口座名義。無ければ空"},
-            "複数口座": {"type": "boolean", "description": "振込先口座が複数記載されている場合true"},
-            "信頼度メモ": {"type": "string", "description": "読み取りが曖昧な点・注意事項を簡潔に"},
+            "company": {"type": "string", "description": "請求元(取引先)の会社名。株式会社等の法人格は付けたまま"},
+            "current_amount": {"type": "integer", "description": "当月分の請求額(今回御買上・当月商品代金等、税込)。繰越を含めない当月発生分"},
+            "total_amount": {"type": "integer", "description": "今回御請求額(前月繰越を含む総額、税込)。請求書の最終支払額"},
+            "carryover": {"type": "integer", "description": "前月残・前回繰越額。無ければ0"},
+            "tax": {"type": "integer", "description": "消費税額。不明なら0"},
+            "bill_date": {"type": "string", "description": "請求日・締日(YYYY/MM/DD)。無ければ空"},
+            "due_date": {"type": "string", "description": "支払期限(YYYY/MM/DD)。無ければ空"},
+            "bank": {"type": "string", "description": "振込先の銀行名。無ければ空"},
+            "branch": {"type": "string", "description": "支店名。無ければ空"},
+            "account_type": {"type": "string", "enum": ["普通", "当座", ""], "description": "預金種目"},
+            "account_number": {"type": "string", "description": "口座番号(数字のみ)。無ければ空"},
+            "account_holder": {"type": "string", "description": "口座名義。無ければ空"},
+            "multiple_accounts": {"type": "boolean", "description": "振込先口座が複数記載されている場合true"},
+            "note": {"type": "string", "description": "読み取りが曖昧な点・注意事項を簡潔に"},
         },
-        "required": ["会社名", "当月請求額", "今回請求額"],
+        "required": ["company", "current_amount", "total_amount"],
     },
 }
+
+# 英語キー -> 日本語キー(アプリ内で使う名称)
+_KEY_MAP = {
+    "company": "会社名", "current_amount": "当月請求額", "total_amount": "今回請求額",
+    "carryover": "前月繰越額", "tax": "消費税額", "bill_date": "請求日",
+    "due_date": "支払期日", "bank": "振込先銀行", "branch": "振込先支店",
+    "account_type": "預金種目", "account_number": "口座番号",
+    "account_holder": "口座名義", "multiple_accounts": "複数口座", "note": "信頼度メモ",
+}
+
+
+def _to_jp(data):
+    """ツール出力(英語キー)を日本語キーの辞書に変換する。"""
+    return {_KEY_MAP.get(k, k): v for k, v in data.items()}
 
 SYSTEM = (
     "あなたは日本のEC事業者のバックオフィス担当として、取引先から届いた請求書を読み取ります。"
@@ -105,7 +121,7 @@ def extract_invoice(file_bytes, filename, model=HAIKU):
 
     for block in msg.content:
         if getattr(block, "type", None) == "tool_use":
-            data = dict(block.input)
+            data = _to_jp(dict(block.input))
             data["_model"] = model
             data["_file"] = filename
             return data

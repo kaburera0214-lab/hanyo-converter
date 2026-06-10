@@ -21,8 +21,21 @@ except Exception as e:
     st.error(f"初期化に失敗しました: {e}")
     st.stop()
 
-if st.button("🔄 最新に更新", key="pm_reload"):
+rc1, rc2 = st.columns([1, 3])
+if rc1.button("🔄 最新に更新", key="pm_reload"):
     st.session_state.pop("pm_rows", None)
+if rc2.button("🧹 重複レコードを整理", key="pm_dedupe",
+              help="同一→統合／差分あるが項目かぶりなし→結合／項目競合→残す"):
+    with st.spinner("重複を整理中…"):
+        rep = N.dedupe_master(db_ids)
+    st.session_state.pop("pm_rows", None)
+    st.session_state["payable_master_nonce"] = st.session_state.get("payable_master_nonce", 0) + 1
+    st.success(f"統合{rep['統合']}件・結合{rep['結合']}件・競合保留{rep['競合保留']}件"
+               f"（{rep['削除']}レコード削除）")
+    if rep["詳細"]:
+        with st.expander("整理の詳細", expanded=True):
+            for line in rep["詳細"]:
+                st.write("- " + line)
 
 if "pm_rows" not in st.session_state:
     st.session_state["pm_rows"] = N.load_master(db_ids)

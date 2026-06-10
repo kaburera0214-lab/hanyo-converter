@@ -32,11 +32,13 @@ def init_payable(seed_master=True):
     if cached and all(k in cached for k in N.DB_SCHEMAS):
         return cached
     db_ids = N.ensure_databases()
-    if seed_master:
+    # seedはセッション中1回だけ・会社名集合で判定する冪等版(二重投入による重複を防ぐ)
+    if seed_master and not st.session_state.get("payable_seeded"):
         try:
-            seeded = N.seed_master_if_empty(db_ids, load_seed_rows())
+            seeded = N.seed_master_missing(db_ids, load_seed_rows())
             if seeded:
-                st.toast(f"取引先マスタを初期投入しました（{seeded}社）")
+                st.toast(f"取引先マスタに{seeded}社を投入しました")
+            st.session_state["payable_seeded"] = True
         except Exception as e:  # noqa: BLE001
             st.warning(f"マスタ初期投入をスキップ: {e}")
     st.session_state["payable_db_ids"] = db_ids
