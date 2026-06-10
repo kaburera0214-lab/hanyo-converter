@@ -259,15 +259,22 @@ else:
                                      index=_STAT2.index(inv["ステータス"])
                                      if inv["ステータス"] in _STAT2 else 0,
                                      key=f"regstat_{inv['id']}")
+                cur_skip = (inv.get("突合状態") == "対象外")
+                eskip = st.checkbox("このファイルは突合しない（対象外。内訳・重複など）",
+                                    value=cur_skip, key=f"regskip_{inv['id']}")
                 bb1, bb2 = st.columns([1, 1])
                 if bb1.button("💾 保存して反映", key=f"regsave_{inv['id']}"):
                     pdata = {"振込先銀行": inv.get('抽出_銀行', ''),
                              "振込先支店": inv.get('抽出_支店', ''),
                              "口座番号": inv.get('抽出_口座番号', ''), "口座一覧": []}
                     mism, _ = _account_mismatch(m, pdata)
-                    N.update_invoice_fields(db_ids, inv["id"], 会社名=ecomp,
-                                            当月税抜額=eex, 当月請求額=einc,
-                                            ステータス=estat, 口座相違フラグ=mism)
+                    fields = dict(会社名=ecomp, 当月税抜額=eex, 当月請求額=einc,
+                                  ステータス=estat, 口座相違フラグ=mism)
+                    # 突合しないの切替時のみ突合状態を変更(既存の突合結果を壊さない)
+                    if eskip != cur_skip:
+                        fields["突合対象"] = not eskip
+                        fields["突合状態"] = "対象外" if eskip else "未突合"
+                    N.update_invoice_fields(db_ids, inv["id"], **fields)
                     if m and matching.normalize_name(inv["会社名"]) != matching.normalize_name(ecomp):
                         try:
                             N.add_alias_by_company(db_ids, ecomp, inv["会社名"])
@@ -412,12 +419,11 @@ def _render_file(idx, data):
     if data.get("信頼度メモ"):
         st.caption(f"AIメモ: {data.get('信頼度メモ')}")
 
-    # 登録ステータス: 確認が要るもの(未登録/口座相違)は既定『保留』
-    issue = (m is None) or mism
+    # 登録ステータス: 既定は『読取済』。要確認のものだけ手動で『保留』にする運用。
     reg_status = st.selectbox(
-        "登録ステータス", ["読取済", "保留"], index=(1 if issue else 0),
+        "登録ステータス", ["読取済", "保留"], index=0,
         key=f"pay_status_{idx}",
-        help="確認が必要なものは『保留』で保存し、マスタ調整後に進められます。")
+        help="既定は読取済。あとで確認したいものだけ『保留』にしてください。")
 
     rows_for_save.append(_base_row(
         data, fn, comp=comp, cur=cur, cur_ex=cur_ex, tot=tot, carry=carry,
