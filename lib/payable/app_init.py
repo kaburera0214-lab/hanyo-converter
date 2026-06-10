@@ -29,9 +29,12 @@ def init_payable(seed_master=True):
             "Secrets に INVOICE_NOTION_PARENT_PAGE_ID が未設定です。"
             "請求書発行機能と同じ親ページIDを設定してください。")
     cached = st.session_state.get("payable_db_ids")
-    if cached and all(k in cached for k in N.DB_SCHEMAS):
+    same_ver = st.session_state.get("payable_schema_ver") == N.SCHEMA_VERSION
+    if cached and same_ver and all(k in cached for k in N.DB_SCHEMAS):
         return cached
+    # 初回 or スキーマ版数変更時は ensure_databases で不足列を自動追加(同期)
     db_ids = N.ensure_databases()
+    st.session_state["payable_schema_ver"] = N.SCHEMA_VERSION
     # seedはセッション中1回だけ・会社名集合で判定する冪等版(二重投入による重複を防ぐ)
     if seed_master and not st.session_state.get("payable_seeded"):
         try:

@@ -8,6 +8,10 @@
 """
 import json
 
+# スキーマ(列)を変更したらこの版数を上げる。app_initがセッションキャッシュを
+# 無視して ensure_databases(不足列の自動追加) を再実行する。
+SCHEMA_VERSION = "2026-06-09c"
+
 DB_SCHEMAS = {
     "支払_取引先マスタ": {
         "会社名": {"title": {}},
