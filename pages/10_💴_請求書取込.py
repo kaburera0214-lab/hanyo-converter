@@ -76,6 +76,43 @@ if entries and st.button("🤖 AIで読み取る", type="primary", key="payable_
     st.session_state["payable_filebytes"] = filebytes
     prog.empty()
 
+# ── 登録済みデータの管理（削除）：アップロードの有無に関わらず常に表示 ──
+st.markdown("### 登録済みの請求書（対象月）")
+if not target_ym.strip():
+    st.caption("対象月を入力すると、登録済みデータの確認・削除ができます。")
+else:
+    rc1, rc2 = st.columns([1, 4])
+    if rc1.button("🔄 登録済みを再読込", key="payable_reg_reload"):
+        st.session_state.pop("payable_registered", None)
+    if (st.session_state.get("payable_reg_ym") != target_ym
+            or "payable_registered" not in st.session_state):
+        st.session_state["payable_registered"] = N.load_invoices(db_ids, target_ym=target_ym)
+        st.session_state["payable_reg_ym"] = target_ym
+    regs = st.session_state["payable_registered"]
+    if not regs:
+        rc2.caption(f"対象月 {target_ym} の登録済みデータはありません。")
+    else:
+        rc2.caption(f"対象月 {target_ym}：{len(regs)}件")
+        for inv in regs:
+            gc1, gc2 = st.columns([5, 1])
+            gc1.markdown(
+                f"**{inv['会社名']}**　税抜{int(inv.get('当月税抜額') or 0):,}/"
+                f"税込{int(inv.get('当月請求額') or 0):,}円　"
+                f"ステータス:{inv['ステータス']}　突合:{inv.get('突合状態','')}　"
+                f"<span style='color:#888;font-size:0.85em'>{inv.get('ファイルリンク','')}</span>",
+                unsafe_allow_html=True)
+            with gc2.popover("🗑️削除"):
+                st.warning("⚠️ 削除前に必ず請求書（PDF）の内容を確認してください。"
+                           "削除は取り消せません。")
+                ok = st.checkbox("請求書を確認しました", key=f"regdelok_{inv['id']}")
+                if st.button("この請求書を削除する", type="primary", disabled=not ok,
+                             key=f"regdel_{inv['id']}"):
+                    N.delete_invoice(db_ids, inv["id"])
+                    st.session_state.pop("payable_registered", None)
+                    st.session_state.pop("match_invoices", None)
+                    st.rerun()
+
+st.markdown("---")
 results = st.session_state.get("payable_extracted", [])
 if not results:
     st.info("ファイルをアップロードして「AIで読み取る」を押してください。")
@@ -247,6 +284,8 @@ if st.button("💾 読取済として登録", type="primary", key="payable_save_
         except Exception as e:  # noqa: BLE001
             st.error(f"{r['会社名']} の登録に失敗: {e}")
     st.session_state.pop("payable_extracted", None)
+    st.session_state.pop("payable_registered", None)  # 登録済み一覧を最新化
+    st.session_state.pop("match_invoices", None)
     if learned:
         st.session_state["payable_master_nonce"] = st.session_state.get("payable_master_nonce", 0) + 1
     msg = f"{saved}件を「読取済」で登録しました。次は『突合確認』ページへ。"
