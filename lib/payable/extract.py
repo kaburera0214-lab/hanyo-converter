@@ -36,6 +36,20 @@ EXTRACT_TOOL = {
             "account_number": {"type": "string", "description": "口座番号(数字のみ)。無ければ空"},
             "account_holder": {"type": "string", "description": "口座名義。無ければ空"},
             "multiple_accounts": {"type": "boolean", "description": "振込先口座が複数記載されている場合true"},
+            "accounts": {
+                "type": "array",
+                "description": "振込先口座が複数ある場合、記載されている全口座を列挙する(1つだけなら省略可)",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "bank": {"type": "string", "description": "銀行名"},
+                        "branch": {"type": "string", "description": "支店名"},
+                        "account_type": {"type": "string", "description": "預金種目(普通/当座)"},
+                        "account_number": {"type": "string", "description": "口座番号(数字のみ)"},
+                        "holder": {"type": "string", "description": "口座名義"},
+                    },
+                },
+            },
             "note": {"type": "string", "description": "読み取りが曖昧な点・注意事項を簡潔に"},
         },
         "required": ["company", "current_amount", "total_amount"],
@@ -49,7 +63,7 @@ _KEY_MAP = {
     "due_date": "支払期日", "bank": "振込先銀行", "branch": "振込先支店",
     "account_type": "預金種目", "account_number": "口座番号",
     "account_holder": "口座名義", "multiple_accounts": "複数口座", "note": "信頼度メモ",
-    "tax_breakdown": "税内訳", "reduced_tax": "軽減税率",
+    "tax_breakdown": "税内訳", "reduced_tax": "軽減税率", "accounts": "口座一覧",
 }
 
 

@@ -394,6 +394,36 @@ def enrich_bank_names(db_ids):
     return {"更新": updated, "詳細": detail}
 
 
+def add_alias_by_company(db_ids, company, alias):
+    """
+    会社名(company)のマスタ行に別名(alias)を追記する(学習用)。
+    既に会社名・別名に含まれていれば何もしない。追記したらTrue。
+    """
+    import re
+    from .matching import normalize_name
+    alias = str(alias).strip()
+    if not alias:
+        return False
+    target = normalize_name(company)
+    for row in _query_all(db_ids["支払_取引先マスタ"]):
+        p = row["properties"]
+        name = _read_title(p.get("会社名"))
+        if normalize_name(name) != target:
+            continue
+        cur_alias = _read_rt(p.get("別名"))
+        existing = {normalize_name(name)}
+        for a in re.split(r"[;,、/／]", cur_alias or ""):
+            if a.strip():
+                existing.add(normalize_name(a))
+        if normalize_name(alias) in existing:
+            return False
+        new_alias = (cur_alias + ";" + alias) if cur_alias.strip() else alias
+        _client().pages.update(page_id=row["id"], properties={
+            "別名": {"rich_text": _rt(new_alias)}})
+        return True
+    return False
+
+
 def upsert_master_row(db_ids, r):
     """マスタ1行を保存。idがあれば更新、無ければ新規。"""
     client = _client()

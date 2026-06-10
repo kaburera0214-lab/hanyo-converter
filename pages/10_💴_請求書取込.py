@@ -7,6 +7,7 @@
 口座変更の可能性として注意喚起。確認のうえ「読取済」でNotionに保存する。
 """
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 
 st.set_page_config(page_title="請求書取込", layout="wide")
@@ -54,14 +55,18 @@ use_sonnet = st.checkbox("読みにくい請求書（スキャン等）はSonnet
 
 if entries and st.button("🤖 AIで読み取る", type="primary", key="payable_extract_btn"):
     results = []
+    filebytes = {}
     prog = st.progress(0.0)
     for i, (fname, fbytes) in enumerate(entries):
         data = (extract.extract_invoice(fbytes, fname, model=extract.SONNET)
                 if use_sonnet else extract.extract_with_fallback(fbytes, fname))
         data["_file"] = fname
+        data["_ai会社名"] = data.get("会社名", "")  # 学習用:AIの読取値を保持
         results.append(data)
+        filebytes[fname] = fbytes
         prog.progress((i + 1) / len(entries))
     st.session_state["payable_extracted"] = results
+    st.session_state["payable_filebytes"] = filebytes
     prog.empty()
 
 results = st.session_state.get("payable_extracted", [])
@@ -70,27 +75,59 @@ if not results:
     st.stop()
 
 
+def _candidate_accounts(data):
+    """請求書から読み取った口座候補 [(銀行,支店,口座番号)] を作る(複数口座対応)。"""
+    cands = []
+    p = (data.get("振込先銀行", ""), data.get("振込先支店", ""), data.get("口座番号", ""))
+    if p[2] or p[0]:
+        cands.append(p)
+    for a in data.get("口座一覧", []) or []:
+        if isinstance(a, dict):
+            cands.append((a.get("bank", ""), a.get("branch", ""), a.get("account_number", "")))
+    return cands
+
+
 def _account_mismatch(m, data):
-    """マスタ口座と抽出口座の相違を判定。銀行名・支店名・口座番号で照合。"""
+    """
+    マスタ口座と請求書記載口座の相違を判定。
+    複数口座が記載されていても、マスタ口座がそのいずれかに含まれれば一致(警告なし)。
+    """
     if not m:
         return False, ""
-    notes = []
-    # 口座番号
-    acc_x = BM.digits(data.get("口座番号", ""))
-    acc_m = BM.digits(m.get("口座番号", ""))
-    if acc_x and acc_m and acc_x.lstrip("0") != acc_m.lstrip("0"):
-        notes.append(f"口座番号 抽出{acc_x}≠マスタ{acc_m}")
-    # 銀行名(表記ゆれ吸収)
-    bank_x = BM.normalize_bank(data.get("振込先銀行", ""))
+    cands = _candidate_accounts(data)
+    acc_m = BM.digits(m.get("口座番号", "")).lstrip("0")
+    cand_accs = [BM.digits(c[2]).lstrip("0") for c in cands if BM.digits(c[2])]
+    # 口座番号で判定できる場合
+    if acc_m and cand_accs:
+        if acc_m in cand_accs:
+            return False, ""  # マスタ口座が記載口座のいずれかに一致
+        listed = " / ".join(c[2] for c in cands if c[2])
+        return True, f"マスタ口座 {m.get('口座番号','')} が請求書記載口座（{listed}）に見つかりません"
+    # 口座番号が取れない→銀行名で確認(候補のいずれかが一致すればOK)
     bank_m = BM.normalize_bank(m.get("銀行", ""))
-    if bank_x and bank_m and bank_x != bank_m and bank_x not in bank_m and bank_m not in bank_x:
-        notes.append(f"銀行 抽出『{data.get('振込先銀行','')}』≠マスタ『{m.get('銀行','')}』")
-    # 支店名
-    br_x = BM.normalize_branch(data.get("振込先支店", ""))
-    br_m = BM.normalize_branch(m.get("支店", ""))
-    if br_x and br_m and br_x != br_m and br_x not in br_m and br_m not in br_x:
-        notes.append(f"支店 抽出『{data.get('振込先支店','')}』≠マスタ『{m.get('支店','')}』")
-    return (len(notes) > 0), " / ".join(notes)
+    cand_banks = [BM.normalize_bank(c[0]) for c in cands if c[0]]
+    if bank_m and cand_banks and not any(
+            bank_m == b or bank_m in b or b in bank_m for b in cand_banks):
+        return True, f"銀行 マスタ『{m.get('銀行','')}』が請求書記載銀行に見つかりません"
+    return False, ""
+
+
+def _preview(fname, idx):
+    """アップロードファイルのプレビュー(PDFはiframe、画像はst.image)。"""
+    fb = st.session_state.get("payable_filebytes", {}).get(fname)
+    if not fb:
+        st.caption("（プレビュー用データがありません。再アップロードで表示できます）")
+        return
+    low = fname.lower()
+    if low.endswith(".pdf"):
+        import base64 as _b64
+        b64 = _b64.b64encode(fb).decode()
+        components.html(
+            f'<iframe src="data:application/pdf;base64,{b64}" '
+            f'width="100%" height="600" style="border:1px solid #ddd"></iframe>',
+            height=620)
+    else:
+        st.image(fb, use_container_width=True)
 
 
 st.markdown("### 2. 読取結果の確認")
@@ -102,6 +139,15 @@ for idx, data in enumerate(results):
     with st.expander(f"📄 {fn} — {data.get('会社名', '(会社名不明)')}", expanded=True):
         if data.get("_error"):
             st.error(data["_error"])
+            continue
+        hc1, hc2 = st.columns([3, 2])
+        skip = hc1.checkbox("このファイルは登録しない（内訳・重複など読み飛ばす）",
+                            key=f"pay_skip_{idx}")
+        show_prev = hc2.toggle("📄 プレビュー表示", key=f"pay_prev_{idx}")
+        if show_prev:
+            _preview(fn, idx)
+        if skip:
+            st.caption("→ このファイルは登録対象から除外します。")
             continue
         comp = st.text_input("会社名", value=data.get("会社名", ""), key=f"pay_comp_{idx}")
         cc1, cc2, cc3 = st.columns(3)
@@ -150,6 +196,7 @@ for idx, data in enumerate(results):
             "ファイルリンク": fn,
             "ステータス": "読取済", "突合状態": "未突合",
             "対象月": target_ym,
+            "_ai会社名": data.get("_ai会社名", ""),
         })
 
 st.markdown("---")
@@ -158,13 +205,30 @@ if st.button("💾 読取済として登録", type="primary", key="payable_save_
         st.error("対象月を入力してください。")
         st.stop()
     saved = 0
+    learned = 0
     for r in rows_for_save:
         if not str(r["会社名"]).strip():
             continue
         try:
             N.save_invoice(db_ids, r)
             saved += 1
+            # 学習: 手修正で会社名が変わり、修正後がマスタに一致するなら、
+            # AIの読取値(誤読)を別名として登録 → 次回から自動補正される
+            ai_name = str(r.get("_ai会社名", "")).strip()
+            fixed = str(r["会社名"]).strip()
+            if (ai_name and matching.normalize_name(ai_name) != matching.normalize_name(fixed)
+                    and look["by_norm"].get(matching.normalize_name(fixed))):
+                try:
+                    if N.add_alias_by_company(db_ids, fixed, ai_name):
+                        learned += 1
+                except Exception:  # noqa: BLE001
+                    pass
         except Exception as e:  # noqa: BLE001
             st.error(f"{r['会社名']} の登録に失敗: {e}")
     st.session_state.pop("payable_extracted", None)
-    st.success(f"{saved}件を「読取済」で登録しました。次は『突合確認』ページへ。")
+    if learned:
+        st.session_state["payable_master_nonce"] = st.session_state.get("payable_master_nonce", 0) + 1
+    msg = f"{saved}件を「読取済」で登録しました。次は『突合確認』ページへ。"
+    if learned:
+        msg += f"（{learned}件の会社名の読み間違いを別名として学習しました）"
+    st.success(msg)
