@@ -41,21 +41,26 @@ target_ym = c1.text_input("対象月（例 2026-05）", value=st.session_state.g
 st.session_state["payable_target_ym"] = target_ym
 
 st.markdown("### 1. 請求書をアップロード")
-files = st.file_uploader("PDF / 画像（複数可）", type=["pdf", "png", "jpg", "jpeg", "webp"],
+files = st.file_uploader("PDF / 画像 / ZIP（複数可・ZIPは中身を一括展開）",
+                         type=["pdf", "png", "jpg", "jpeg", "webp", "zip"],
                          accept_multiple_files=True, key="payable_uploader")
+
+entries = extract.iter_files_from_uploads(files)
+if files:
+    st.caption(f"読取対象ファイル：{len(entries)}件（ZIPは展開後の件数）")
 
 use_sonnet = st.checkbox("読みにくい請求書（スキャン等）はSonnetで精度優先", value=False,
                          key="payable_sonnet")
 
-if files and st.button("🤖 AIで読み取る", type="primary", key="payable_extract_btn"):
+if entries and st.button("🤖 AIで読み取る", type="primary", key="payable_extract_btn"):
     results = []
     prog = st.progress(0.0)
-    for i, f in enumerate(files):
-        data = (extract.extract_invoice(f.getvalue(), f.name, model=extract.SONNET)
-                if use_sonnet else extract.extract_with_fallback(f.getvalue(), f.name))
-        data["_file"] = f.name
+    for i, (fname, fbytes) in enumerate(entries):
+        data = (extract.extract_invoice(fbytes, fname, model=extract.SONNET)
+                if use_sonnet else extract.extract_with_fallback(fbytes, fname))
+        data["_file"] = fname
         results.append(data)
-        prog.progress((i + 1) / len(files))
+        prog.progress((i + 1) / len(entries))
     st.session_state["payable_extracted"] = results
     prog.empty()
 

@@ -90,6 +90,53 @@ def _content_block(file_bytes, media_type):
             "source": {"type": "base64", "media_type": media_type, "data": b64}}
 
 
+_IMG_PDF_EXT = (".pdf", ".png", ".jpg", ".jpeg", ".webp", ".gif")
+
+
+def _zip_member_name(info):
+    """ZIP内ファイル名を正しくデコード(Windows製cp932・UTF-8フラグ両対応)。"""
+    if info.flag_bits & 0x800:  # UTF-8フラグ
+        return info.filename
+    try:
+        return info.filename.encode("cp437").decode("cp932")
+    except (UnicodeDecodeError, UnicodeEncodeError):
+        return info.filename
+
+
+def iter_files_from_uploads(uploaded_files):
+    """
+    アップロード(複数)から (表示名, bytes) のリストを作る。
+    .zip は展開して中のPDF/画像を取り出す(サブフォルダ可)。__MACOSX等は除外。
+    """
+    import io
+    import zipfile
+    out = []
+    for uf in uploaded_files or []:
+        name = uf.name
+        low = name.lower()
+        if low.endswith(".zip"):
+            try:
+                z = zipfile.ZipFile(io.BytesIO(uf.getvalue()))
+            except Exception:  # noqa: BLE001
+                continue
+            for info in z.infolist():
+                if info.is_dir():
+                    continue
+                fn = _zip_member_name(info)
+                base = fn.rsplit("/", 1)[-1]
+                if "__MACOSX" in fn or base.startswith(".") or base.startswith("._"):
+                    continue
+                if not fn.lower().endswith(_IMG_PDF_EXT):
+                    continue
+                try:
+                    out.append((fn, z.read(info)))
+                except Exception:  # noqa: BLE001
+                    continue
+        elif low.endswith(_IMG_PDF_EXT):
+            out.append((name, uf.getvalue()))
+    return out
+
+
 def get_client():
     import streamlit as st
     import anthropic
