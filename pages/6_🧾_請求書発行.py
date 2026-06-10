@@ -596,21 +596,28 @@ with st.expander("商品マスタの管理（毎回アップ不要・Drive保存
     new_prod = st.file_uploader("商品マスタ(NEカスタム)をアップロード／更新",
                                 type=["csv"], key="invoice_prod_upload")
     if new_prod is not None:
+        data = new_prod.getvalue()
+        pdf = None
         try:
-            data = new_prod.getvalue()
-            pdf = ne_calc.load_product_master(data)  # 検証
-            if drive_folder:
-                drive_master.upload_or_replace(
-                    data, drive_master.PRODUCT_MASTER_NAME, drive_folder)
-                prod_meta = f"アップロード版（{len(pdf):,}件・Drive保存済）"
-                st.success(f"③をDriveに保存しました（{len(pdf):,}件）。次回からアップ不要です。")
-            else:
-                prod_meta = f"アップロード版（{len(pdf):,}件・未保存）"
+            pdf = ne_calc.load_product_master(data)  # 検証（商品コード/項目1必須）
+        except Exception as e:
+            st.error(f"商品マスタCSVの読込に失敗: {e}")
+        if pdf is not None:
+            # まずマスタ更新を必ず反映（Drive保存の成否に関係なく）
             prod_df = pdf
+            prod_meta = f"アップロード版（{len(pdf):,}件）"
             st.session_state["invoice_prod_df"] = pdf
             st.session_state["invoice_prod_meta"] = prod_meta
-        except Exception as e:
-            st.error(f"③の取込に失敗: {e}")
+            st.success(f"商品マスタを更新しました（{len(pdf):,}件）。出荷作業料の算出に反映されます。")
+            # Driveバックアップはベストエフォート（失敗してもマスタ更新は維持）
+            if drive_folder:
+                try:
+                    drive_master.upload_or_replace(
+                        data, drive_master.PRODUCT_MASTER_NAME, drive_folder)
+                    st.caption("Driveにもバックアップしました。")
+                except Exception as e:
+                    st.warning(f"⚠️ Driveバックアップに失敗しました（マスタ更新は反映済み）: {e}。"
+                               "Driveが繰り返し失敗する場合は GOOGLE_REFRESH_TOKEN の再取得が必要かもしれません。")
 
 order_files = st.file_uploader(
     "②[NE]受注明細一覧 CSV（複数選択OK）",
@@ -1087,9 +1094,10 @@ if st.button("📦 請求を確定（CSV・内訳をDL＋履歴保存＋Driveバ
             msgs.append(f"Driveへ保存（{inv_no}_{client_name}_{_stamp}・{2 + len(_src_files)}件）")
         except Exception as e:
             ok = False
-            msgs.append(f"Driveバックアップに失敗: {e}")
+            msgs.append(f"Driveバックアップに失敗: {e}（Driveが繰り返し失敗する場合は "
+                        "GOOGLE_REFRESH_TOKEN の再取得が必要かもしれません）")
     else:
-        msgs.append("Driveフォルダ未設定のためバックアップはスキップ")
+        msgs.append("INVOICE_GDRIVE_FOLDER_ID 未設定のためDriveバックアップはスキップ")
     st.session_state["invoice_confirm_flash"] = (
         "success" if ok else "warning", "／".join(msgs))
     st.session_state["invoice_confirmed_no"] = inv_no

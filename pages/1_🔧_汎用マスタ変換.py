@@ -1713,6 +1713,9 @@ def main():
                 st.error("マスタ未読み込み")
             st.caption("マスタを更新する場合のみアップロード")
             master_uploader_key = f"up_master_{st.session_state.get('master_upload_count', 0)}"
+            _mdf = st.session_state.pop("master_drive_flash", None)
+            if _mdf:
+                getattr(st, _mdf[0])(_mdf[1])
             new_master = st.file_uploader("新しい商品マスタCSV（Shift-JIS）", type="csv", key=master_uploader_key)
             if new_master:
                 if st.button("📥 商品マスタを更新する", key="btn_master_update", type="primary"):
@@ -1732,13 +1735,12 @@ def main():
                         else:
                             st.warning(f"GitHub 保存失敗（次回起動後に消える可能性あり）: {gh_err}")
                             st.success(f"更新しました：{len(master):,} 件")
-                        # Google Drive バックアップ
+                        # Google Drive バックアップ（結果はrerun後も表示できるようsessionに保持）
                         with st.spinner("Google Driveにバックアップ中..."):
                             ok, result = backup_to_drive(file_bytes, "商品マスタ", "master")
-                        if ok:
-                            st.info(f"📁 Drive保存: {result}")
-                        else:
-                            st.warning(f"Drive保存失敗: {result}")
+                        st.session_state["master_drive_flash"] = (
+                            ("info", f"📁 Drive保存: {result}") if ok
+                            else ("warning", f"Drive保存失敗: {result}"))
                         st.session_state["master_upload_count"] = st.session_state.get("master_upload_count", 0) + 1
                         st.rerun()
 
