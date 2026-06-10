@@ -148,7 +148,7 @@ else:
                     "ステータス更新ができます。")
 
         _FREE = ("読取済", "保留")  # この2つは確認なしで削除可
-        _STAT2 = ["保留", "読取済", "確認済", "突合OK", "確定"]
+        _STAT2 = ["保留", "読取済", "確認済"]
 
         def _drop_caches():
             st.session_state.pop("payable_registered", None)

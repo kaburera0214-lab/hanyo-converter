@@ -2,7 +2,7 @@
 """
 振込CSV生成（買掛）
 
-ステータスが「確定」の請求書のみを抽出し、取引先マスタの口座情報を使って
+ステータスが「確認済」の請求書のみを抽出し、取引先マスタの口座情報を使って
 楽天銀行 総合振込インポートCSV(Shift-JIS)を生成・自動ダウンロードする。
 口座未登録・除外フラグの取引先は対象外。生成内容は振込履歴に保存。
 """
@@ -11,7 +11,7 @@ import pandas as pd
 
 st.set_page_config(page_title="振込CSV生成", layout="wide")
 st.title("💴 振込CSV生成（楽天銀行 総合振込）")
-st.caption("『確定』の請求書から楽天銀行インポート用CSVを作成します。")
+st.caption("『確認済』の請求書から楽天銀行インポート用CSVを作成します。")
 
 from lib.payable import app_init, matching, rakuten_csv, notion_payable as N
 
@@ -32,13 +32,13 @@ if c3.button("🔄 再読込", key="csv_reload"):
     st.session_state.pop("csv_invoices", None)
 
 if "csv_invoices" not in st.session_state:
-    st.session_state["csv_invoices"] = N.load_invoices(db_ids, target_ym=target_ym, status="確定")
+    st.session_state["csv_invoices"] = N.load_invoices(db_ids, target_ym=target_ym, status="確認済")
 confirmed = st.session_state["csv_invoices"]
 
 master_rows = N.load_master(db_ids)
 look = matching.build_master_lookup(master_rows)
 
-# 確定請求書をマスタ口座に結合
+# 確認済請求書をマスタ口座に結合
 records, skipped = [], []
 for inv in confirmed:
     m = look["by_norm"].get(matching.normalize_name(inv["会社名"]))
@@ -75,7 +75,7 @@ if records:
     } for r in records]), use_container_width=True)
     st.markdown(f"**合計 {sum(r['金額'] for r in records):,} 円**")
 else:
-    st.info("『確定』ステータスの振込対象がありません。『突合確認』でステータスを確定にしてください。")
+    st.info("『確認済』ステータスの振込対象がありません。『突合確認』でステータスを確認済にしてください。")
 
 if skipped:
     with st.expander(f"⚠️ 対象外 {len(skipped)}件（要確認）", expanded=True):

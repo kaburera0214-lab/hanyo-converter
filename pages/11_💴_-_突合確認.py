@@ -13,7 +13,7 @@ st.set_page_config(page_title="突合確認", layout="wide")
 st.title("💴 突合確認（発注データとの照合）")
 st.caption("ネクストエンジン発注データと請求書を会社名＋金額で突合します。")
 
-from lib.payable import app_init, matching, notion_payable as N
+from lib.payable import app_init, matching, extract, notion_payable as N
 
 try:
     db_ids = app_init.init_payable()
@@ -122,26 +122,50 @@ def _ne_total(i):
         return (i.get("NE合算額") or 0) + (i.get("NE送料") or 0)
     return None
 
+
+def _kamoku(inv):
+    mm = look["by_norm"].get(matching.normalize_name(inv["会社名"]))
+    return str(mm.get("科目", "")) if mm else ""
+
+
+def _shiire_no_order(inv):
+    """科目が仕入なのに発注なし(=締め跨ぎ等の要調査)。"""
+    return inv.get("突合状態") == "発注なし" and _kamoku(inv) == "仕入"
+
 df = pd.DataFrame([{
     "会社名": i["会社名"], "当月税抜(突合)": yen(_extax(i)),
     "NE発注額": yen(i.get("NE合算額")), "送料": yen(i.get("NE送料")),
     "NE合計": yen(_ne_total(i)), "差額": yen(i.get("差額")),
-    "突合状態": i.get("突合状態", "未突合"),
+    "突合状態": (i.get("突合状態", "未突合")
+              + ("（仕入・締め跨ぎ?）" if _shiire_no_order(i) else "")),
     "当月税込": yen(i["当月請求額"]),
     "ステータス": i["ステータス"], "口座相違": "⚠️" if i.get("口座相違フラグ") else "",
 } for i in invoices])
 
-styled = df.style.apply(lambda s: [_row_color(v) for v in df["突合状態"]], subset=["突合状態"])
+# 行の色: 金額不一致、または『仕入なのに発注なし』は赤
+_colors = []
+for i in invoices:
+    stt = i.get("突合状態", "未突合")
+    if stt == "金額不一致" or _shiire_no_order(i):
+        _colors.append("background-color:#fde8e8")
+    else:
+        _colors.append(_row_color(stt))
+styled = df.style.apply(lambda s: _colors, subset=["突合状態"])
 st.dataframe(styled, use_container_width=True)
 
 n_ok = sum(1 for i in invoices if i.get("突合状態") == "一致")
 n_err = sum(1 for i in invoices if i.get("突合状態") in ("金額不一致", "発注なし"))
 st.caption(f"一致 {n_ok}件 / 要確認 {n_err}件 / 全{len(invoices)}件")
+if any(_shiire_no_order(i) for i in invoices):
+    st.warning("🔴 科目『仕入』なのに発注が見つからない取引先があります。"
+               "締め日の跨ぎ（月初/末日でのズレ）の可能性があるため、NEの発注日や前後月をご確認ください。")
 
-# 同一会社名の重複検知 → どちらを残すか選択(請求書確認の確認ポップアップ付き)
+# 同一会社名の重複検知(突合対象外=対象外は除外)
 from collections import defaultdict
 _groups = defaultdict(list)
 for inv in invoices:
+    if inv.get("突合状態") == "対象外":
+        continue
     _groups[matching.normalize_name(inv["会社名"])].append(inv)
 _dups = {k: v for k, v in _groups.items() if len(v) > 1}
 if _dups:
@@ -167,20 +191,43 @@ if _dups:
                     st.rerun()
 
 st.markdown("### 3. ステータス更新")
-st.caption("各請求書の取込情報をその場で確認し、ステータスを進めてください"
-           "（確定は『振込CSV生成』前の最終承認）。")
+st.caption("各請求書を確認し、問題なければ『確認済』にしてください"
+           "（確認済＝振込CSVに出してよい最終承認）。保留・対象外はここには出ません。")
+
+# プレビュー用に請求書ファイルを読み込む(任意)。ファイル名一致で各行に表示。
+with st.expander("📄 プレビュー用に請求書ファイルを読み込む（任意・ZIP可）", expanded=False):
+    prev_files = st.file_uploader("PDF / 画像 / ZIP", type=["pdf", "png", "jpg", "jpeg", "webp", "zip"],
+                                  accept_multiple_files=True, key="match_prevup")
+    if prev_files:
+        st.session_state["match_filebytes"] = {
+            n: b for n, b in extract.iter_files_from_uploads(prev_files)}
+        st.caption(f"{len(st.session_state['match_filebytes'])}件を読み込みました。")
+fbmap = st.session_state.get("match_filebytes", {})
+
 NE_URL = "https://main.next-engine.com/userg5210?dnum={}"
 _ICON = {"一致": "✅", "金額不一致": "⚠️", "発注なし": "🟠", "マスタ未登録": "🟡", "未突合": "⬜"}
-_STAT = ["保留", "読取済", "確認済", "突合OK", "確定"]
+_STAT = ["読取済", "確認済"]  # 簡素化: 読取済→確認済の2段(確認済=振込CSV対象)
 
-for inv in invoices:
+# 対象外・保留はこのページには出さない(取込ページで扱う)
+visible = [i for i in invoices
+           if i.get("突合状態") != "対象外" and i.get("ステータス") != "保留"]
+if not visible:
+    st.info("表示対象の請求書がありません（保留・対象外を除く）。")
+for inv in visible:
     stt = inv.get("突合状態", "未突合")
-    icon = _ICON.get(stt, "")
+    icon = "🔴" if _shiire_no_order(inv) else _ICON.get(stt, "")
     diff = inv.get("差額")
     head = (f"{icon} {inv['会社名']}　|　突合 {stt}"
             f"（差額 {yen(diff)}円）　|　ステータス: {inv['ステータス']}")
-    # 一致以外は開いておく
     with st.expander(head, expanded=(stt != "一致")):
+        if _shiire_no_order(inv):
+            st.error("🔴 科目『仕入』なのに発注なし。締め日の跨ぎ（月初/末日のズレ）の可能性。"
+                     "NEの発注日・前後月をご確認ください。")
+        if fbmap.get(inv.get("ファイルリンク", "")):
+            if st.toggle("📄 プレビュー表示", key=f"match_prev_{inv['id']}"):
+                for _img in extract.render_preview_images(
+                        fbmap[inv["ファイルリンク"]], inv["ファイルリンク"]):
+                    st.image(_img, use_container_width=True)
         cL, cR = st.columns(2)
         # 左: 金額・突合
         cL.markdown(
