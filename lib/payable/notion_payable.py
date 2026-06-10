@@ -69,6 +69,7 @@ DB_SCHEMAS = {
         ]}},
         "NE合算額": {"number": {}},
         "差額": {"number": {}},
+        "NE発注番号": {"rich_text": {}},
         "対象月": {"rich_text": {}},
         "ファイルリンク": {"rich_text": {}},
         "抽出メモ": {"rich_text": {}},
@@ -371,27 +372,25 @@ def enrich_bank_names(db_ids):
     for r in rows:
         bank_no = (r.get("銀行番号") or "").strip()
         branch_no = (r.get("支店番号") or "").strip()
-        if not bank_no:
-            continue
-        new_bank = BM.bank_name(bank_no)
-        new_branch = BM.branch_name(bank_no, branch_no)
-        if not new_bank:
-            continue
+        new_bank = BM.bank_name(bank_no) if bank_no else ""
+        new_branch = BM.branch_name(bank_no, branch_no) if (bank_no and branch_no) else ""
         cur_bank = (r.get("銀行") or "").strip()
         cur_branch = (r.get("支店") or "").strip()
         cur_moto = (r.get("支払元銀行") or "").strip()
         props = {}
-        # 現『銀行』が受取人銀行名と異なる→支払元として退避(支払元が空のときだけ)
+        # 元の『銀行』が受取人銀行名でない(=弊社の支払元:楽天等)なら支払元へ退避。
+        # 番号が無く受取人名を解決できない社でも、楽天等を支払元へ移して銀行は空に。
         if cur_bank and cur_bank != new_bank and not cur_moto:
             props["支払元銀行"] = {"rich_text": _rt(cur_bank)}
         if cur_bank != new_bank:
             props["銀行"] = {"rich_text": _rt(new_bank)}
-        if cur_branch != new_branch and new_branch:
+        if new_branch and cur_branch != new_branch:
             props["支店"] = {"rich_text": _rt(new_branch)}
         if props:
             client.pages.update(page_id=r["id"], properties=props)
             updated += 1
-            detail.append(f"{r['会社名']}: {new_bank} {new_branch}")
+            moved = cur_bank if "支払元銀行" in props else cur_moto
+            detail.append(f"{r['会社名']}: 銀行『{new_bank or '(空)'}』 支店『{new_branch}』 支払元『{moved}』")
     return {"更新": updated, "詳細": detail}
 
 
@@ -483,6 +482,7 @@ def load_invoices(db_ids, target_ym=None, status=None):
             "突合状態": _read_select(p.get("突合状態")),
             "NE合算額": _read_num(p.get("NE合算額")),
             "差額": _read_num(p.get("差額")),
+            "NE発注番号": _read_rt(p.get("NE発注番号")),
             "対象月": ym,
             "ファイルリンク": _read_rt(p.get("ファイルリンク")),
             "抽出メモ": _read_rt(p.get("抽出メモ")),

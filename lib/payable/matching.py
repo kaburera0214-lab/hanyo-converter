@@ -169,7 +169,7 @@ def match_invoice(company, amount, master_lookup, ne_agg, tolerance=0):
     m = master_lookup["by_norm"].get(norm)
     result = {
         "状態": "マスタ未登録", "会社名": company, "NE合算額": None,
-        "差額": None, "NE件数": 0, "NE仕入先cd": "", "突合詳細": "",
+        "差額": None, "NE件数": 0, "NE仕入先cd": "", "突合詳細": "", "NE伝票": [],
     }
     if not m:
         result["突合詳細"] = "会社名がマスタに見つかりません(別名登録で解決可)"
@@ -195,6 +195,7 @@ def match_invoice(company, amount, master_lookup, ne_agg, tolerance=0):
 
     result["NE合算額"] = ne["合算額"]
     result["NE件数"] = ne["件数"]
+    result["NE伝票"] = list(ne.get("伝票", []))
     diff = int(amount) - int(ne["合算額"])
     result["差額"] = diff
     if abs(diff) <= int(tolerance):

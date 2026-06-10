@@ -67,15 +67,17 @@ st.markdown("### 2. 突合結果")
 if st.button("🔁 突合を実行/再計算", type="primary", key="match_run"):
     for inv in invoices:
         r = matching.match_invoice(inv["会社名"], inv["当月請求額"], look, ne_agg, tolerance=tol)
+        denpyo = ",".join(str(d) for d in r.get("NE伝票", []))
         try:
             N.update_invoice_fields(
                 db_ids, inv["id"],
-                突合状態=r["状態"] if r["状態"] != "一致" else "一致",
-                NE合算額=r["NE合算額"], 差額=r["差額"],
+                突合状態=r["状態"],
+                NE合算額=r["NE合算額"], 差額=r["差額"], NE発注番号=denpyo,
             )
             inv["突合状態"] = r["状態"]
             inv["NE合算額"] = r["NE合算額"]
             inv["差額"] = r["差額"]
+            inv["NE発注番号"] = denpyo
         except Exception as e:  # noqa: BLE001
             st.error(f"{inv['会社名']} の更新に失敗: {e}")
     st.toast("突合を更新しました")
@@ -104,10 +106,18 @@ st.caption(f"一致 {n_ok}件 / 要確認 {n_err}件 / 全{len(invoices)}件")
 
 st.markdown("### 3. ステータス更新")
 st.caption("内容を確認したら、各請求書のステータスを進めてください（確定は『振込CSV生成』前の最終承認）。")
+NE_URL = "https://main.next-engine.com/userg5210?dnum={}"
 for inv in invoices:
     cols = st.columns([3, 2, 2, 2])
     cols[0].markdown(f"**{inv['会社名']}**　請求{int(inv['当月請求額']):,}円　"
                      f"({inv.get('突合状態','未突合')})")
+    denpyo = [d for d in str(inv.get("NE発注番号", "")).split(",") if d.strip()]
+    if denpyo:
+        links = "　".join(
+            f'<a href="{NE_URL.format(d.strip())}" target="_blank" rel="noopener">📄{d.strip()}</a>'
+            for d in denpyo)
+        cols[0].markdown(f"<span style='font-size:0.85em'>NE発注: {links}</span>",
+                         unsafe_allow_html=True)
     new_status = cols[1].selectbox(
         "ステータス", ["読取済", "確認済", "突合OK", "確定"],
         index=["読取済", "確認済", "突合OK", "確定"].index(inv["ステータス"])
