@@ -72,17 +72,31 @@ if st.button("🔁 突合を実行/再計算", type="primary", key="match_run"):
             N.update_invoice_fields(
                 db_ids, inv["id"],
                 突合状態=r["状態"],
-                NE合算額=r["NE合算額"], 差額=r["差額"], NE発注番号=denpyo,
+                NE合算額=r["NE合算額"], NE送料=r.get("NE送料", 0),
+                差額=r["差額"], NE発注番号=denpyo,
             )
             inv["突合状態"] = r["状態"]
             inv["NE合算額"] = r["NE合算額"]
+            inv["NE送料"] = r.get("NE送料", 0)
+            inv["NE合計"] = r.get("NE合計")
             inv["差額"] = r["差額"]
             inv["NE発注番号"] = denpyo
         except Exception as e:  # noqa: BLE001
             st.error(f"{inv['会社名']} の更新に失敗: {e}")
     st.toast("突合を更新しました")
 
-# 表示用テーブル(色分け)
+
+# 数値整形: 小数があれば表示、なければ整数(カンマ区切り)
+def yen(v):
+    if v is None or v == "":
+        return ""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return str(v)
+    return f"{int(f):,}" if f == int(f) else f"{f:,.2f}"
+
+
 def _row_color(stt):
     return {
         "一致": "background-color:#e6f4ea",
@@ -91,9 +105,19 @@ def _row_color(stt):
         "マスタ未登録": "background-color:#fffbe6",
     }.get(stt, "")
 
+
+def _ne_total(i):
+    if i.get("NE合計") is not None:
+        return i.get("NE合計")
+    if i.get("NE合算額") is not None:
+        return (i.get("NE合算額") or 0) + (i.get("NE送料") or 0)
+    return None
+
 df = pd.DataFrame([{
-    "会社名": i["会社名"], "当月請求額": i["当月請求額"], "NE合算額": i.get("NE合算額"),
-    "差額": i.get("差額"), "突合状態": i.get("突合状態", "未突合"),
+    "会社名": i["会社名"], "当月請求額": yen(i["当月請求額"]),
+    "NE発注額": yen(i.get("NE合算額")), "送料": yen(i.get("NE送料")),
+    "NE合計": yen(_ne_total(i)), "差額": yen(i.get("差額")),
+    "突合状態": i.get("突合状態", "未突合"),
     "ステータス": i["ステータス"], "口座相違": "⚠️" if i.get("口座相違フラグ") else "",
 } for i in invoices])
 
@@ -103,6 +127,34 @@ st.dataframe(styled, use_container_width=True)
 n_ok = sum(1 for i in invoices if i.get("突合状態") == "一致")
 n_err = sum(1 for i in invoices if i.get("突合状態") in ("金額不一致", "発注なし"))
 st.caption(f"一致 {n_ok}件 / 要確認 {n_err}件 / 全{len(invoices)}件")
+
+# 同一会社名の重複検知 → どちらを残すか選択(請求書確認の確認ポップアップ付き)
+from collections import defaultdict
+_groups = defaultdict(list)
+for inv in invoices:
+    _groups[matching.normalize_name(inv["会社名"])].append(inv)
+_dups = {k: v for k, v in _groups.items() if len(v) > 1}
+if _dups:
+    st.markdown("### ⚠️ 同一会社名の重複")
+    st.caption(f"{len(_dups)}社で会社名が重複しています。残すレコードを選び、それ以外を削除できます。")
+    for norm, recs in _dups.items():
+        with st.container(border=True):
+            st.markdown(f"**{recs[0]['会社名']}**（{len(recs)}件）")
+            labels = [f"{yen(r['当月請求額'])}円 / {r.get('ファイルリンク','') or '(ファイル名なし)'} "
+                      f"/ {r['ステータス']} / {r.get('突合状態','')}" for r in recs]
+            keep = st.radio("残すレコード", options=list(range(len(recs))),
+                            format_func=lambda j, _l=labels: _l[j], key=f"dupkeep_{norm}")
+            with st.popover("🗑️ 選択以外を削除"):
+                st.warning("⚠️ 必ず請求書（PDF）の内容を確認してから実行してください。"
+                           "削除は取り消せません。")
+                ok = st.checkbox("請求書を確認しました", key=f"dupok_{norm}")
+                if st.button("選択以外を削除する", type="primary", disabled=not ok,
+                             key=f"dupbtn_{norm}"):
+                    for j, r in enumerate(recs):
+                        if j != keep:
+                            N.delete_invoice(db_ids, r["id"])
+                    st.session_state.pop("match_invoices", None)
+                    st.rerun()
 
 st.markdown("### 3. ステータス更新")
 st.caption("内容を確認したら、各請求書のステータスを進めてください（確定は『振込CSV生成』前の最終承認）。")
@@ -127,7 +179,11 @@ for inv in invoices:
         N.update_invoice_fields(db_ids, inv["id"], ステータス=new_status)
         inv["ステータス"] = new_status
         st.toast(f"{inv['会社名']} → {new_status}")
-    if cols[3].button("🗑️削除", key=f"match_del_{inv['id']}"):
-        N.delete_invoice(db_ids, inv["id"])
-        st.session_state.pop("match_invoices", None)
-        st.rerun()
+    with cols[3].popover("🗑️削除"):
+        st.warning("⚠️ 削除前に必ず請求書（PDF）の内容を確認してください。削除は取り消せません。")
+        ok = st.checkbox("請求書を確認しました", key=f"delok_{inv['id']}")
+        if st.button("この請求書を削除する", type="primary", disabled=not ok,
+                     key=f"match_del_{inv['id']}"):
+            N.delete_invoice(db_ids, inv["id"])
+            st.session_state.pop("match_invoices", None)
+            st.rerun()

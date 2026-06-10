@@ -47,6 +47,20 @@ def parse_amount(v):
     return int(m[0]) if m else 0
 
 
+def parse_soryo(tokki):
+    """特記事項から送料金額を抽出。例『950円送料』『送料1,210』→ int。無ければ0。"""
+    if not tokki:
+        return 0
+    s = unicodedata.normalize("NFKC", str(tokki))
+    m = re.search(r"([\d,]+)\s*円?\s*送料", s) or re.search(r"送料\s*([\d,]+)", s)
+    if m:
+        try:
+            return int(m.group(1).replace(",", ""))
+        except ValueError:
+            return 0
+    return 0
+
+
 def _ym(date_str):
     """ '2026/05/29' → (2026,5)。失敗時 None。"""
     s = unicodedata.normalize("NFKC", str(date_str))
@@ -114,13 +128,15 @@ def aggregate_ne(rows, year, month):
         cd = _col(row, "仕入先cd", "仕入先CD", "仕入先コード").strip()
         name = _col(row, "仕入先名", "仕入先")
         amt = parse_amount(_col(row, "金額"))
+        soryo = parse_soryo(_col(row, "特記事項", "特記"))
         denpyo = _col(row, "発注伝票番号", "伝票番号")
         key = cd or ("name:" + normalize_name(name))
         a = agg.setdefault(key, {
-            "仕入先cd": cd, "合算額": 0, "件数": 0,
+            "仕入先cd": cd, "合算額": 0, "送料": 0, "件数": 0,
             "仕入先名": name, "正規名": normalize_name(name), "伝票": [],
         })
         a["合算額"] += amt
+        a["送料"] += soryo
         a["件数"] += 1
         if denpyo:
             a["伝票"].append(denpyo)
@@ -168,8 +184,9 @@ def match_invoice(company, amount, master_lookup, ne_agg, tolerance=0):
     norm = normalize_name(company)
     m = master_lookup["by_norm"].get(norm)
     result = {
-        "状態": "マスタ未登録", "会社名": company, "NE合算額": None,
-        "差額": None, "NE件数": 0, "NE仕入先cd": "", "突合詳細": "", "NE伝票": [],
+        "状態": "マスタ未登録", "会社名": company, "NE合算額": None, "NE送料": 0,
+        "NE合計": None, "差額": None, "NE件数": 0, "NE仕入先cd": "", "突合詳細": "",
+        "NE伝票": [],
     }
     if not m:
         result["突合詳細"] = "会社名がマスタに見つかりません(別名登録で解決可)"
@@ -193,15 +210,21 @@ def match_invoice(company, amount, master_lookup, ne_agg, tolerance=0):
         result["突合詳細"] = "対象月のNE発注が見つかりません"
         return result
 
+    soryo = int(ne.get("送料", 0))
+    ne_total = int(ne["合算額"]) + soryo  # 発注金額＋送料で突合
     result["NE合算額"] = ne["合算額"]
+    result["NE送料"] = soryo
+    result["NE合計"] = ne_total
     result["NE件数"] = ne["件数"]
     result["NE伝票"] = list(ne.get("伝票", []))
-    diff = int(amount) - int(ne["合算額"])
+    diff = int(amount) - ne_total
     result["差額"] = diff
+    soryo_txt = f"+送料{soryo:,}" if soryo else ""
     if abs(diff) <= int(tolerance):
         result["状態"] = "一致"
-        result["突合詳細"] = f"NE{ne['件数']}件合算と一致(差{diff:+,}円)"
+        result["突合詳細"] = f"NE{ne['件数']}件合算{soryo_txt}と一致(差{diff:+,}円)"
     else:
         result["状態"] = "金額不一致"
-        result["突合詳細"] = f"請求{int(amount):,}円 - NE合算{ne['合算額']:,}円 = {diff:+,}円"
+        result["突合詳細"] = (f"請求{int(amount):,}円 - NE合算{ne['合算額']:,}{soryo_txt}"
+                          f"({ne_total:,}) = {diff:+,}円")
     return result

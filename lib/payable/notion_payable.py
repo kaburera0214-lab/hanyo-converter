@@ -68,6 +68,7 @@ DB_SCHEMAS = {
             {"name": "マスタ未登録", "color": "yellow"},
         ]}},
         "NE合算額": {"number": {}},
+        "NE送料": {"number": {}},
         "差額": {"number": {}},
         "NE発注番号": {"rich_text": {}},
         "対象月": {"rich_text": {}},
@@ -511,6 +512,7 @@ def load_invoices(db_ids, target_ym=None, status=None):
             "ステータス": st_,
             "突合状態": _read_select(p.get("突合状態")),
             "NE合算額": _read_num(p.get("NE合算額")),
+            "NE送料": _read_num(p.get("NE送料")),
             "差額": _read_num(p.get("差額")),
             "NE発注番号": _read_rt(p.get("NE発注番号")),
             "対象月": ym,
@@ -528,7 +530,7 @@ def update_invoice_fields(db_ids, page_id, **fields):
     for k, v in fields.items():
         if k in ("ステータス", "突合状態", "カテゴリ"):
             props[k] = {"select": {"name": v}} if v else {"select": None}
-        elif k in ("当月請求額", "今回請求額", "NE合算額", "差額", "前月繰越額"):
+        elif k in ("当月請求額", "今回請求額", "NE合算額", "NE送料", "差額", "前月繰越額"):
             props[k] = {"number": _to_num(v)}
         elif k == "口座相違フラグ":
             props[k] = {"checkbox": bool(v)}
