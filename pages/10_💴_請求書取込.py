@@ -100,8 +100,9 @@ else:
             st.session_state.pop("match_invoices", None)
 
         # まとめて削除（選択行）。読取済のみなら確認不要、それ以外が含まれると確認必須
+        _FREE = ("読取済", "保留")  # この2つは確認なしで削除可
         sel = [inv for inv in regs if st.session_state.get(f"regsel_{inv['id']}")]
-        locked = [o for o in sel if o["ステータス"] != "読取済"]
+        locked = [o for o in sel if o["ステータス"] not in _FREE]
         bc1, bc2 = st.columns([1, 4])
         with bc1.popover(f"🗑️ 選択をまとめて削除（{len(sel)}）", disabled=not sel):
             names = "、".join(o["会社名"] for o in sel)
@@ -129,8 +130,8 @@ else:
                 f"ステータス:{inv['ステータス']}　突合:{inv.get('突合状態','')}　"
                 f"<span style='color:#888;font-size:0.85em'>{inv.get('ファイルリンク','')}</span>",
                 unsafe_allow_html=True)
-            if inv["ステータス"] == "読取済":
-                # 読取済はポップアップ確認なしで即削除
+            if inv["ステータス"] in _FREE:
+                # 読取済・保留はポップアップ確認なしで即削除
                 if gc2.button("🗑️削除", key=f"regdel_{inv['id']}"):
                     N.delete_invoice(db_ids, inv["id"])
                     _drop_caches()
@@ -222,6 +223,27 @@ def _file_issue(data):
     return (m0 is None) or mism0
 
 
+def _base_row(data, fn, comp, cur, cur_ex, tot, carry, tax_bd, bill, due, cat, mism,
+              status, taikai, match_state):
+    """保存用の行dictを組み立てる。"""
+    return {
+        "会社名": comp, "当月請求額": cur, "当月税抜額": cur_ex,
+        "今回請求額": tot, "前月繰越額": carry,
+        "消費税額": data.get("消費税額", 0), "税内訳": tax_bd,
+        "軽減税率": data.get("軽減税率", False),
+        "請求日": bill, "支払期日": due, "カテゴリ": cat,
+        "抽出_銀行": data.get("振込先銀行", ""), "抽出_支店": data.get("振込先支店", ""),
+        "抽出_預金種目": data.get("預金種目", ""), "抽出_口座番号": data.get("口座番号", ""),
+        "抽出_口座名義": data.get("口座名義", ""),
+        "口座相違フラグ": mism,
+        "抽出メモ": data.get("信頼度メモ", ""),
+        "ファイルリンク": fn,
+        "ステータス": status, "突合状態": match_state, "突合対象": taikai,
+        "対象月": target_ym,
+        "_ai会社名": data.get("_ai会社名", ""),
+    }
+
+
 def _render_file(idx, data):
     """1ファイル分の読取結果UIを描画し、rows_for_saveへ追記する。"""
     fn = data.get("_file", f"file{idx}")
@@ -229,19 +251,27 @@ def _render_file(idx, data):
         st.error(data["_error"])
         return
     hc1, hc2 = st.columns([3, 2])
-    skip = hc1.checkbox("このファイルは登録しない（内訳・重複など読み飛ばす）",
+    skip = hc1.checkbox("このファイルは突合しない（内訳・重複など。データは保持されます）",
                         key=f"pay_skip_{idx}")
     show_prev = hc2.toggle("📄 プレビュー表示", key=f"pay_prev_{idx}")
     if show_prev:
         _preview(fn, idx)
     if skip:
-        st.caption("→ このファイルは登録対象から除外します。")
+        st.caption("→ 突合対象外として『保留』で保持します（後でNG掘り下げに使えます）。")
+        rows_for_save.append(_base_row(
+            data, fn, comp=data.get("会社名", ""),
+            cur=int(data.get("当月請求額", 0) or 0), cur_ex=int(data.get("当月税抜額", 0) or 0),
+            tot=int(data.get("今回請求額", 0) or 0), carry=int(data.get("前月繰越額", 0) or 0),
+            tax_bd=data.get("税内訳", ""), bill=data.get("請求日", ""),
+            due=data.get("支払期日", ""), cat="", mism=False,
+            status="保留", taikai=False, match_state="対象外"))
         return
     comp = st.text_input("会社名", value=data.get("会社名", ""), key=f"pay_comp_{idx}")
     cc0, cc1, cc2, cc3 = st.columns(4)
+    # 赤伝(マイナス請求)も扱えるよう min_value は設定しない
     cur_ex = cc0.number_input("当月税抜額（突合用）", value=int(data.get("当月税抜額", 0) or 0),
                               step=1, key=f"pay_curex_{idx}",
-                              help="NE発注は税抜のため、突合はこの税抜額で行います。")
+                              help="NE発注は税抜のため、突合はこの税抜額で行います。赤伝はマイナス可。")
     cur = cc1.number_input("当月請求額（税込・振込用）", value=int(data.get("当月請求額", 0) or 0),
                            step=1, key=f"pay_cur_{idx}")
     tot = cc2.number_input("今回請求額(繰越込)", value=int(data.get("今回請求額", 0) or 0),
@@ -259,6 +289,18 @@ def _render_file(idx, data):
 
     # マスタ照合
     m = look["by_norm"].get(matching.normalize_name(comp))
+    # マスタ未登録 → 部分一致の候補を提示し、選べば会社名を補正
+    if not m:
+        cands = matching.find_candidates(comp, master_rows)
+        if cands:
+            pick = st.selectbox(
+                "候補から選択（部分一致。会社名の読取違いをここで補正→保存時に別名学習）",
+                ["（選択しない）"] + cands, key=f"pay_cand_{idx}")
+            if pick != "（選択しない）":
+                comp = pick
+                m = look["by_norm"].get(matching.normalize_name(comp))
+                st.caption(f"→ 会社名を『{comp}』として扱います。")
+
     mism, note = _account_mismatch(m, data)
     if m:
         if str(m.get("支払区分", "")) == "カード払い":
@@ -268,32 +310,26 @@ def _render_file(idx, data):
             st.success(f"マスタ照合: {m['会社名']}（{m.get('銀行','')} {m.get('支店','')} "
                        f"{m.get('預金種目','')} {m.get('口座番号','')}）{extra}")
     else:
-        st.warning("⚠️ マスタ未登録の会社です。新規取引先の可能性。"
-                   "「取引先マスタ」ページで登録するまで振込CSVには出ません。")
+        st.warning("⚠️ 会社名の不一致の可能性、または新規取引先の可能性があります。"
+                   "（上の候補から選ぶか、会社名を修正してください。新規なら「取引先マスタ」で登録）")
     if mism:
         st.error(f"⚠️ 口座変更の可能性: {note}")
     elif data.get("複数口座") and not m:
-        # マスタ未登録で複数口座のときだけ注意喚起
         st.warning("請求書に複数の振込先口座が記載されています。どれに振込むか要確認。")
     if data.get("信頼度メモ"):
         st.caption(f"AIメモ: {data.get('信頼度メモ')}")
 
-    rows_for_save.append({
-        "会社名": comp, "当月請求額": cur, "当月税抜額": cur_ex,
-        "今回請求額": tot, "前月繰越額": carry,
-        "消費税額": data.get("消費税額", 0), "税内訳": tax_bd,
-        "軽減税率": data.get("軽減税率", False),
-        "請求日": bill_date, "支払期日": due, "カテゴリ": cat,
-        "抽出_銀行": data.get("振込先銀行", ""), "抽出_支店": data.get("振込先支店", ""),
-        "抽出_預金種目": data.get("預金種目", ""), "抽出_口座番号": data.get("口座番号", ""),
-        "抽出_口座名義": data.get("口座名義", ""),
-        "口座相違フラグ": mism,
-        "抽出メモ": data.get("信頼度メモ", ""),
-        "ファイルリンク": fn,
-        "ステータス": "読取済", "突合状態": "未突合",
-        "対象月": target_ym,
-        "_ai会社名": data.get("_ai会社名", ""),
-    })
+    # 登録ステータス: 確認が要るもの(未登録/口座相違)は既定『保留』
+    issue = (m is None) or mism
+    reg_status = st.selectbox(
+        "登録ステータス", ["読取済", "保留"], index=(1 if issue else 0),
+        key=f"pay_status_{idx}",
+        help="確認が必要なものは『保留』で保存し、マスタ調整後に進められます。")
+
+    rows_for_save.append(_base_row(
+        data, fn, comp=comp, cur=cur, cur_ex=cur_ex, tot=tot, carry=carry,
+        tax_bd=tax_bd, bill=bill_date, due=due, cat=cat, mism=mism,
+        status=reg_status, taikai=True, match_state="未突合"))
 
 
 # 同一フォルダのファイルは1つのアコーディオンにまとめる(判定は各ファイル個別)

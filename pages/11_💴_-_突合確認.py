@@ -73,6 +73,8 @@ st.markdown("### 2. 突合結果")
 st.caption("NE発注データは税抜のため、突合は『当月税抜額』で行います（振込CSVは税込で作成）。")
 if st.button("🔁 突合を実行/再計算", type="primary", key="match_run"):
     for inv in invoices:
+        if inv.get("突合状態") == "対象外":
+            continue  # 「突合しない」指定のファイルはスキップ(保持はする)
         r = matching.match_invoice(inv["会社名"], _extax(inv), look, ne_agg, tolerance=tol)
         denpyo = ",".join(str(d) for d in r.get("NE伝票", []))
         try:
@@ -169,7 +171,7 @@ st.caption("各請求書の取込情報をその場で確認し、ステータ�
            "（確定は『振込CSV生成』前の最終承認）。")
 NE_URL = "https://main.next-engine.com/userg5210?dnum={}"
 _ICON = {"一致": "✅", "金額不一致": "⚠️", "発注なし": "🟠", "マスタ未登録": "🟡", "未突合": "⬜"}
-_STAT = ["読取済", "確認済", "突合OK", "確定"]
+_STAT = ["保留", "読取済", "確認済", "突合OK", "確定"]
 
 for inv in invoices:
     stt = inv.get("突合状態", "未突合")

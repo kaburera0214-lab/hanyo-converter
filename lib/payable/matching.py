@@ -38,6 +38,41 @@ def normalize_name(s):
     return s.lower()
 
 
+def find_candidates(name, master_rows, limit=6, threshold=0.4):
+    """
+    会社名(name)に部分一致・類似する取引先候補を返す(マスタ未登録時の補正用)。
+    会社名・別名の両方を対象に、部分一致(包含)と類似度でスコアリング。
+    戻り値: [会社名,...] スコア降順。
+    """
+    import difflib
+    nn = normalize_name(name)
+    if not nn:
+        return []
+    scored = []
+    for mst in master_rows:
+        names = [mst.get("会社名", "")]
+        names += [a for a in re.split(r"[;,、/／]", mst.get("別名", "") or "") if a.strip()]
+        best = 0.0
+        for cn in names:
+            ncn = normalize_name(cn)
+            if not ncn:
+                continue
+            if nn in ncn or ncn in nn:
+                best = max(best, 0.9)
+            best = max(best, difflib.SequenceMatcher(None, nn, ncn).ratio())
+        if best >= threshold:
+            scored.append((best, mst.get("会社名", "")))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    seen, out = set(), []
+    for _, nm in scored:
+        if nm and nm not in seen:
+            seen.add(nm)
+            out.append(nm)
+        if len(out) >= limit:
+            break
+    return out
+
+
 def parse_amount(v):
     """ '12,600' '950円(税抜)' 等 → int。数字が無ければ0。"""
     if v is None:

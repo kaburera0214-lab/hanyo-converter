@@ -10,7 +10,7 @@ import json
 
 # スキーマ(列)を変更したらこの版数を上げる。app_initがセッションキャッシュを
 # 無視して ensure_databases(不足列の自動追加) を再実行する。
-SCHEMA_VERSION = "2026-06-09e"
+SCHEMA_VERSION = "2026-06-09f"
 
 DB_SCHEMAS = {
     "支払_取引先マスタ": {
@@ -64,17 +64,20 @@ DB_SCHEMAS = {
         "抽出_口座名義": {"rich_text": {}},
         "口座相違フラグ": {"checkbox": {}},
         "ステータス": {"select": {"options": [
+            {"name": "保留", "color": "yellow"},
             {"name": "読取済", "color": "gray"},
             {"name": "確認済", "color": "blue"},
             {"name": "突合OK", "color": "green"},
             {"name": "確定", "color": "purple"},
         ]}},
+        "突合対象": {"checkbox": {}},
         "突合状態": {"select": {"options": [
             {"name": "未突合", "color": "gray"},
             {"name": "一致", "color": "green"},
             {"name": "金額不一致", "color": "red"},
             {"name": "発注なし", "color": "orange"},
             {"name": "マスタ未登録", "color": "yellow"},
+            {"name": "対象外", "color": "default"},
         ]}},
         "NE合算額": {"number": {}},
         "NE送料": {"number": {}},
@@ -491,6 +494,7 @@ def save_invoice(db_ids, data):
         props["カテゴリ"] = {"select": {"name": cat}}
     props["ステータス"] = {"select": {"name": data.get("ステータス", "読取済")}}
     props["突合状態"] = {"select": {"name": data.get("突合状態", "未突合")}}
+    props["突合対象"] = {"checkbox": bool(data.get("突合対象", True))}
     client.pages.create(parent={"database_id": db_ids["支払_請求書"]}, properties=props)
 
 
@@ -522,6 +526,7 @@ def load_invoices(db_ids, target_ym=None, status=None):
             "抽出_口座番号": _read_rt(p.get("抽出_口座番号")),
             "抽出_口座名義": _read_rt(p.get("抽出_口座名義")),
             "口座相違フラグ": _read_check(p.get("口座相違フラグ")),
+            "突合対象": _read_check(p.get("突合対象")),
             "ステータス": st_,
             "突合状態": _read_select(p.get("突合状態")),
             "NE合算額": _read_num(p.get("NE合算額")),
@@ -545,7 +550,7 @@ def update_invoice_fields(db_ids, page_id, **fields):
             props[k] = {"select": {"name": v}} if v else {"select": None}
         elif k in ("当月請求額", "当月税抜額", "今回請求額", "NE合算額", "NE送料", "差額", "前月繰越額"):
             props[k] = {"number": _to_num(v)}
-        elif k == "口座相違フラグ":
+        elif k in ("口座相違フラグ", "突合対象"):
             props[k] = {"checkbox": bool(v)}
         else:
             props[k] = {"rich_text": _rt(v)}
