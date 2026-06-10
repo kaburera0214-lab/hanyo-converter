@@ -569,6 +569,11 @@ with st.expander("商品マスタの管理（毎回アップ不要・Drive保存
                "master.csv に「項目1（サイズ）」列を含めて汎用側で更新すれば、"
                "請求書側も自動で最新になります（更新点が1つに）。"
                "項目1列が無い間は、下のDriveアップロード版を使います。")
+    if product_folder:
+        st.link_button(
+            "📁 商品マスタのDriveフォルダを開く",
+            f"https://drive.google.com/drive/folders/{product_folder}",
+            use_container_width=True)
     if prod_df is not None:
         st.success(f"③商品マスタ利用中: {prod_meta}")
     else:
@@ -1043,6 +1048,11 @@ with lk2:
                        use_container_width=True)
     else:
         st.caption("内訳明細の格納先リンク未設定（下で設定）")
+if drive_folder:
+    st.link_button(
+        "📁 請求確定のバックアップフォルダを開く",
+        f"https://drive.google.com/drive/folders/{drive_folder}",
+        use_container_width=True)
 with st.expander("内訳明細の格納先リンク設定（クライアント別）", expanded=False):
     _b = st.text_input("内訳明細の格納先リンク（このクライアント用）",
                        value=_breakdown_link, key="invoice_link_bd")
