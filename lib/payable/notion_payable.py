@@ -441,7 +441,7 @@ def upsert_master_row(db_ids, r):
     client = _client()
     rid = str(r.get("id") or "").strip()
     props = _master_props(r)
-    if rid and rid.lower() != "nan":
+    if rid and rid.lower() not in ("nan", "none"):
         client.pages.update(page_id=rid, properties=props)
     else:
         client.pages.create(parent={"database_id": db_ids["支払_取引先マスタ"]}, properties=props)

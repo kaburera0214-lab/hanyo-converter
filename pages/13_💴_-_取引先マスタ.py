@@ -80,19 +80,32 @@ else:
     )
 
     if st.button("💾 変更を保存", type="primary", key="pm_save"):
-        n = 0
+        # 変更行・新規行だけ保存(毎回全件更新を避ける→高速・失敗しにくい)
+        orig = {r["id"]: r for r in st.session_state.get("pm_rows", []) if r.get("id")}
+        created = updated = 0
         for _, r in edited.iterrows():
             rec = {k: ("" if pd.isna(r.get(k)) else r.get(k)) for k in edit_cols}
             if not str(rec["会社名"]).strip():
                 continue
+            rid = str(rec.get("id") or "").strip()
+            is_new = rid.lower() in ("", "nan", "none")
             try:
-                N.upsert_master_row(db_ids, rec)
-                n += 1
+                if is_new:
+                    rec["id"] = ""
+                    N.upsert_master_row(db_ids, rec)
+                    created += 1
+                else:
+                    o = orig.get(rid, {})
+                    changed = any(str(rec.get(k, "")).strip() != str(o.get(k, "")).strip()
+                                  for k in edit_cols if k != "id")
+                    if changed:
+                        N.upsert_master_row(db_ids, rec)
+                        updated += 1
             except Exception as e:  # noqa: BLE001
                 st.error(f"{rec['会社名']} の保存に失敗: {e}")
         st.session_state.pop("pm_rows", None)
         st.session_state["payable_master_nonce"] = st.session_state.get("payable_master_nonce", 0) + 1
-        st.success(f"{n}件を保存しました。")
+        st.success(f"新規{created}件・更新{updated}件を保存しました。")
         st.rerun()
 
 st.markdown("---")
