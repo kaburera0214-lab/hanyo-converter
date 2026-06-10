@@ -92,25 +92,60 @@ else:
     if not regs:
         rc2.caption(f"対象月 {target_ym} の登録済みデータはありません。")
     else:
-        rc2.caption(f"対象月 {target_ym}：{len(regs)}件")
+        rc2.caption(f"対象月 {target_ym}：{len(regs)}件　"
+                    "（チェックを入れてまとめて削除できます）")
+
+        def _drop_caches():
+            st.session_state.pop("payable_registered", None)
+            st.session_state.pop("match_invoices", None)
+
+        # まとめて削除（選択行）。読取済のみなら確認不要、それ以外が含まれると確認必須
+        sel = [inv for inv in regs if st.session_state.get(f"regsel_{inv['id']}")]
+        locked = [o for o in sel if o["ステータス"] != "読取済"]
+        bc1, bc2 = st.columns([1, 4])
+        with bc1.popover(f"🗑️ 選択をまとめて削除（{len(sel)}）", disabled=not sel):
+            names = "、".join(o["会社名"] for o in sel)
+            st.caption(f"削除対象：{names}")
+            if locked:
+                st.warning(f"⚠️ 『読取済』以外のデータが{len(locked)}件含まれます。"
+                           "必ず請求書（PDF）の内容を確認してください。削除は取り消せません。")
+                ok_bulk = st.checkbox("請求書を確認しました", key="regbulk_ok")
+            else:
+                st.info("すべて『読取済』のため、そのまま削除できます。")
+                ok_bulk = True
+            if st.button("選択を削除する", type="primary", disabled=not ok_bulk,
+                         key="regbulk_btn"):
+                for o in sel:
+                    N.delete_invoice(db_ids, o["id"])
+                _drop_caches()
+                st.rerun()
+
         for inv in regs:
-            gc1, gc2 = st.columns([5, 1])
+            gc0, gc1, gc2 = st.columns([0.4, 5, 1])
+            gc0.checkbox("選択", key=f"regsel_{inv['id']}", label_visibility="collapsed")
             gc1.markdown(
                 f"**{inv['会社名']}**　税抜{int(inv.get('当月税抜額') or 0):,}/"
                 f"税込{int(inv.get('当月請求額') or 0):,}円　"
                 f"ステータス:{inv['ステータス']}　突合:{inv.get('突合状態','')}　"
                 f"<span style='color:#888;font-size:0.85em'>{inv.get('ファイルリンク','')}</span>",
                 unsafe_allow_html=True)
-            with gc2.popover("🗑️削除"):
-                st.warning("⚠️ 削除前に必ず請求書（PDF）の内容を確認してください。"
-                           "削除は取り消せません。")
-                ok = st.checkbox("請求書を確認しました", key=f"regdelok_{inv['id']}")
-                if st.button("この請求書を削除する", type="primary", disabled=not ok,
-                             key=f"regdel_{inv['id']}"):
+            if inv["ステータス"] == "読取済":
+                # 読取済はポップアップ確認なしで即削除
+                if gc2.button("🗑️削除", key=f"regdel_{inv['id']}"):
                     N.delete_invoice(db_ids, inv["id"])
-                    st.session_state.pop("payable_registered", None)
-                    st.session_state.pop("match_invoices", None)
+                    _drop_caches()
                     st.rerun()
+            else:
+                # 読取済より進んでいる場合は確認必須
+                with gc2.popover("🗑️削除"):
+                    st.warning("⚠️ このデータは『読取済』以降のステータスです。"
+                               "削除前に必ず請求書（PDF）を確認してください。取り消せません。")
+                    ok = st.checkbox("請求書を確認しました", key=f"regdelok_{inv['id']}")
+                    if st.button("この請求書を削除する", type="primary", disabled=not ok,
+                                 key=f"regdelbtn_{inv['id']}"):
+                        N.delete_invoice(db_ids, inv["id"])
+                        _drop_caches()
+                        st.rerun()
 
 st.markdown("---")
 results = st.session_state.get("payable_extracted", [])
