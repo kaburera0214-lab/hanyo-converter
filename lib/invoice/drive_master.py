@@ -67,6 +67,44 @@ def upload_bytes(file_bytes, name, folder_id, mimetype="application/octet-stream
     return created["id"]
 
 
+def _next_version(folder_id, prefix, today):
+    """{prefix}_{today}_NNN.csv の次の版数を返す（汎用マスタ変換と同じ規則）。"""
+    service = _service()
+    q = (f"'{folder_id}' in parents and name contains '{prefix}_{today}_' "
+         "and trashed = false")
+    res = service.files().list(q=q, fields="files(name)", pageSize=100).execute()
+    vers = []
+    for f in res.get("files", []):
+        try:
+            vers.append(int(f["name"].replace(".csv", "").split("_")[-1]))
+        except (ValueError, IndexError):
+            pass
+    return max(vers) + 1 if vers else 1
+
+
+def upload_versioned(file_bytes, prefix, folder_id, mimetype="text/csv"):
+    """{prefix}_{YYYYMMDD}_{NNN}.csv の版数付き名でフォルダに保存し、ファイル名を返す。"""
+    import datetime
+    today = datetime.datetime.now().strftime("%Y%m%d")
+    v = _next_version(folder_id, prefix, today)
+    name = f"{prefix}_{today}_{v:03d}.csv"
+    upload_bytes(file_bytes, name, folder_id, mimetype)
+    return name
+
+
+def find_latest(folder_id, prefix):
+    """フォルダ内の {prefix}_* で最新（名前降順=日付/版数が最大）のファイルを返す。"""
+    service = _service()
+    q = (f"'{folder_id}' in parents and name contains '{prefix}_' and trashed = false")
+    res = service.files().list(
+        q=q, fields="files(id, name, modifiedTime)", pageSize=1000).execute()
+    files = [f for f in res.get("files", []) if f["name"].startswith(prefix + "_")]
+    if not files:
+        return None
+    files.sort(key=lambda f: f["name"], reverse=True)
+    return files[0]
+
+
 def upload_or_replace(file_bytes, name, folder_id, mimetype="text/csv"):
     """
     同名ファイルがあれば中身を更新、無ければ新規作成する。ファイルIDを返す。

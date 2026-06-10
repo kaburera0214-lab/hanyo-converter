@@ -527,6 +527,9 @@ st.caption("出荷作業料はPCS（商品点数）×サイズ別単価で算出
            "②はクライアント別。商品マスタはNE共通で、Driveに保存して毎回のアップは不要です。")
 
 drive_folder = st.secrets.get("INVOICE_GDRIVE_FOLDER_ID", "")
+# 商品マスタのバックアップ先（汎用マスタ変換と同じフォルダ・命名 master_YYYYMMDD_NNN.csv）
+product_folder = st.secrets.get(
+    "PRODUCT_MASTER_FOLDER_ID", "1pQJgn7tYX0KF4x70WY6mlOiruZWPInd-")
 
 # ③商品マスタ：session_state → 共有master.csv → Drive の順で取得
 prod_df = st.session_state.get("invoice_prod_df")
@@ -548,13 +551,13 @@ if prod_df is None:
     except Exception as e:
         st.caption(f"（共有master.csvの読込をスキップ: {e}）")
 
-# 2) Drive保存版（master.csvに項目1が無い場合のフォールバック）
-if prod_df is None and drive_folder:
+# 2) Drive保存版（master.csvに項目1が無い場合のフォールバック・最新版を取得）
+if prod_df is None and product_folder:
     try:
-        f = drive_master.find_file(drive_master.PRODUCT_MASTER_NAME, drive_folder)
+        f = drive_master.find_latest(product_folder, "master")
         if f:
             prod_df = ne_calc.load_product_master(drive_master.download_bytes(f["id"]))
-            prod_meta = f"Drive保存版（更新 {str(f.get('modifiedTime',''))[:10]}・{len(prod_df):,}件）"
+            prod_meta = f"Drive保存版 {f['name']}（{len(prod_df):,}件）"
             st.session_state["invoice_prod_df"] = prod_df
             st.session_state["invoice_prod_meta"] = prod_meta
     except Exception as e:
@@ -590,9 +593,9 @@ with st.expander("商品マスタの管理（毎回アップ不要・Drive保存
                     st.warning("この商品の項目1（サイズ）は**空**です。③で項目1を設定して更新してください。")
                 else:
                     st.success(f"この商品の項目1（サイズ）= 「{val}」（マスタに反映済み）")
-    if not drive_folder:
-        st.warning("Secretsに INVOICE_GDRIVE_FOLDER_ID が未設定のため、③をDrive保存できません"
-                   "（今回のセッションのみ利用）。")
+    if not product_folder:
+        st.warning("商品マスタのDrive保存先（PRODUCT_MASTER_FOLDER_ID）が未設定のため、"
+                   "今回のセッションのみ利用になります。")
     new_prod = st.file_uploader("商品マスタ(NEカスタム)をアップロード／更新",
                                 type=["csv"], key="invoice_prod_upload")
     if new_prod is not None:
@@ -609,12 +612,11 @@ with st.expander("商品マスタの管理（毎回アップ不要・Drive保存
             st.session_state["invoice_prod_df"] = pdf
             st.session_state["invoice_prod_meta"] = prod_meta
             st.success(f"商品マスタを更新しました（{len(pdf):,}件）。出荷作業料の算出に反映されます。")
-            # Driveバックアップはベストエフォート（失敗してもマスタ更新は維持）
-            if drive_folder:
+            # Driveバックアップ（汎用と同じフォルダ・版数付き命名）はベストエフォート
+            if product_folder:
                 try:
-                    drive_master.upload_or_replace(
-                        data, drive_master.PRODUCT_MASTER_NAME, drive_folder)
-                    st.caption("Driveにもバックアップしました。")
+                    _bn = drive_master.upload_versioned(data, "master", product_folder)
+                    st.caption(f"Driveにバックアップしました（{_bn}）。")
                 except Exception as e:
                     st.warning(f"⚠️ Driveバックアップに失敗しました（マスタ更新は反映済み）: {e}。"
                                "Driveが繰り返し失敗する場合は GOOGLE_REFRESH_TOKEN の再取得が必要かもしれません。")
