@@ -291,7 +291,10 @@ def _render_file(idx, data):
     m = look["by_norm"].get(matching.normalize_name(comp))
     # マスタ未登録 → 部分一致の候補を提示し、選べば会社名を補正
     if not m:
-        cands = matching.find_candidates(comp, master_rows)
+        try:
+            cands = matching.find_candidates(comp, list(master_rows))
+        except Exception:  # noqa: BLE001
+            cands = []
         if cands:
             pick = st.selectbox(
                 "候補から選択（部分一致。会社名の読取違いをここで補正→保存時に別名学習）",

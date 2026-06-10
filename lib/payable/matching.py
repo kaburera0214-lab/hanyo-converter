@@ -46,12 +46,14 @@ def find_candidates(name, master_rows, limit=6, threshold=0.4):
     """
     import difflib
     nn = normalize_name(name)
-    if not nn:
+    if not nn or not master_rows:
         return []
     scored = []
     for mst in master_rows:
-        names = [mst.get("会社名", "")]
-        names += [a for a in re.split(r"[;,、/／]", mst.get("別名", "") or "") if a.strip()]
+        if not isinstance(mst, dict):
+            continue  # 想定外の型(列名文字列等)は無視
+        names = [str(mst.get("会社名", "") or "")]
+        names += [a for a in re.split(r"[;,、/／]", str(mst.get("別名", "") or "")) if a.strip()]
         best = 0.0
         for cn in names:
             ncn = normalize_name(cn)
