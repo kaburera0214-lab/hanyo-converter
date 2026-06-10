@@ -17,8 +17,10 @@ DB_SCHEMAS = {
         "支払方法": {"rich_text": {}},
         "支払日": {"rich_text": {}},
         "銀行": {"rich_text": {}},
+        "支店": {"rich_text": {}},
         "銀行番号": {"rich_text": {}},
         "支店番号": {"rich_text": {}},
+        "支払元銀行": {"rich_text": {}},
         "預金種目": {"select": {"options": [
             {"name": "普通", "color": "blue"},
             {"name": "当座", "color": "green"},
@@ -37,6 +39,8 @@ DB_SCHEMAS = {
         "今回請求額": {"number": {}},
         "前月繰越額": {"number": {}},
         "消費税額": {"number": {}},
+        "税内訳": {"rich_text": {}},
+        "軽減税率": {"checkbox": {}},
         "請求日": {"rich_text": {}},
         "支払期日": {"rich_text": {}},
         "カテゴリ": {"select": {"options": [
@@ -195,8 +199,8 @@ def _query_all(db_id):
 # 取引先マスタ
 # ============================================================
 MASTER_FIELDS = ["会社名", "別名", "NE仕入先cd", "科目", "支払方法", "支払日", "銀行",
-                 "銀行番号", "支店番号", "預金種目", "口座番号", "受取人口座名",
-                 "顧客番号", "固定額", "除外フラグ", "備考"]
+                 "支店", "銀行番号", "支店番号", "預金種目", "口座番号", "受取人口座名",
+                 "顧客番号", "固定額", "除外フラグ", "支払元銀行", "備考"]
 
 
 def load_master(db_ids):
@@ -213,8 +217,10 @@ def load_master(db_ids):
             "支払方法": _read_rt(p.get("支払方法")),
             "支払日": _read_rt(p.get("支払日")),
             "銀行": _read_rt(p.get("銀行")),
+            "支店": _read_rt(p.get("支店")),
             "銀行番号": _read_rt(p.get("銀行番号")),
             "支店番号": _read_rt(p.get("支店番号")),
+            "支払元銀行": _read_rt(p.get("支払元銀行")),
             "預金種目": _read_select(p.get("預金種目")),
             "口座番号": _read_rt(p.get("口座番号")),
             "受取人口座名": _read_rt(p.get("受取人口座名")),
@@ -241,8 +247,10 @@ def _master_props(r):
         "支払方法": {"rich_text": _rt(r.get("支払方法", ""))},
         "支払日": {"rich_text": _rt(r.get("支払日", ""))},
         "銀行": {"rich_text": _rt(r.get("銀行", ""))},
+        "支店": {"rich_text": _rt(r.get("支店", ""))},
         "銀行番号": {"rich_text": _rt(r.get("銀行番号", ""))},
         "支店番号": {"rich_text": _rt(r.get("支店番号", ""))},
+        "支払元銀行": {"rich_text": _rt(r.get("支払元銀行", ""))},
         "預金種目": ({"select": {"name": r["預金種目"]}}
                   if str(r.get("預金種目", "")).strip() in ("普通", "当座") else {"select": None}),
         "口座番号": {"rich_text": _rt(r.get("口座番号", ""))},
@@ -288,9 +296,9 @@ def _seed_create(db_ids, seed_rows):
 
 
 # マージ対象のデータ列(id/表示用の除外フラグ表記を除く実データ)
-_MERGE_FIELDS = ["別名", "NE仕入先cd", "科目", "支払方法", "支払日", "銀行",
+_MERGE_FIELDS = ["別名", "NE仕入先cd", "科目", "支払方法", "支払日", "銀行", "支店",
                  "銀行番号", "支店番号", "預金種目", "口座番号", "受取人口座名",
-                 "顧客番号", "固定額", "除外フラグ", "備考"]
+                 "顧客番号", "固定額", "除外フラグ", "支払元銀行", "備考"]
 
 
 def dedupe_master(db_ids):
@@ -349,6 +357,44 @@ def dedupe_master(db_ids):
     return report
 
 
+def enrich_bank_names(db_ids):
+    """
+    既存マスタの 銀行番号/支店番号 から 銀行名/支店名 を補完する。
+    既存の『銀行』列が金融機関名と一致しない値(弊社の支払元=楽天等)なら、
+    空の『支払元銀行』へ退避してから 銀行=受取人銀行名 に置き換える。
+    戻り値: {"更新":n, "詳細":[...]}
+    """
+    from . import bank_master as BM
+    client = _client()
+    rows = load_master(db_ids)
+    updated, detail = 0, []
+    for r in rows:
+        bank_no = (r.get("銀行番号") or "").strip()
+        branch_no = (r.get("支店番号") or "").strip()
+        if not bank_no:
+            continue
+        new_bank = BM.bank_name(bank_no)
+        new_branch = BM.branch_name(bank_no, branch_no)
+        if not new_bank:
+            continue
+        cur_bank = (r.get("銀行") or "").strip()
+        cur_branch = (r.get("支店") or "").strip()
+        cur_moto = (r.get("支払元銀行") or "").strip()
+        props = {}
+        # 現『銀行』が受取人銀行名と異なる→支払元として退避(支払元が空のときだけ)
+        if cur_bank and cur_bank != new_bank and not cur_moto:
+            props["支払元銀行"] = {"rich_text": _rt(cur_bank)}
+        if cur_bank != new_bank:
+            props["銀行"] = {"rich_text": _rt(new_bank)}
+        if cur_branch != new_branch and new_branch:
+            props["支店"] = {"rich_text": _rt(new_branch)}
+        if props:
+            client.pages.update(page_id=r["id"], properties=props)
+            updated += 1
+            detail.append(f"{r['会社名']}: {new_bank} {new_branch}")
+    return {"更新": updated, "詳細": detail}
+
+
 def upsert_master_row(db_ids, r):
     """マスタ1行を保存。idがあれば更新、無ければ新規。"""
     client = _client()
@@ -381,6 +427,8 @@ def save_invoice(db_ids, data):
         "今回請求額": {"number": _to_num(data.get("今回請求額"))},
         "前月繰越額": {"number": _to_num(data.get("前月繰越額"))},
         "消費税額": {"number": _to_num(data.get("消費税額"))},
+        "税内訳": {"rich_text": _rt(data.get("税内訳", ""))},
+        "軽減税率": {"checkbox": bool(data.get("軽減税率"))},
         "請求日": {"rich_text": _rt(data.get("請求日", ""))},
         "支払期日": {"rich_text": _rt(data.get("支払期日", ""))},
         "抽出_銀行": {"rich_text": _rt(data.get("抽出_銀行", ""))},
@@ -420,6 +468,8 @@ def load_invoices(db_ids, target_ym=None, status=None):
             "当月請求額": _read_num(p.get("当月請求額")) or 0,
             "今回請求額": _read_num(p.get("今回請求額")) or 0,
             "前月繰越額": _read_num(p.get("前月繰越額")) or 0,
+            "税内訳": _read_rt(p.get("税内訳")),
+            "軽減税率": _read_check(p.get("軽減税率")),
             "請求日": _read_rt(p.get("請求日")),
             "支払期日": _read_rt(p.get("支払期日")),
             "カテゴリ": _read_select(p.get("カテゴリ")),

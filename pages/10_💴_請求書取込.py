@@ -13,7 +13,7 @@ st.set_page_config(page_title="請求書取込", layout="wide")
 st.title("💴 請求書取込（買掛）")
 st.caption("請求書PDF/画像をAIで読み取り、口座マスタと照合して登録します。")
 
-from lib.payable import app_init, extract, matching, notion_payable as N
+from lib.payable import app_init, extract, matching, bank_master as BM, notion_payable as N
 
 try:
     db_ids = app_init.init_payable()
@@ -66,18 +66,25 @@ if not results:
 
 
 def _account_mismatch(m, data):
-    """マスタ口座と抽出口座の相違を判定。比較できる項目だけ見る。"""
+    """マスタ口座と抽出口座の相違を判定。銀行名・支店名・口座番号で照合。"""
     if not m:
         return False, ""
     notes = []
-    acc_x = "".join(ch for ch in str(data.get("口座番号", "")) if ch.isdigit())
-    acc_m = "".join(ch for ch in str(m.get("口座番号", "")) if ch.isdigit())
+    # 口座番号
+    acc_x = BM.digits(data.get("口座番号", ""))
+    acc_m = BM.digits(m.get("口座番号", ""))
     if acc_x and acc_m and acc_x.lstrip("0") != acc_m.lstrip("0"):
         notes.append(f"口座番号 抽出{acc_x}≠マスタ{acc_m}")
-    bank_x = str(data.get("振込先銀行", "")).strip()
-    bank_m = str(m.get("銀行", "")).strip()
-    if bank_x and bank_m and bank_m not in bank_x and bank_x not in bank_m:
-        notes.append(f"銀行 抽出『{bank_x}』≠マスタ『{bank_m}』")
+    # 銀行名(表記ゆれ吸収)
+    bank_x = BM.normalize_bank(data.get("振込先銀行", ""))
+    bank_m = BM.normalize_bank(m.get("銀行", ""))
+    if bank_x and bank_m and bank_x != bank_m and bank_x not in bank_m and bank_m not in bank_x:
+        notes.append(f"銀行 抽出『{data.get('振込先銀行','')}』≠マスタ『{m.get('銀行','')}』")
+    # 支店名
+    br_x = BM.normalize_branch(data.get("振込先支店", ""))
+    br_m = BM.normalize_branch(m.get("支店", ""))
+    if br_x and br_m and br_x != br_m and br_x not in br_m and br_m not in br_x:
+        notes.append(f"支店 抽出『{data.get('振込先支店','')}』≠マスタ『{m.get('支店','')}』")
     return (len(notes) > 0), " / ".join(notes)
 
 
@@ -104,11 +111,15 @@ for idx, data in enumerate(results):
         due = cd2.text_input("支払期日", value=data.get("支払期日", ""), key=f"pay_due_{idx}")
         cat = cd3.selectbox("カテゴリ", ["", "WEB発行", "郵送", "前払い"],
                             key=f"pay_cat_{idx}")
+        tax_bd = st.text_input("税内訳（税率別。軽減税率対応）",
+                               value=data.get("税内訳", ""), key=f"pay_tax_{idx}")
+        if data.get("軽減税率"):
+            st.caption("🍱 軽減税率(8%)対象品目を含む請求書です。")
 
         # マスタ照合
         m = look["by_norm"].get(matching.normalize_name(comp))
         if m:
-            st.success(f"マスタ照合: {m['会社名']}（{m.get('銀行','')} {m.get('支店番号','')} "
+            st.success(f"マスタ照合: {m['会社名']}（{m.get('銀行','')} {m.get('支店','')} "
                        f"{m.get('預金種目','')} {m.get('口座番号','')}）")
         else:
             st.warning("⚠️ マスタ未登録の会社です。新規取引先の可能性。"
@@ -123,8 +134,9 @@ for idx, data in enumerate(results):
 
         rows_for_save.append({
             "会社名": comp, "当月請求額": cur, "今回請求額": tot, "前月繰越額": carry,
-            "消費税額": data.get("消費税額", 0), "請求日": bill_date, "支払期日": due,
-            "カテゴリ": cat,
+            "消費税額": data.get("消費税額", 0), "税内訳": tax_bd,
+            "軽減税率": data.get("軽減税率", False),
+            "請求日": bill_date, "支払期日": due, "カテゴリ": cat,
             "抽出_銀行": data.get("振込先銀行", ""), "抽出_支店": data.get("振込先支店", ""),
             "抽出_預金種目": data.get("預金種目", ""), "抽出_口座番号": data.get("口座番号", ""),
             "抽出_口座名義": data.get("口座名義", ""),

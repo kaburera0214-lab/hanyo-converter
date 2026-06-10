@@ -25,7 +25,9 @@ EXTRACT_TOOL = {
             "current_amount": {"type": "integer", "description": "当月分の請求額(今回御買上・当月商品代金等、税込)。繰越を含めない当月発生分"},
             "total_amount": {"type": "integer", "description": "今回御請求額(前月繰越を含む総額、税込)。請求書の最終支払額"},
             "carryover": {"type": "integer", "description": "前月残・前回繰越額。無ければ0"},
-            "tax": {"type": "integer", "description": "消費税額。不明なら0"},
+            "tax": {"type": "integer", "description": "消費税額の合計。不明なら0"},
+            "tax_breakdown": {"type": "string", "description": "税率別の内訳。軽減税率(8%)と標準税率(10%)が混在する場合は必ず分けて『10%:税抜4500/税450, 8%:税抜1000/税80』のように記載。単一税率なら『10%:税抜X/税Y』。無ければ空"},
+            "reduced_tax": {"type": "boolean", "description": "軽減税率(8%等)の対象品目が含まれる場合true"},
             "bill_date": {"type": "string", "description": "請求日・締日(YYYY/MM/DD)。無ければ空"},
             "due_date": {"type": "string", "description": "支払期限(YYYY/MM/DD)。無ければ空"},
             "bank": {"type": "string", "description": "振込先の銀行名。無ければ空"},
@@ -47,6 +49,7 @@ _KEY_MAP = {
     "due_date": "支払期日", "bank": "振込先銀行", "branch": "振込先支店",
     "account_type": "預金種目", "account_number": "口座番号",
     "account_holder": "口座名義", "multiple_accounts": "複数口座", "note": "信頼度メモ",
+    "tax_breakdown": "税内訳", "reduced_tax": "軽減税率",
 }
 
 
@@ -59,6 +62,7 @@ SYSTEM = (
     "請求書には『前月繰越』『前回御請求額』『今回御買上』などが混在することがあります。"
     "当月分(当月発生した請求)と、繰越を含む総額(最終支払額)を必ず区別してください。"
     "金額はカンマや円記号を除いた整数で返します。読み取れない項目は空文字または0にします。"
+    "食品等で軽減税率(8%)と標準税率(10%)が混在する請求書では、税率別の内訳を必ず分けて記載してください。"
 )
 
 

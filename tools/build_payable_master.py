@@ -78,6 +78,11 @@ def parse_fixed_amount(bikou):
 
 def main():
     import openpyxl
+    import sys
+    import os as _os
+    sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), ".."))
+    from lib.payable import bank_master as BM
+
     wb = openpyxl.load_workbook(XLSX, read_only=True, data_only=True)
     ws = wb["マスタ"]
     meta = load_meta()
@@ -95,6 +100,8 @@ def main():
         if m:
             used_meta.add(key)
         bikou = m.get("備考", "")
+        bank_no = str(r[1]).strip() if r[1] is not None else ""
+        branch_no = str(r[2]).strip() if r[2] is not None else ""
         rows.append({
             "会社名": kaisha,
             "別名": "",  # 請求書表記ゆれ用(後で人が追記)
@@ -102,21 +109,24 @@ def main():
             "科目": m.get("科目", ""),
             "支払方法": m.get("支払方法", ""),
             "支払日": m.get("支払日", ""),
-            "銀行": m.get("銀行", ""),
-            "銀行番号": str(r[1]).strip() if r[1] is not None else "",
-            "支店番号": str(r[2]).strip() if r[2] is not None else "",
+            # 銀行=受取人銀行名(番号から),支店=受取人支店名(番号から)
+            "銀行": BM.bank_name(bank_no),
+            "支店": BM.branch_name(bank_no, branch_no),
+            "銀行番号": bank_no,
+            "支店番号": branch_no,
             "預金種目": SHUMOKU.get(str(r[3]).strip(), str(r[3]).strip()) if r[3] is not None else "",
             "口座番号": str(r[4]).strip() if r[4] is not None else "",
             "受取人口座名": str(r[5]).strip() if r[5] is not None else "",
             "顧客番号": str(r[8]).strip() if r[8] is not None else "",
             "固定額": parse_fixed_amount(bikou),
             "除外フラグ": "",
+            "支払元銀行": m.get("銀行", ""),  # 弊社の支払元(楽天等)。温存
             "備考": bikou,
         })
 
     fields = ["会社名", "別名", "NE仕入先cd", "科目", "支払方法", "支払日", "銀行",
-              "銀行番号", "支店番号", "預金種目", "口座番号", "受取人口座名",
-              "顧客番号", "固定額", "除外フラグ", "備考"]
+              "支店", "銀行番号", "支店番号", "預金種目", "口座番号", "受取人口座名",
+              "顧客番号", "固定額", "除外フラグ", "支払元銀行", "備考"]
     with open(OUT, "w", encoding="utf-8", newline="") as fp:
         w = csv.DictWriter(fp, fieldnames=fields)
         w.writeheader()

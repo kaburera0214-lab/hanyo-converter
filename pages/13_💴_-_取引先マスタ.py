@@ -37,6 +37,14 @@ if rc2.button("🧹 重複レコードを整理", key="pm_dedupe",
             for line in rep["詳細"]:
                 st.write("- " + line)
 
+if st.button("🏦 銀行名・支店名を番号から補完", key="pm_enrich",
+             help="銀行番号・支店番号から銀行名/支店名を埋め、既存の『銀行』(楽天等)は支払元銀行へ退避"):
+    with st.spinner("補完中…"):
+        rep = N.enrich_bank_names(db_ids)
+    st.session_state.pop("pm_rows", None)
+    st.session_state["payable_master_nonce"] = st.session_state.get("payable_master_nonce", 0) + 1
+    st.success(f"{rep['更新']}社の銀行名・支店名を補完しました。")
+
 if "pm_rows" not in st.session_state:
     st.session_state["pm_rows"] = N.load_master(db_ids)
 rows = st.session_state["pm_rows"]
@@ -51,8 +59,8 @@ if df.empty:
     st.info("該当する取引先がありません。")
 else:
     edit_cols = ["id", "会社名", "別名", "NE仕入先cd", "科目", "支払方法", "支払日",
-                 "銀行", "銀行番号", "支店番号", "預金種目", "口座番号", "受取人口座名",
-                 "顧客番号", "固定額", "除外フラグ", "備考"]
+                 "銀行", "支店", "銀行番号", "支店番号", "預金種目", "口座番号",
+                 "受取人口座名", "顧客番号", "固定額", "除外フラグ", "支払元銀行", "備考"]
     for c in edit_cols:
         if c not in df.columns:
             df[c] = ""
