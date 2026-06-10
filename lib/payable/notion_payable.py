@@ -10,7 +10,7 @@ import json
 
 # スキーマ(列)を変更したらこの版数を上げる。app_initがセッションキャッシュを
 # 無視して ensure_databases(不足列の自動追加) を再実行する。
-SCHEMA_VERSION = "2026-06-09c"
+SCHEMA_VERSION = "2026-06-09d"
 
 DB_SCHEMAS = {
     "支払_取引先マスタ": {
@@ -40,6 +40,7 @@ DB_SCHEMAS = {
         "レコード名": {"title": {}},
         "会社名": {"rich_text": {}},
         "当月請求額": {"number": {}},
+        "当月税抜額": {"number": {}},
         "今回請求額": {"number": {}},
         "前月繰越額": {"number": {}},
         "消費税額": {"number": {}},
@@ -458,6 +459,7 @@ def save_invoice(db_ids, data):
         "レコード名": {"title": _title(f"{ym} {company}".strip())},
         "会社名": {"rich_text": _rt(company)},
         "当月請求額": {"number": _to_num(data.get("当月請求額"))},
+        "当月税抜額": {"number": _to_num(data.get("当月税抜額"))},
         "今回請求額": {"number": _to_num(data.get("今回請求額"))},
         "前月繰越額": {"number": _to_num(data.get("前月繰越額"))},
         "消費税額": {"number": _to_num(data.get("消費税額"))},
@@ -500,6 +502,7 @@ def load_invoices(db_ids, target_ym=None, status=None):
             "id": row["id"],
             "会社名": _read_rt(p.get("会社名")),
             "当月請求額": _read_num(p.get("当月請求額")) or 0,
+            "当月税抜額": _read_num(p.get("当月税抜額")) or 0,
             "今回請求額": _read_num(p.get("今回請求額")) or 0,
             "前月繰越額": _read_num(p.get("前月繰越額")) or 0,
             "税内訳": _read_rt(p.get("税内訳")),
@@ -534,7 +537,7 @@ def update_invoice_fields(db_ids, page_id, **fields):
     for k, v in fields.items():
         if k in ("ステータス", "突合状態", "カテゴリ"):
             props[k] = {"select": {"name": v}} if v else {"select": None}
-        elif k in ("当月請求額", "今回請求額", "NE合算額", "NE送料", "差額", "前月繰越額"):
+        elif k in ("当月請求額", "当月税抜額", "今回請求額", "NE合算額", "NE送料", "差額", "前月繰越額"):
             props[k] = {"number": _to_num(v)}
         elif k == "口座相違フラグ":
             props[k] = {"checkbox": bool(v)}

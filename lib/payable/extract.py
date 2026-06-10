@@ -23,6 +23,7 @@ EXTRACT_TOOL = {
         "properties": {
             "company": {"type": "string", "description": "請求元(取引先)の会社名。株式会社等の法人格は付けたまま"},
             "current_amount": {"type": "integer", "description": "当月分の請求額(今回御買上・当月商品代金等、税込)。繰越を含めない当月発生分"},
+            "current_amount_extax": {"type": "integer", "description": "当月分の税抜合計(当月の商品代金＋送料の税抜金額)。繰越を含めない当月発生分の税抜額。突合用に重要。無ければ0"},
             "total_amount": {"type": "integer", "description": "今回御請求額(前月繰越を含む総額、税込)。請求書の最終支払額"},
             "carryover": {"type": "integer", "description": "前月残・前回繰越額。無ければ0"},
             "tax": {"type": "integer", "description": "消費税額の合計。不明なら0"},
@@ -58,7 +59,8 @@ EXTRACT_TOOL = {
 
 # 英語キー -> 日本語キー(アプリ内で使う名称)
 _KEY_MAP = {
-    "company": "会社名", "current_amount": "当月請求額", "total_amount": "今回請求額",
+    "company": "会社名", "current_amount": "当月請求額",
+    "current_amount_extax": "当月税抜額", "total_amount": "今回請求額",
     "carryover": "前月繰越額", "tax": "消費税額", "bill_date": "請求日",
     "due_date": "支払期日", "bank": "振込先銀行", "branch": "振込先支店",
     "account_type": "預金種目", "account_number": "口座番号",

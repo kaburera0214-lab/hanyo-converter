@@ -167,8 +167,11 @@ for idx, data in enumerate(results):
             st.caption("→ このファイルは登録対象から除外します。")
             continue
         comp = st.text_input("会社名", value=data.get("会社名", ""), key=f"pay_comp_{idx}")
-        cc1, cc2, cc3 = st.columns(3)
-        cur = cc1.number_input("当月請求額", value=int(data.get("当月請求額", 0) or 0),
+        cc0, cc1, cc2, cc3 = st.columns(4)
+        cur_ex = cc0.number_input("当月税抜額（突合用）", value=int(data.get("当月税抜額", 0) or 0),
+                                  step=1, key=f"pay_curex_{idx}",
+                                  help="NE発注は税抜のため、突合はこの税抜額で行います。")
+        cur = cc1.number_input("当月請求額（税込・振込用）", value=int(data.get("当月請求額", 0) or 0),
                                step=1, key=f"pay_cur_{idx}")
         tot = cc2.number_input("今回請求額(繰越込)", value=int(data.get("今回請求額", 0) or 0),
                                step=1, key=f"pay_tot_{idx}")
@@ -201,7 +204,8 @@ for idx, data in enumerate(results):
             st.caption(f"AIメモ: {data.get('信頼度メモ')}")
 
         rows_for_save.append({
-            "会社名": comp, "当月請求額": cur, "今回請求額": tot, "前月繰越額": carry,
+            "会社名": comp, "当月請求額": cur, "当月税抜額": cur_ex,
+            "今回請求額": tot, "前月繰越額": carry,
             "消費税額": data.get("消費税額", 0), "税内訳": tax_bd,
             "軽減税率": data.get("軽減税率", False),
             "請求日": bill_date, "支払期日": due, "カテゴリ": cat,

@@ -63,10 +63,17 @@ if not invoices:
 master_rows = N.load_master(db_ids)
 look = matching.build_master_lookup(master_rows)
 
+def _extax(inv):
+    """突合に使う当月税抜額。無ければ当月請求額(税込)で代替。"""
+    v = inv.get("当月税抜額")
+    return v if v else (inv.get("当月請求額") or 0)
+
+
 st.markdown("### 2. 突合結果")
+st.caption("NE発注データは税抜のため、突合は『当月税抜額』で行います（振込CSVは税込で作成）。")
 if st.button("🔁 突合を実行/再計算", type="primary", key="match_run"):
     for inv in invoices:
-        r = matching.match_invoice(inv["会社名"], inv["当月請求額"], look, ne_agg, tolerance=tol)
+        r = matching.match_invoice(inv["会社名"], _extax(inv), look, ne_agg, tolerance=tol)
         denpyo = ",".join(str(d) for d in r.get("NE伝票", []))
         try:
             N.update_invoice_fields(
@@ -114,10 +121,11 @@ def _ne_total(i):
     return None
 
 df = pd.DataFrame([{
-    "会社名": i["会社名"], "当月請求額": yen(i["当月請求額"]),
+    "会社名": i["会社名"], "当月税抜(突合)": yen(_extax(i)),
     "NE発注額": yen(i.get("NE合算額")), "送料": yen(i.get("NE送料")),
     "NE合計": yen(_ne_total(i)), "差額": yen(i.get("差額")),
     "突合状態": i.get("突合状態", "未突合"),
+    "当月税込": yen(i["当月請求額"]),
     "ステータス": i["ステータス"], "口座相違": "⚠️" if i.get("口座相違フラグ") else "",
 } for i in invoices])
 
@@ -157,33 +165,67 @@ if _dups:
                     st.rerun()
 
 st.markdown("### 3. ステータス更新")
-st.caption("内容を確認したら、各請求書のステータスを進めてください（確定は『振込CSV生成』前の最終承認）。")
+st.caption("各請求書の取込情報をその場で確認し、ステータスを進めてください"
+           "（確定は『振込CSV生成』前の最終承認）。")
 NE_URL = "https://main.next-engine.com/userg5210?dnum={}"
+_ICON = {"一致": "✅", "金額不一致": "⚠️", "発注なし": "🟠", "マスタ未登録": "🟡", "未突合": "⬜"}
+_STAT = ["読取済", "確認済", "突合OK", "確定"]
+
 for inv in invoices:
-    cols = st.columns([3, 2, 2, 2])
-    cols[0].markdown(f"**{inv['会社名']}**　請求{int(inv['当月請求額']):,}円　"
-                     f"({inv.get('突合状態','未突合')})")
-    denpyo = [d for d in str(inv.get("NE発注番号", "")).split(",") if d.strip()]
-    if denpyo:
-        links = "　".join(
-            f'<a href="{NE_URL.format(d.strip())}" target="_blank" rel="noopener">📄{d.strip()}</a>'
-            for d in denpyo)
-        cols[0].markdown(f"<span style='font-size:0.85em'>NE発注: {links}</span>",
-                         unsafe_allow_html=True)
-    new_status = cols[1].selectbox(
-        "ステータス", ["読取済", "確認済", "突合OK", "確定"],
-        index=["読取済", "確認済", "突合OK", "確定"].index(inv["ステータス"])
-        if inv["ステータス"] in ["読取済", "確認済", "突合OK", "確定"] else 0,
-        key=f"match_st_{inv['id']}", label_visibility="collapsed")
-    if cols[2].button("更新", key=f"match_upd_{inv['id']}"):
-        N.update_invoice_fields(db_ids, inv["id"], ステータス=new_status)
-        inv["ステータス"] = new_status
-        st.toast(f"{inv['会社名']} → {new_status}")
-    with cols[3].popover("🗑️削除"):
-        st.warning("⚠️ 削除前に必ず請求書（PDF）の内容を確認してください。削除は取り消せません。")
-        ok = st.checkbox("請求書を確認しました", key=f"delok_{inv['id']}")
-        if st.button("この請求書を削除する", type="primary", disabled=not ok,
-                     key=f"match_del_{inv['id']}"):
-            N.delete_invoice(db_ids, inv["id"])
-            st.session_state.pop("match_invoices", None)
+    stt = inv.get("突合状態", "未突合")
+    icon = _ICON.get(stt, "")
+    diff = inv.get("差額")
+    head = (f"{icon} {inv['会社名']}　|　突合 {stt}"
+            f"（差額 {yen(diff)}円）　|　ステータス: {inv['ステータス']}")
+    # 一致以外は開いておく
+    with st.expander(head, expanded=(stt != "一致")):
+        cL, cR = st.columns(2)
+        # 左: 金額・突合
+        cL.markdown(
+            f"**金額**\n\n"
+            f"- 当月税抜(突合用): **{yen(_extax(inv))}** 円\n"
+            f"- 当月請求(税込・振込用): **{yen(inv.get('当月請求額'))}** 円\n"
+            f"- 今回請求(繰越込): {yen(inv.get('今回請求額'))} 円 / 前月繰越: {yen(inv.get('前月繰越額'))} 円\n"
+            f"- 税内訳: {inv.get('税内訳','') or '—'}"
+            f"{'　🍱軽減税率' if inv.get('軽減税率') else ''}\n\n"
+            f"**突合**\n\n"
+            f"- NE発注額(税抜): {yen(inv.get('NE合算額'))} ＋ 送料: {yen(inv.get('NE送料'))} "
+            f"= NE合計: **{yen(_ne_total(inv))}** 円\n"
+            f"- 差額: **{yen(diff)}** 円")
+        denpyo = [d for d in str(inv.get("NE発注番号", "")).split(",") if d.strip()]
+        if denpyo:
+            links = "　".join(
+                f'<a href="{NE_URL.format(d.strip())}" target="_blank" rel="noopener">📄{d.strip()}</a>'
+                for d in denpyo)
+            cL.markdown(f"NE発注書: {links}", unsafe_allow_html=True)
+        # 右: 口座・取引先・期日・ファイル
+        cR.markdown(
+            f"**振込先（請求書から抽出）**\n\n"
+            f"- {inv.get('抽出_銀行','') or '—'} {inv.get('抽出_支店','')} "
+            f"{inv.get('抽出_預金種目','')} {inv.get('抽出_口座番号','')}\n"
+            f"- 名義: {inv.get('抽出_口座名義','') or '—'}\n"
+            f"{'- ⚠️ **口座変更の可能性あり**' if inv.get('口座相違フラグ') else ''}\n\n"
+            f"**その他**\n\n"
+            f"- 請求日: {inv.get('請求日','') or '—'} / 支払期日: {inv.get('支払期日','') or '—'}\n"
+            f"- カテゴリ: {inv.get('カテゴリ','') or '—'}\n"
+            f"- ファイル: {inv.get('ファイルリンク','') or '—'}\n"
+            f"- AIメモ: {inv.get('抽出メモ','') or '—'}")
+        # 操作
+        oc1, oc2, oc3 = st.columns([2, 1, 1])
+        new_status = oc1.selectbox(
+            "ステータス", _STAT,
+            index=_STAT.index(inv["ステータス"]) if inv["ステータス"] in _STAT else 0,
+            key=f"match_st_{inv['id']}")
+        if oc2.button("更新", key=f"match_upd_{inv['id']}", use_container_width=True):
+            N.update_invoice_fields(db_ids, inv["id"], ステータス=new_status)
+            inv["ステータス"] = new_status
+            st.toast(f"{inv['会社名']} → {new_status}")
             st.rerun()
+        with oc3.popover("🗑️削除", use_container_width=True):
+            st.warning("⚠️ 削除前に必ず請求書（PDF）の内容を確認してください。削除は取り消せません。")
+            ok = st.checkbox("請求書を確認しました", key=f"delok_{inv['id']}")
+            if st.button("この請求書を削除する", type="primary", disabled=not ok,
+                         key=f"match_del_{inv['id']}"):
+                N.delete_invoice(db_ids, inv["id"])
+                st.session_state.pop("match_invoices", None)
+                st.rerun()
