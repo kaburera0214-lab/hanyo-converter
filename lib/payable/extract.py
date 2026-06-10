@@ -151,6 +151,41 @@ def iter_files_from_uploads(uploaded_files):
     return out
 
 
+_IMG_EXT = (".png", ".jpg", ".jpeg", ".webp", ".gif")
+
+
+def render_preview_images(file_bytes, filename, max_pages=5, zoom=1.6):
+    """
+    プレビュー用に画像(PNG bytes)のリストを返す。端末依存を避けるため
+    PDFはサーバ側で画像化(PyMuPDF)。画像ファイルはそのまま返す。
+    PyMuPDF未導入やPDF破損時は空リスト(呼び出し側でDLボタンにフォールバック)。
+    """
+    low = (filename or "").lower()
+    if low.endswith(_IMG_EXT):
+        return [file_bytes]
+    if low.endswith(".pdf"):
+        try:
+            import fitz  # PyMuPDF
+        except Exception:  # noqa: BLE001
+            return []
+        try:
+            doc = fitz.open(stream=file_bytes, filetype="pdf")
+        except Exception:  # noqa: BLE001
+            return []
+        imgs = []
+        mat = fitz.Matrix(zoom, zoom)
+        for i, page in enumerate(doc):
+            if i >= max_pages:
+                break
+            try:
+                imgs.append(page.get_pixmap(matrix=mat).tobytes("png"))
+            except Exception:  # noqa: BLE001
+                continue
+        doc.close()
+        return imgs
+    return []
+
+
 def get_client():
     import streamlit as st
     import anthropic

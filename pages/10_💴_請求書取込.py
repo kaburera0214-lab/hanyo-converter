@@ -7,7 +7,6 @@
 口座変更の可能性として注意喚起。確認のうえ「読取済」でNotionに保存する。
 """
 import streamlit as st
-import streamlit.components.v1 as components
 import pandas as pd
 
 st.set_page_config(page_title="請求書取込", layout="wide")
@@ -42,13 +41,21 @@ target_ym = c1.text_input("対象月（例 2026-05）", value=st.session_state.g
 st.session_state["payable_target_ym"] = target_ym
 
 st.markdown("### 1. 請求書をアップロード")
+# アップローダはキー番号を変えることでクリア(リセット)できる
+up_key = st.session_state.get("payable_up_key", 0)
 files = st.file_uploader("PDF / 画像 / ZIP（複数可・ZIPは中身を一括展開）",
                          type=["pdf", "png", "jpg", "jpeg", "webp", "zip"],
-                         accept_multiple_files=True, key="payable_uploader")
+                         accept_multiple_files=True, key=f"payable_uploader_{up_key}")
 
 entries = extract.iter_files_from_uploads(files)
+uc1, uc2 = st.columns([1, 3])
 if files:
-    st.caption(f"読取対象ファイル：{len(entries)}件（ZIPは展開後の件数）")
+    uc2.caption(f"読取対象ファイル：{len(entries)}件（ZIPは展開後の件数）")
+if uc1.button("🗑️ 読込結果をクリア", key="payable_clear"):
+    for k in ["payable_extracted", "payable_filebytes"]:
+        st.session_state.pop(k, None)
+    st.session_state["payable_up_key"] = up_key + 1  # アップローダを空に
+    st.rerun()
 
 use_sonnet = st.checkbox("読みにくい請求書（スキャン等）はSonnetで精度優先", value=False,
                          key="payable_sonnet")
@@ -113,21 +120,21 @@ def _account_mismatch(m, data):
 
 
 def _preview(fname, idx):
-    """アップロードファイルのプレビュー(PDFはiframe、画像はst.image)。"""
+    """アップロードファイルのプレビュー。端末依存を避けるためPDFは画像化して表示。"""
     fb = st.session_state.get("payable_filebytes", {}).get(fname)
     if not fb:
         st.caption("（プレビュー用データがありません。再アップロードで表示できます）")
         return
-    low = fname.lower()
-    if low.endswith(".pdf"):
-        import base64 as _b64
-        b64 = _b64.b64encode(fb).decode()
-        components.html(
-            f'<iframe src="data:application/pdf;base64,{b64}" '
-            f'width="100%" height="600" style="border:1px solid #ddd"></iframe>',
-            height=620)
+    imgs = extract.render_preview_images(fb, fname)
+    if imgs:
+        for pi, img in enumerate(imgs):
+            st.image(img, use_container_width=True)
+        st.download_button("⬇️ 元ファイルをダウンロード", data=fb, file_name=fname.split("/")[-1],
+                           key=f"pay_dl_{idx}")
     else:
-        st.image(fb, use_container_width=True)
+        st.info("この環境ではプレビュー画像を生成できませんでした。ダウンロードして確認してください。")
+        st.download_button("⬇️ 元ファイルをダウンロード", data=fb, file_name=fname.split("/")[-1],
+                           key=f"pay_dl_{idx}")
 
 
 st.markdown("### 2. 読取結果の確認")
@@ -136,7 +143,17 @@ st.caption("内容を確認し、必要なら金額・会社名を修正して�
 rows_for_save = []
 for idx, data in enumerate(results):
     fn = data.get("_file", f"file{idx}")
-    with st.expander(f"📄 {fn} — {data.get('会社名', '(会社名不明)')}", expanded=True):
+    # アコーディオン初期状態: エラー/警告があるものだけ開く
+    if data.get("_error"):
+        has_issue = True
+        head_icon = "⛔"
+    else:
+        m0 = look["by_norm"].get(matching.normalize_name(data.get("会社名", "")))
+        mism0, _ = _account_mismatch(m0, data)
+        has_issue = (m0 is None) or mism0 or bool(data.get("複数口座"))
+        head_icon = "⚠️" if has_issue else "✅"
+    with st.expander(f"{head_icon} {fn} — {data.get('会社名', '(会社名不明)')}",
+                     expanded=has_issue):
         if data.get("_error"):
             st.error(data["_error"])
             continue
