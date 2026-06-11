@@ -1,7 +1,12 @@
 import streamlit as st
 from notion_client import Client
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from streamlit_autorefresh import st_autorefresh
+
+JST = timezone(timedelta(hours=9))
+
+def now_jst():
+    return datetime.now(JST)
 
 st.set_page_config(page_title="回答管理", layout="wide")
 st.title("✅ 回答・管理（パピー用）")
@@ -87,9 +92,10 @@ def get_current_status(page_id):
     except Exception:
         return None
 
-def append_edit_history(existing_history, editor, new_content=None):
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-    new_entry = f"[{timestamp}] {editor}"
+def append_history(existing_history, actor, action):
+    """履歴に1行追記（日本時間）。action例：回答 / 回答修正 / 追加回答 / 完了"""
+    timestamp = now_jst().strftime("%Y-%m-%d %H:%M")
+    new_entry = f"[{timestamp}] {actor}：{action}"
     lines = existing_history.strip().split("\n") if existing_history.strip() else []
     lines.append(new_entry)
     lines = lines[-30:]
@@ -276,10 +282,11 @@ else:
                         st.error("回答内容を入力してください")
                     else:
                         # 会話ログに追記
-                        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+                        timestamp = now_jst().strftime("%Y-%m-%d %H:%M")
                         new_log = q["会話ログ"] + f"\n\n【追加A｜{timestamp}】{add_answer.strip()}"
                         if len(new_log) > 1900:
                             new_log = "（古い会話を省略）\n" + new_log[-1800:]
+                        new_history = append_history(q["編集履歴"], "パピー", "追加回答")
                         c = Client(auth=NOTION_API_KEY)
                         c.pages.update(
                             page_id=q["id"],
@@ -290,8 +297,9 @@ else:
                                 "判断理由カテゴリ": {"multi_select": [{"name": c2} for c2 in 選択カテゴリ]},
                                 "判断理由詳細": {"rich_text": [{"text": {"content": 理由詳細}}]},
                                 "ステータス": {"select": {"name": "回答済"}},
-                                "回答日時": {"date": {"start": datetime.now().isoformat()}},
+                                "回答日時": {"date": {"start": now_jst().isoformat()}},
                                 "AI学習済": {"checkbox": True},
+                                "編集履歴": {"rich_text": [{"text": {"content": new_history}}]},
                             }
                         )
                         st.success("追加回答を送信しました！")
@@ -338,7 +346,7 @@ else:
                     elif not 回答本文.strip():
                         st.error("回答内容を入力してください")
                     else:
-                        new_history = append_edit_history(q["編集履歴"], "パピー")
+                        new_history = append_history(q["編集履歴"], "パピー", "回答")
                         c = Client(auth=NOTION_API_KEY)
                         c.pages.update(
                             page_id=q["id"],
@@ -347,7 +355,7 @@ else:
                                 "判断理由カテゴリ": {"multi_select": [{"name": c2} for c2 in 選択カテゴリ]},
                                 "判断理由詳細": {"rich_text": [{"text": {"content": 理由詳細}}]},
                                 "ステータス": {"select": {"name": "回答済"}},
-                                "回答日時": {"date": {"start": datetime.now().isoformat()}},
+                                "回答日時": {"date": {"start": now_jst().isoformat()}},
                                 "AI学習済": {"checkbox": True},
                                 "編集履歴": {"rich_text": [{"text": {"content": new_history}}]},
                             }
@@ -393,21 +401,29 @@ else:
                     with col_btn3:
                         if is_done:
                             if st.button("↩️ 完了を取り消す", key=f"undone_{q['id']}"):
+                                new_history = append_history(q["編集履歴"], "パピー", "完了取消")
                                 Client(auth=NOTION_API_KEY).pages.update(
                                     page_id=q["id"],
-                                    properties={"ステータス": {"select": {"name": "回答済"}}}
+                                    properties={
+                                        "ステータス": {"select": {"name": "回答済"}},
+                                        "編集履歴": {"rich_text": [{"text": {"content": new_history}}]},
+                                    }
                                 )
                                 st.rerun()
                         else:
                             if st.button("✅ 完了にする", key=f"done_{q['id']}", type="primary"):
+                                new_history = append_history(q["編集履歴"], "パピー", "完了")
                                 Client(auth=NOTION_API_KEY).pages.update(
                                     page_id=q["id"],
-                                    properties={"ステータス": {"select": {"name": "完了"}}}
+                                    properties={
+                                        "ステータス": {"select": {"name": "完了"}},
+                                        "編集履歴": {"rich_text": [{"text": {"content": new_history}}]},
+                                    }
                                 )
                                 st.success("完了にしました。")
                                 st.rerun()
                     if q["編集履歴"]:
-                        with st.expander("📋 編集履歴"):
+                        with st.expander("📋 履歴"):
                             st.text(q["編集履歴"])
 
                 elif is_answer_editing == "followup":
@@ -420,19 +436,21 @@ else:
                             if not follow_up.strip():
                                 st.error("追加質問の内容を入力してください")
                             else:
-                                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+                                timestamp = now_jst().strftime("%Y-%m-%d %H:%M")
                                 existing_log = q["会話ログ"]
                                 if not existing_log:
                                     existing_log = f"【Q】{q['質問本文']}\n【A】{answer_text}"
                                 new_log = existing_log + f"\n\n【追加Q｜{timestamp}】{follow_up.strip()}"
                                 if len(new_log) > 1900:
                                     new_log = "（古い会話を省略）\n" + new_log[-1800:]
+                                new_history = append_history(q["編集履歴"], "パピー", "追加質問")
                                 Client(auth=NOTION_API_KEY).pages.update(
                                     page_id=q["id"],
                                     properties={
                                         "追加質問": {"rich_text": [{"text": {"content": follow_up.strip()}}]},
                                         "会話ログ": {"rich_text": [{"text": {"content": new_log}}]},
                                         "ステータス": {"select": {"name": "再質問"}},
+                                        "編集履歴": {"rich_text": [{"text": {"content": new_history}}]},
                                     }
                                 )
                                 st.session_state[edit_key] = False
@@ -472,7 +490,7 @@ else:
                             if not new_answer.strip():
                                 st.error("回答内容を入力してください")
                             else:
-                                new_history = append_edit_history(q["編集履歴"], editor_name)
+                                new_history = append_history(q["編集履歴"], editor_name, "回答修正")
                                 c = Client(auth=NOTION_API_KEY)
                                 c.pages.update(
                                     page_id=q["id"],
@@ -491,5 +509,5 @@ else:
                             st.session_state.pop(f"editor_{q['id']}", None)
                             st.rerun()
                     if q["編集履歴"]:
-                        with st.expander("📋 編集履歴"):
+                        with st.expander("📋 履歴"):
                             st.text(q["編集履歴"])

@@ -1,9 +1,14 @@
 import streamlit as st
 from notion_client import Client
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from PIL import Image
 import io
 import re
+
+JST = timezone(timedelta(hours=9))
+
+def now_jst():
+    return datetime.now(JST)
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
@@ -267,6 +272,7 @@ def get_editable_questions():
             "タグ": [s["name"] for s in p.get("タグ", {}).get("multi_select", [])],
             "ステータス": p["ステータス"]["select"]["name"] if p["ステータス"]["select"] else "未回答",
             "質問日時": p["質問日時"]["date"]["start"] if p.get("質問日時", {}).get("date") else "",
+            "編集履歴": get_text(p.get("編集履歴", {})),
         })
     return questions
 
@@ -309,13 +315,15 @@ st.info("""**記入ルール**
 def submit_question(タイトル, 質問本文, タグ, 画像ファイル):
     """Notionへ質問を保存し、画像をDriveにアップロードする"""
     client = Client(auth=NOTION_API_KEY)
+    history = f"[{now_jst().strftime('%Y-%m-%d %H:%M')}] インハナ：質問投稿"
     props = {
         "質問タイトル": {"title": [{"text": {"content": タイトル}}]},
         "質問本文": {"rich_text": [{"text": {"content": 質問本文}}]},
         "ステータス": {"select": {"name": "未回答"}},
         "質問者": {"select": {"name": "インハナ"}},
-        "質問日時": {"date": {"start": datetime.now().isoformat()}},
+        "質問日時": {"date": {"start": now_jst().isoformat()}},
         "タグ": {"multi_select": [{"name": t} for t in タグ]},
+        "編集履歴": {"rich_text": [{"text": {"content": history}}]},
     }
     page = client.pages.create(**{"parent": {"database_id": DATABASE_ID}, "properties": props})
     page_id = page["id"]
@@ -519,6 +527,9 @@ else:
                         # バリデーションエラーでも保存操作なのでロックは維持。解除は上のボタンで。
                     else:
                         try:
+                            prev_hist = q.get("編集履歴", "")
+                            entry = f"[{now_jst().strftime('%Y-%m-%d %H:%M')}] インハナ：質問編集"
+                            new_hist = (prev_hist + "\n" + entry).strip() if prev_hist else entry
                             Client(auth=NOTION_API_KEY).pages.update(
                                 page_id=q["id"],
                                 properties={
@@ -526,6 +537,7 @@ else:
                                     "質問本文": {"rich_text": [{"text": {"content": new_content}}]},
                                     "タグ": {"multi_select": [{"name": t} for t in new_tags]},
                                     "ステータス": {"select": {"name": "未回答"}},
+                                    "編集履歴": {"rich_text": [{"text": {"content": new_hist}}]},
                                 }
                             )
                             st.session_state.pop("editing_id", None)
