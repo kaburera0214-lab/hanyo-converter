@@ -257,33 +257,65 @@
         "role": "primary"
       }
     ],
-    "_columns": [],
+    "_columns": [
+      "伝票番号",
+      "ﾋﾟｯｷﾝｸﾞ指示内容",
+      "受注日",
+      "出荷確定日",
+      "納品書印刷指示日",
+      "納品書発行日",
+      "状態",
+      "受注番号",
+      "店舗",
+      "受注担当者",
+      "購入者名",
+      "商品計",
+      "税金",
+      "発送料",
+      "手数料",
+      "他費用",
+      "ポイント数",
+      "総合計",
+      "送り先名",
+      "送り先〒",
+      "送り先住所",
+      "発送方法",
+      "支払方法",
+      "発送伝票番号",
+      "備考",
+      "重要",
+      "重要ﾁｪｯｸ者",
+      "受注分類タグ",
+      "時間指定",
+      "配達希望日"
+    ],
     "output_fields": [
       {
         "name": "注文番号",
         "type": "column",
-        "source": ""
+        "source": "受注番号"
       },
       {
         "name": "配送方法",
         "type": "column",
-        "source": ""
+        "source": "発送方法"
       },
       {
         "name": "送り状番号",
         "type": "column",
-        "source": ""
+        "source": "発送伝票番号"
       },
       {
         "name": "時間指定",
         "type": "column",
-        "source": ""
+        "source": "時間指定"
       },
       {
         "name": "配達希望日",
         "type": "column",
-        "source": ""
+        "source": "配達希望日"
       }
-    ]
+    ],
+    "upload_url": "https://drive.google.com/drive/u/0/folders/1hWf9r4igL-BZQ82Q7iMlbzx1lqxW9fY2"
   }
 }
