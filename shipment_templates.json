@@ -249,5 +249,41 @@
       }
     ],
     "upload_url": "https://gift-shop-cms.line.biz/shops/838791/orders/delivery?encode=utf8"
+  },
+  "未来様": {
+    "_inputs": [
+      {
+        "label": "ファイル1",
+        "role": "primary"
+      }
+    ],
+    "_columns": [],
+    "output_fields": [
+      {
+        "name": "注文番号",
+        "type": "column",
+        "source": ""
+      },
+      {
+        "name": "配送方法",
+        "type": "column",
+        "source": ""
+      },
+      {
+        "name": "送り状番号",
+        "type": "column",
+        "source": ""
+      },
+      {
+        "name": "時間指定",
+        "type": "column",
+        "source": ""
+      },
+      {
+        "name": "配達希望日",
+        "type": "column",
+        "source": ""
+      }
+    ]
   }
 }
