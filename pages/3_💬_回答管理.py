@@ -58,12 +58,23 @@ def get_text(prop):
 
 def get_questions():
     client = Client(auth=NOTION_API_KEY)
-    res = client.databases.query(**{
-        "database_id": DATABASE_ID,
-        "sorts": [{"property": "質問日時", "direction": "descending"}]
-    })
+    results = []
+    cursor = None
+    while True:
+        kwargs = {
+            "database_id": DATABASE_ID,
+            "sorts": [{"property": "質問日時", "direction": "descending"}],
+            "page_size": 100,
+        }
+        if cursor:
+            kwargs["start_cursor"] = cursor
+        res = client.databases.query(**kwargs)
+        results.extend(res["results"])
+        if not res.get("has_more"):
+            break
+        cursor = res["next_cursor"]
     questions = []
-    for page in res["results"]:
+    for page in results:
         p = page["properties"]
         questions.append({
             "id": page["id"],
@@ -108,9 +119,16 @@ def append_history(existing_history, actor, action):
 def generate_draft(question, questions):
     if not ANTHROPIC_API_KEY:
         return "（Anthropic APIキーが未設定のためドラフト生成できません）"
-    knowledge = [q for q in questions if q["ステータス"] == "回答済"]
+    # 回答済・完了の両方をナレッジ対象にする（回答本文があるもの）
+    all_knowledge = [q for q in questions
+                     if q["ステータス"] in ("回答済", "完了") and q["回答本文"].strip()]
+    # 同じタグの事例を優先し、最大25件に絞る（プロンプト肥大化防止）
+    q_tags = set(question.get("タグ", []))
+    same_tag = [q for q in all_knowledge if q_tags & set(q["タグ"])]
+    other    = [q for q in all_knowledge if not (q_tags & set(q["タグ"]))]
+    knowledge = (same_tag + other)[:25]
     knowledge_text = "\n\n".join([
-        f"【事例】\n質問: {q['質問本文']}\n回答: {q['回答本文']}\n判断理由: {', '.join(q['判断理由カテゴリ'])} / {q['判断理由詳細']}"
+        f"【事例】\n質問: {q['質問本文'][:300]}\n回答: {q['回答本文'][:300]}\n判断理由: {', '.join(q['判断理由カテゴリ'])} / {q['判断理由詳細'][:100]}"
         for q in knowledge
     ]) or "（まだ蓄積データがありません）"
     try:

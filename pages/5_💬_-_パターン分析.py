@@ -28,12 +28,16 @@ def get_text(prop):
 def fetch_answered_questions(days: int = None):
     """回答済み質問を取得（days=Noneで全件）"""
     client = Client(auth=NOTION_API_KEY)
-    filters = [{"property": "ステータス", "select": {"equals": "回答済"}}]
+    # 回答済・完了の両方を分析対象にする
+    status_filter = {"or": [
+        {"property": "ステータス", "select": {"equals": "回答済"}},
+        {"property": "ステータス", "select": {"equals": "完了"}},
+    ]}
     if days:
         since = (datetime.now() - timedelta(days=days)).isoformat()
-        filters.append({"property": "質問日時", "date": {"on_or_after": since}})
-
-    query_filter = {"and": filters} if len(filters) > 1 else filters[0]
+        query_filter = {"and": [status_filter, {"property": "質問日時", "date": {"on_or_after": since}}]}
+    else:
+        query_filter = status_filter
 
     questions = []
     cursor = None
