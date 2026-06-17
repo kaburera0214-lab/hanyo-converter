@@ -351,11 +351,11 @@
     "unknown_jan": 0
   },
   {
-    "ts": "2026-06-17T08:01:18",
-    "func": "shipment_std",
-    "template": null,
-    "orders": 39,
-    "rows": 39,
+    "ts": "2026-06-17T08:01:25",
+    "func": "shipment_custom",
+    "template": "未来様",
+    "orders": 1,
+    "rows": 1,
     "error": null,
     "unknown_jan": 0
   }
