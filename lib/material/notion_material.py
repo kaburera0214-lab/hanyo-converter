@@ -13,12 +13,13 @@ import json
 
 # スキーマ(列)を変更したらこの版数を上げる。app_initがセッションキャッシュを
 # 無視して ensure_databases(不足列の自動追加) を再実行する。
-SCHEMA_VERSION = "2026-06-25a"
+SCHEMA_VERSION = "2026-06-25b"
 
 DB_SCHEMAS = {
     "資材_資材マスタ": {
         "資材名": {"title": {}},
         "品番": {"rich_text": {}},
+        "カテゴリ": {"rich_text": {}},
         "NE仕入先cd": {"rich_text": {}},
         "仕入先名": {"rich_text": {}},
         "ロット": {"number": {}},
@@ -156,7 +157,7 @@ def _query_all(db_id):
 # ============================================================
 # 資材マスタ
 # ============================================================
-MASTER_FIELDS = ["資材名", "品番", "NE仕入先cd", "仕入先名", "ロット", "単価",
+MASTER_FIELDS = ["資材名", "品番", "カテゴリ", "NE仕入先cd", "仕入先名", "ロット", "単価",
                  "発注点", "在庫定数", "保管ロケーション", "有効フラグ", "備考"]
 
 
@@ -169,6 +170,7 @@ def load_master(db_ids):
             "id": row["id"],
             "資材名": _read_title(p.get("資材名")),
             "品番": _read_rt(p.get("品番")),
+            "カテゴリ": _read_rt(p.get("カテゴリ")),
             "NE仕入先cd": _read_rt(p.get("NE仕入先cd")),
             "仕入先名": _read_rt(p.get("仕入先名")),
             "ロット": _read_num(p.get("ロット")) or "",
@@ -187,6 +189,7 @@ def _master_props(r):
     return {
         "資材名": {"title": _title(r.get("資材名", ""))},
         "品番": {"rich_text": _rt(r.get("品番", ""))},
+        "カテゴリ": {"rich_text": _rt(r.get("カテゴリ", ""))},
         "NE仕入先cd": {"rich_text": _rt(r.get("NE仕入先cd", ""))},
         "仕入先名": {"rich_text": _rt(r.get("仕入先名", ""))},
         "ロット": {"number": _to_num(r.get("ロット", ""))},

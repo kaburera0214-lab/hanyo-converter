@@ -57,7 +57,7 @@ def _hit(r):
     return any(kw in str(r.get(c, "")) for c in ("資材名", "品番", "仕入先名", "NE仕入先cd"))
 view = [r for r in rows if _hit(r)]
 
-edit_cols = ["id", "資材名", "品番", "NE仕入先cd", "仕入先名", "ロット", "単価",
+edit_cols = ["id", "資材名", "品番", "カテゴリ", "NE仕入先cd", "仕入先名", "ロット", "単価",
              "発注点", "在庫定数", "保管ロケーション", "有効フラグ", "備考"]
 df = pd.DataFrame(view)
 for c in edit_cols:
@@ -69,6 +69,9 @@ edited = st.data_editor(
     df, use_container_width=True, num_rows="dynamic", key="mm_editor",
     column_config={
         "id": st.column_config.TextColumn("id", disabled=True, width="small"),
+        "カテゴリ": st.column_config.TextColumn("カテゴリ", help="先頭の括弧（段/ワ/プチ/プ/日/倉庫/廃止候補/パウチ参照 等）"),
+        "保管ロケーション": st.column_config.TextColumn(
+            "保管ロケーション", help="棚卸グループ（ロッテ/カープ/トイプー：備品棚/梱包室/事務所備品 等）"),
         "NE仕入先cd": st.column_config.SelectboxColumn(
             "NE仕入先cd", options=sup_codes,
             help="買掛の取引先マスタの仕入先cd（例 n001）。発注先口座と連携") if len(sup_codes) > 1

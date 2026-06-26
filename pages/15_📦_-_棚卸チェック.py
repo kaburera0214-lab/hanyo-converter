@@ -2,10 +2,11 @@
 """
 棚卸チェック（資材備品）
 
-有効な全資材を1画面に表示し、現在庫数を入力していく。
-入力後『要発注を判定』で 現在庫 <= 発注点 の資材を抽出し、
-発注数量の提案値（(在庫定数−現在庫)をロット単位に切上げ）を表示する。
-提案値は画面で手修正でき、棚卸結果としてNotionに保存できる。
+有効な全資材を保管ロケーション（棚卸グループ）ごとに表示し、現在庫を入力する。
+  - 発注点がある資材 → 現在庫 <= 発注点 で自動的に「要発注」抽出
+                        発注数量は (在庫定数−現在庫) をロット単位に切上げて提案（手修正可）
+  - 発注点がない資材（都度確認）→ 最後の確認工程に集約。チェック者が1件ずつ
+                        「確認済」にし、必要なら「発注する」を選ぶ（必ず確認させる）
 """
 import datetime
 import streamlit as st
@@ -13,7 +14,7 @@ import pandas as pd
 
 st.set_page_config(page_title="棚卸チェック", layout="wide")
 st.title("📦 棚卸チェック")
-st.caption("有効な全資材の現在庫を入力 → 発注点以下を『要発注』として抽出します。")
+st.caption("有効な全資材の現在庫を入力 → 発注点以下を『要発注』として抽出。発注点のない資材は最後に必ず確認します。")
 
 from lib.material import app_init, notion_material as N, ordering as O
 
@@ -24,6 +25,11 @@ def now_jst():
     return datetime.datetime.now(JST)
 
 
+def has_reorder_point(v):
+    s = str(v).strip()
+    return s != "" and s.lower() not in ("nan", "none")
+
+
 try:
     db_ids = app_init.init_material()
 except Exception as e:  # noqa: BLE001
@@ -31,8 +37,8 @@ except Exception as e:  # noqa: BLE001
     st.stop()
 
 if st.button("🔄 マスタを再読込", key="st_reload"):
-    st.session_state.pop("st_master", None)
-    st.session_state.pop("st_input", None)
+    for k in ("st_master", "st_result"):
+        st.session_state.pop(k, None)
 
 if "st_master" not in st.session_state:
     st.session_state["st_master"] = N.load_master(db_ids)
@@ -43,72 +49,73 @@ if not master:
     st.info("有効な資材がありません。先に「📦 資材マスタ」で資材を登録し、有効フラグを✓にしてください。")
     st.stop()
 
-st.markdown(f"### 対象資材 {len(master)}件（有効のみ）")
+auto_items = [r for r in master if has_reorder_point(r.get("発注点"))]
+manual_items = [r for r in master if not has_reorder_point(r.get("発注点"))]
 
-# --- 現在庫入力テーブル ---
-base = []
-for r in master:
-    base.append({
-        "id": r["id"],
-        "資材名": r["資材名"],
-        "仕入先名": r.get("仕入先名", ""),
-        "保管ロケーション": r.get("保管ロケーション", ""),
-        "現在庫": "",
-        "発注点": r.get("発注点", ""),
-        "在庫定数": r.get("在庫定数", ""),
-        "ロット": r.get("ロット", ""),
-    })
-df = pd.DataFrame(base)
+st.markdown(f"### ① 現在庫の入力（発注点あり {len(auto_items)}件）")
+st.caption("保管ロケーションごとに現在庫を入力してください。")
 
-edited = st.data_editor(
-    df, use_container_width=True, hide_index=True, key="st_editor",
-    column_config={
-        "id": None,
-        "資材名": st.column_config.TextColumn("資材名", disabled=True),
-        "仕入先名": st.column_config.TextColumn("仕入先名", disabled=True),
-        "保管ロケーション": st.column_config.TextColumn("ロケーション", disabled=True),
-        "現在庫": st.column_config.NumberColumn("現在庫（入力）", min_value=0,
-                                          help="棚卸でカウントした現在の在庫数"),
-        "発注点": st.column_config.NumberColumn("発注点", disabled=True),
-        "在庫定数": st.column_config.NumberColumn("在庫定数", disabled=True),
-        "ロット": st.column_config.NumberColumn("ロット", disabled=True),
-    },
-)
+# --- 現在庫入力（ロケーションごとに分割表示）---
+inputs = {}
+locations = sorted({(r.get("保管ロケーション") or "（未設定）") for r in auto_items})
+for loc in locations:
+    grp = [r for r in auto_items if (r.get("保管ロケーション") or "（未設定）") == loc]
+    st.markdown(f"**📍 {loc}**（{len(grp)}件）")
+    base = [{
+        "id": r["id"], "カテゴリ": r.get("カテゴリ", ""), "資材名": r["資材名"],
+        "現在庫": "", "発注点": r.get("発注点", ""), "在庫定数": r.get("在庫定数", ""),
+        "ロット": r.get("ロット", ""), "備考": r.get("備考", ""),
+    } for r in grp]
+    ed = st.data_editor(
+        pd.DataFrame(base), use_container_width=True, hide_index=True,
+        key=f"st_editor_{loc}",
+        column_config={
+            "id": None,
+            "カテゴリ": st.column_config.TextColumn("分類", disabled=True, width="small"),
+            "資材名": st.column_config.TextColumn("資材名", disabled=True),
+            "現在庫": st.column_config.NumberColumn("現在庫（入力）", min_value=0,
+                                              help="棚卸でカウントした現在の在庫数"),
+            "発注点": st.column_config.NumberColumn("発注点", disabled=True),
+            "在庫定数": st.column_config.NumberColumn("在庫定数", disabled=True),
+            "ロット": st.column_config.NumberColumn("ロット", disabled=True),
+            "備考": st.column_config.TextColumn("備考", disabled=True),
+        },
+    )
+    inputs[loc] = ed
 
 st.markdown("---")
 if st.button("🧮 要発注を判定", type="primary", key="st_judge"):
     detail = []
-    for _, r in edited.iterrows():
-        cur = r.get("現在庫")
-        rec = {
-            "id": r["id"],
-            "資材名": r["資材名"],
-            "仕入先名": r.get("仕入先名", ""),
-            "現在庫": "" if pd.isna(cur) else cur,
-            "発注点": r.get("発注点", ""),
-            "在庫定数": r.get("在庫定数", ""),
-            "ロット": r.get("ロット", ""),
-            "未入力": pd.isna(cur) or str(cur).strip() == "",
-        }
-        rec["要発注"] = (not rec["未入力"]) and O.needs_order(rec["現在庫"], rec["発注点"])
-        rec["発注数量"] = O.suggest_qty(rec["現在庫"], rec["在庫定数"], rec["ロット"]) if rec["要発注"] else 0
-        detail.append(rec)
+    for loc, ed in inputs.items():
+        for _, r in ed.iterrows():
+            cur = r.get("現在庫")
+            未入力 = pd.isna(cur) or str(cur).strip() == ""
+            rec = {
+                "id": r["id"], "資材名": r["資材名"], "ロケーション": loc,
+                "現在庫": "" if 未入力 else cur, "発注点": r.get("発注点", ""),
+                "在庫定数": r.get("在庫定数", ""), "ロット": r.get("ロット", ""),
+                "未入力": 未入力,
+            }
+            rec["要発注"] = (not 未入力) and O.needs_order(rec["現在庫"], rec["発注点"])
+            rec["発注数量"] = O.suggest_qty(rec["現在庫"], rec["在庫定数"], rec["ロット"]) if rec["要発注"] else 0
+            detail.append(rec)
     st.session_state["st_result"] = detail
 
 result = st.session_state.get("st_result")
+orders = []
 if result:
     not_input = [d for d in result if d["未入力"]]
     orders = [d for d in result if d["要発注"]]
     if not_input:
-        st.warning(f"未入力 {len(not_input)}件：{'、'.join(d['資材名'] for d in not_input[:10])}"
+        st.warning(f"現在庫が未入力 {len(not_input)}件：{'、'.join(d['資材名'] for d in not_input[:10])}"
                    + ("…" if len(not_input) > 10 else ""))
 
-    st.markdown(f"### 要発注 {len(orders)}件")
+    st.markdown(f"### ② 要発注（自動抽出 {len(orders)}件）")
     if not orders:
-        st.success("発注が必要な資材はありません。")
+        st.success("発注点を下回った資材はありません。")
     else:
         odf = pd.DataFrame([{
-            "資材名": d["資材名"], "仕入先名": d["仕入先名"],
+            "ロケーション": d["ロケーション"], "資材名": d["資材名"],
             "現在庫": O.to_num(d["現在庫"]), "発注点": O.to_num(d["発注点"]),
             "在庫定数": O.to_num(d["在庫定数"]), "ロット": O.to_num(d["ロット"]),
             "発注数量": d["発注数量"],
@@ -116,8 +123,8 @@ if result:
         oedit = st.data_editor(
             odf, use_container_width=True, hide_index=True, key="st_order_editor",
             column_config={
+                "ロケーション": st.column_config.TextColumn(disabled=True),
                 "資材名": st.column_config.TextColumn(disabled=True),
-                "仕入先名": st.column_config.TextColumn(disabled=True),
                 "現在庫": st.column_config.NumberColumn(disabled=True),
                 "発注点": st.column_config.NumberColumn(disabled=True),
                 "在庫定数": st.column_config.NumberColumn(disabled=True),
@@ -125,35 +132,93 @@ if result:
                 "発注数量": st.column_config.NumberColumn("発注数量（提案・手修正可）", min_value=0),
             },
         )
-        # 仕入先ごとの集計プレビュー（Phase2の発注書作成の単位）
-        with st.expander("📋 仕入先ごとの発注プレビュー", expanded=True):
-            for sup, g in oedit.groupby("仕入先名"):
-                lines = [f"- {row['資材名']}：{int(row['発注数量'])}" for _, row in g.iterrows()]
-                st.markdown(f"**{sup or '（仕入先未設定）'}**\n" + "\n".join(lines))
+        st.session_state["st_order_qty"] = {row["資材名"]: int(row["発注数量"])
+                                            for _, row in oedit.iterrows()}
 
-        # 棚卸結果の保存（手修正後の発注数量を反映）
-        if st.button("💾 この棚卸を保存", key="st_save"):
-            qty_map = {row["資材名"]: int(row["発注数量"]) for _, row in oedit.iterrows()}
-            save_detail = []
-            for d in result:
-                if d["未入力"]:
-                    continue
-                save_detail.append({
-                    "資材名": d["資材名"], "仕入先名": d["仕入先名"],
-                    "現在庫": O.to_num(d["現在庫"]),
-                    "発注点": O.to_num(d["発注点"]),
-                    "在庫定数": O.to_num(d["在庫定数"]),
-                    "ロット": O.to_num(d["ロット"]),
-                    "要発注": bool(d["要発注"]),
-                    "発注数量": qty_map.get(d["資材名"], d["発注数量"]) if d["要発注"] else 0,
-                })
-            try:
-                N.save_stocktake(db_ids, 棚卸日=now_jst().strftime("%Y-%m-%d %H:%M"),
-                                 明細=save_detail)
-                st.success(f"棚卸を保存しました（明細{len(save_detail)}件・要発注{len(orders)}件）。")
-            except Exception as e:  # noqa: BLE001
-                st.error(f"保存に失敗しました: {e}")
+# --- ③ 都度確認（発注点なし）：最後の確認工程 ---
+st.markdown("---")
+st.markdown(f"### ③ 都度確認（発注点なし {len(manual_items)}件）")
+st.caption("数値で自動判定できない資材です。1件ずつ「確認済」にし、必要なら「発注する」を選んでください（全件の確認が必要です）。")
 
+mdf = pd.DataFrame([{
+    "id": r["id"], "ロケーション": r.get("保管ロケーション", ""), "カテゴリ": r.get("カテゴリ", ""),
+    "資材名": r["資材名"], "備考": r.get("備考", ""),
+    "確認済": False, "発注する": False, "発注数量": 0, "メモ": "",
+} for r in manual_items])
+medit = st.data_editor(
+    mdf, use_container_width=True, hide_index=True, key="st_manual_editor",
+    column_config={
+        "id": None,
+        "ロケーション": st.column_config.TextColumn("ロケーション", disabled=True),
+        "カテゴリ": st.column_config.TextColumn("分類", disabled=True, width="small"),
+        "資材名": st.column_config.TextColumn("資材名", disabled=True),
+        "備考": st.column_config.TextColumn("内容・条件", disabled=True, width="large"),
+        "確認済": st.column_config.CheckboxColumn("確認済", help="この資材を確認したらチェック"),
+        "発注する": st.column_config.CheckboxColumn("発注する"),
+        "発注数量": st.column_config.NumberColumn("発注数量", min_value=0),
+        "メモ": st.column_config.TextColumn("メモ"),
+    },
+)
+
+# --- ④ プレビュー＆保存 ---
+st.markdown("---")
+manual_unchecked = int((~medit["確認済"]).sum()) if len(medit) else 0
+manual_orders = [row for _, row in medit.iterrows() if row.get("発注する")]
+order_qty = st.session_state.get("st_order_qty", {})
+
+# 仕入先（ロケーション）ごとの発注プレビュー
+combined = []
+for d in orders:
+    combined.append({"ロケーション": d["ロケーション"], "資材名": d["資材名"],
+                     "発注数量": order_qty.get(d["資材名"], d["発注数量"])})
+for row in manual_orders:
+    combined.append({"ロケーション": row.get("ロケーション", ""), "資材名": row["資材名"],
+                     "発注数量": int(row.get("発注数量") or 0)})
+
+if combined:
+    with st.expander(f"📋 発注プレビュー（ロケーション別 計{len(combined)}件）", expanded=True):
+        pdf = pd.DataFrame(combined)
+        for loc, g in pdf.groupby("ロケーション"):
+            lines = [f"- {r['資材名']}：{int(r['発注数量'])}" for _, r in g.iterrows()]
+            st.markdown(f"**{loc or '（未設定）'}**\n" + "\n".join(lines))
+
+if manual_unchecked:
+    st.warning(f"都度確認が未確認 {manual_unchecked}件あります。全件「確認済」にしてから保存してください。")
+
+if st.button("💾 この棚卸を保存", key="st_save", disabled=(result is None)):
+    if result is None:
+        st.error("先に「要発注を判定」を実行してください。")
+    elif manual_unchecked:
+        st.error(f"都度確認が {manual_unchecked}件 未確認です。全件確認してください。")
+    else:
+        save_detail = []
+        for d in result:
+            if d["未入力"]:
+                continue
+            save_detail.append({
+                "資材名": d["資材名"], "ロケーション": d["ロケーション"], "判定方式": "自動",
+                "現在庫": O.to_num(d["現在庫"]), "発注点": O.to_num(d["発注点"]),
+                "在庫定数": O.to_num(d["在庫定数"]), "ロット": O.to_num(d["ロット"]),
+                "要発注": bool(d["要発注"]),
+                "発注数量": order_qty.get(d["資材名"], d["発注数量"]) if d["要発注"] else 0,
+            })
+        for _, row in medit.iterrows():
+            save_detail.append({
+                "資材名": row["資材名"], "ロケーション": row.get("ロケーション", ""),
+                "判定方式": "都度確認", "確認済": bool(row.get("確認済")),
+                "要発注": bool(row.get("発注する")),
+                "発注数量": int(row.get("発注数量") or 0) if row.get("発注する") else 0,
+                "メモ": str(row.get("メモ") or ""),
+            })
+        try:
+            N.save_stocktake(db_ids, 棚卸日=now_jst().strftime("%Y-%m-%d %H:%M"),
+                             明細=save_detail)
+            n_order = sum(1 for d in save_detail if d.get("要発注"))
+            st.success(f"棚卸を保存しました（明細{len(save_detail)}件・要発注{n_order}件）。")
+        except Exception as e:  # noqa: BLE001
+            st.error(f"保存に失敗しました: {e}")
+
+# --- 履歴 ---
 st.markdown("---")
 with st.expander("🕘 過去の棚卸履歴", expanded=False):
     try:
