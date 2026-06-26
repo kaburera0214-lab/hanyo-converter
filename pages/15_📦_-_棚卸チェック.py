@@ -37,7 +37,8 @@ except Exception as e:  # noqa: BLE001
     st.stop()
 
 if st.button("🔄 マスタを再読込", key="st_reload"):
-    for k in ("st_master", "st_result"):
+    for k in ("st_master", "st_result", "st_order_df", "st_order_nonce",
+              "st_order_qty", "st_order_lot"):
         st.session_state.pop(k, None)
 
 if "st_master" not in st.session_state:
@@ -52,6 +53,12 @@ if not master:
 auto_items = [r for r in master if has_reorder_point(r.get("発注点"))]
 manual_items = [r for r in master if not has_reorder_point(r.get("発注点"))]
 
+# ロット候補と単価の個数不一致を警告（ロット変更＝価格変更の取りこぼし防止）
+mismatched = [r for r in master if not O.lot_price_ok(r.get("ロット候補"), r.get("単価"))]
+if mismatched:
+    st.warning("⚠️ ロット候補と単価の個数が一致しない資材があります（資材マスタで修正してください）："
+               + "、".join(r["資材名"] for r in mismatched[:15]))
+
 st.markdown(f"### ① 現在庫の入力（発注点あり {len(auto_items)}件）")
 st.caption("保管ロケーションごとに現在庫を入力してください。")
 
@@ -64,7 +71,7 @@ for loc in locations:
     base = [{
         "id": r["id"], "カテゴリ": r.get("カテゴリ", ""), "資材名": r["資材名"],
         "現在庫": "", "発注点": r.get("発注点", ""), "在庫定数": r.get("在庫定数", ""),
-        "ロット": r.get("ロット", ""), "備考": r.get("備考", ""),
+        "ロット候補": r.get("ロット候補", ""), "備考": r.get("備考", ""),
     } for r in grp]
     ed = st.data_editor(
         pd.DataFrame(base), use_container_width=True, hide_index=True,
@@ -77,7 +84,7 @@ for loc in locations:
                                               help="棚卸でカウントした現在の在庫数"),
             "発注点": st.column_config.NumberColumn("発注点", disabled=True),
             "在庫定数": st.column_config.NumberColumn("在庫定数", disabled=True),
-            "ロット": st.column_config.NumberColumn("ロット", disabled=True),
+            "ロット候補": st.column_config.TextColumn("ロット候補", disabled=True),
             "備考": st.column_config.TextColumn("備考", disabled=True),
         },
     )
@@ -90,16 +97,26 @@ if st.button("🧮 要発注を判定", type="primary", key="st_judge"):
         for _, r in ed.iterrows():
             cur = r.get("現在庫")
             未入力 = pd.isna(cur) or str(cur).strip() == ""
+            lot_str = r.get("ロット候補", "")
             rec = {
                 "id": r["id"], "資材名": r["資材名"], "ロケーション": loc,
                 "現在庫": "" if 未入力 else cur, "発注点": r.get("発注点", ""),
-                "在庫定数": r.get("在庫定数", ""), "ロット": r.get("ロット", ""),
-                "未入力": 未入力,
+                "在庫定数": r.get("在庫定数", ""), "ロット候補": lot_str,
+                "既定ロット": O.default_lot(lot_str), "未入力": 未入力,
             }
             rec["要発注"] = (not 未入力) and O.needs_order(rec["現在庫"], rec["発注点"])
-            rec["発注数量"] = O.suggest_qty(rec["現在庫"], rec["在庫定数"], rec["ロット"]) if rec["要発注"] else 0
+            rec["発注数量"] = O.suggest_qty(rec["現在庫"], rec["在庫定数"],
+                                        rec["既定ロット"]) if rec["要発注"] else 0
             detail.append(rec)
     st.session_state["st_result"] = detail
+    # 要発注の作業用データフレームを初期化（既定ロットでの提案値）
+    st.session_state["st_order_df"] = pd.DataFrame([{
+        "ロケーション": d["ロケーション"], "資材名": d["資材名"],
+        "現在庫": O.to_num(d["現在庫"]), "発注点": O.to_num(d["発注点"]),
+        "在庫定数": O.to_num(d["在庫定数"]), "ロット候補": d["ロット候補"],
+        "適用ロット": d["既定ロット"], "発注数量": d["発注数量"],
+    } for d in result if d["要発注"]])
+    st.session_state["st_order_nonce"] = st.session_state.get("st_order_nonce", 0) + 1
 
 result = st.session_state.get("st_result")
 orders = []
@@ -114,25 +131,36 @@ if result:
     if not orders:
         st.success("発注点を下回った資材はありません。")
     else:
-        odf = pd.DataFrame([{
-            "ロケーション": d["ロケーション"], "資材名": d["資材名"],
-            "現在庫": O.to_num(d["現在庫"]), "発注点": O.to_num(d["発注点"]),
-            "在庫定数": O.to_num(d["在庫定数"]), "ロット": O.to_num(d["ロット"]),
-            "発注数量": d["発注数量"],
-        } for d in orders])
+        st.caption("ロットをまとめ買いしたい場合は『適用ロット』を変えて『発注数量を再計算』を押してください。")
+        odf = st.session_state["st_order_df"]
+        nonce = st.session_state.get("st_order_nonce", 0)
         oedit = st.data_editor(
-            odf, use_container_width=True, hide_index=True, key="st_order_editor",
+            odf, use_container_width=True, hide_index=True, key=f"st_order_editor_{nonce}",
             column_config={
                 "ロケーション": st.column_config.TextColumn(disabled=True),
                 "資材名": st.column_config.TextColumn(disabled=True),
                 "現在庫": st.column_config.NumberColumn(disabled=True),
                 "発注点": st.column_config.NumberColumn(disabled=True),
                 "在庫定数": st.column_config.NumberColumn(disabled=True),
-                "ロット": st.column_config.NumberColumn(disabled=True),
+                "ロット候補": st.column_config.TextColumn("ロット候補", disabled=True),
+                "適用ロット": st.column_config.NumberColumn("適用ロット", min_value=0,
+                                                   help="まとめ買い時はロット候補のいずれかに変更"),
                 "発注数量": st.column_config.NumberColumn("発注数量（提案・手修正可）", min_value=0),
             },
         )
+        if st.button("🔁 適用ロットで発注数量を再計算", key="st_recalc"):
+            recalced = oedit.copy()
+            recalced["発注数量"] = [
+                O.suggest_qty(row["現在庫"], row["在庫定数"], row["適用ロット"])
+                for _, row in recalced.iterrows()]
+            st.session_state["st_order_df"] = recalced
+            st.session_state["st_order_nonce"] = nonce + 1
+            st.rerun()
+        # 表示中の編集内容を作業用DFへ反映し、確定値を保持
+        st.session_state["st_order_df"] = oedit
         st.session_state["st_order_qty"] = {row["資材名"]: int(row["発注数量"])
+                                            for _, row in oedit.iterrows()}
+        st.session_state["st_order_lot"] = {row["資材名"]: O.to_num(row["適用ロット"])
                                             for _, row in oedit.iterrows()}
 
 # --- ③ 都度確認（発注点なし）：最後の確認工程 ---
@@ -191,6 +219,7 @@ if st.button("💾 この棚卸を保存", key="st_save", disabled=(result is No
     elif manual_unchecked:
         st.error(f"都度確認が {manual_unchecked}件 未確認です。全件確認してください。")
     else:
+        order_lot = st.session_state.get("st_order_lot", {})
         save_detail = []
         for d in result:
             if d["未入力"]:
@@ -198,7 +227,8 @@ if st.button("💾 この棚卸を保存", key="st_save", disabled=(result is No
             save_detail.append({
                 "資材名": d["資材名"], "ロケーション": d["ロケーション"], "判定方式": "自動",
                 "現在庫": O.to_num(d["現在庫"]), "発注点": O.to_num(d["発注点"]),
-                "在庫定数": O.to_num(d["在庫定数"]), "ロット": O.to_num(d["ロット"]),
+                "在庫定数": O.to_num(d["在庫定数"]),
+                "適用ロット": order_lot.get(d["資材名"], d["既定ロット"]),
                 "要発注": bool(d["要発注"]),
                 "発注数量": order_qty.get(d["資材名"], d["発注数量"]) if d["要発注"] else 0,
             })

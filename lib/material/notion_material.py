@@ -13,7 +13,7 @@ import json
 
 # スキーマ(列)を変更したらこの版数を上げる。app_initがセッションキャッシュを
 # 無視して ensure_databases(不足列の自動追加) を再実行する。
-SCHEMA_VERSION = "2026-06-25b"
+SCHEMA_VERSION = "2026-06-25c"
 
 DB_SCHEMAS = {
     "資材_資材マスタ": {
@@ -22,8 +22,13 @@ DB_SCHEMAS = {
         "カテゴリ": {"rich_text": {}},
         "NE仕入先cd": {"rich_text": {}},
         "仕入先名": {"rich_text": {}},
-        "ロット": {"number": {}},
-        "単価": {"number": {}},
+        "発注方法": {"select": {"options": [
+            {"name": "メール発注", "color": "blue"},
+            {"name": "社内チャット依頼", "color": "green"},
+            {"name": "FAX発注", "color": "orange"},
+        ]}},
+        "ロット候補": {"rich_text": {}},
+        "単価": {"rich_text": {}},
         "発注点": {"number": {}},
         "在庫定数": {"number": {}},
         "保管ロケーション": {"rich_text": {}},
@@ -85,6 +90,11 @@ def _read_check(prop):
     return bool(prop.get("checkbox")) if prop else False
 
 
+def _read_select(prop):
+    sel = prop.get("select") if prop else None
+    return sel["name"] if sel else ""
+
+
 def _to_num(v):
     if v is None or str(v).strip() == "":
         return None
@@ -130,12 +140,20 @@ def ensure_databases():
 
 
 def _sync_db_properties(client, db_id, schema):
+    """不足列の追加に加え、型が変わった列(例 単価 number→rich_text)も更新する。"""
     db = client.databases.retrieve(database_id=db_id)
     existing_props = db.get("properties", {})
-    missing = {name: spec for name, spec in schema.items()
-              if name not in existing_props and "title" not in spec}
-    if missing:
-        client.databases.update(database_id=db_id, properties=missing)
+    changes = {}
+    for name, spec in schema.items():
+        if "title" in spec:
+            continue
+        want_type = next(iter(spec))
+        if name not in existing_props:
+            changes[name] = spec                       # 不足列の追加
+        elif existing_props[name].get("type") != want_type:
+            changes[name] = spec                       # 型変更(値は空のため安全)
+    if changes:
+        client.databases.update(database_id=db_id, properties=changes)
 
 
 def _query_all(db_id):
@@ -157,8 +175,9 @@ def _query_all(db_id):
 # ============================================================
 # 資材マスタ
 # ============================================================
-MASTER_FIELDS = ["資材名", "品番", "カテゴリ", "NE仕入先cd", "仕入先名", "ロット", "単価",
-                 "発注点", "在庫定数", "保管ロケーション", "有効フラグ", "備考"]
+MASTER_FIELDS = ["資材名", "品番", "カテゴリ", "NE仕入先cd", "仕入先名", "発注方法",
+                 "ロット候補", "単価", "発注点", "在庫定数", "保管ロケーション",
+                 "有効フラグ", "備考"]
 
 
 def load_master(db_ids):
@@ -173,8 +192,9 @@ def load_master(db_ids):
             "カテゴリ": _read_rt(p.get("カテゴリ")),
             "NE仕入先cd": _read_rt(p.get("NE仕入先cd")),
             "仕入先名": _read_rt(p.get("仕入先名")),
-            "ロット": _read_num(p.get("ロット")) or "",
-            "単価": _read_num(p.get("単価")) or "",
+            "発注方法": _read_select(p.get("発注方法")),
+            "ロット候補": _read_rt(p.get("ロット候補")),
+            "単価": _read_rt(p.get("単価")),
             "発注点": _read_num(p.get("発注点")) or "",
             "在庫定数": _read_num(p.get("在庫定数")) or "",
             "保管ロケーション": _read_rt(p.get("保管ロケーション")),
@@ -192,8 +212,11 @@ def _master_props(r):
         "カテゴリ": {"rich_text": _rt(r.get("カテゴリ", ""))},
         "NE仕入先cd": {"rich_text": _rt(r.get("NE仕入先cd", ""))},
         "仕入先名": {"rich_text": _rt(r.get("仕入先名", ""))},
-        "ロット": {"number": _to_num(r.get("ロット", ""))},
-        "単価": {"number": _to_num(r.get("単価", ""))},
+        "発注方法": ({"select": {"name": r["発注方法"]}}
+                  if str(r.get("発注方法", "")).strip() in ("メール発注", "社内チャット依頼", "FAX発注")
+                  else {"select": None}),
+        "ロット候補": {"rich_text": _rt(r.get("ロット候補", ""))},
+        "単価": {"rich_text": _rt(r.get("単価", ""))},
         "発注点": {"number": _to_num(r.get("発注点", ""))},
         "在庫定数": {"number": _to_num(r.get("在庫定数", ""))},
         "保管ロケーション": {"rich_text": _rt(r.get("保管ロケーション", ""))},

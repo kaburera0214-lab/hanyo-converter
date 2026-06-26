@@ -57,8 +57,16 @@ def _hit(r):
     return any(kw in str(r.get(c, "")) for c in ("資材名", "品番", "仕入先名", "NE仕入先cd"))
 view = [r for r in rows if _hit(r)]
 
-edit_cols = ["id", "資材名", "品番", "カテゴリ", "NE仕入先cd", "仕入先名", "ロット", "単価",
-             "発注点", "在庫定数", "保管ロケーション", "有効フラグ", "備考"]
+# ロット候補と単価の個数が合わない行を警告（ロット変更＝価格変更の取りこぼし防止）
+from lib.material import ordering as O
+mismatched = [r for r in rows if not O.lot_price_ok(r.get("ロット候補"), r.get("単価"))]
+if mismatched:
+    st.warning("⚠️ ロット候補と単価の個数が一致しない資材があります（ロットを増やしたら単価も対応させてください）：\n"
+               + "\n".join(f"- {r['資材名']}：ロット候補「{r.get('ロット候補','')}」／単価「{r.get('単価','')}」"
+                           for r in mismatched[:20]))
+
+edit_cols = ["id", "資材名", "品番", "カテゴリ", "NE仕入先cd", "仕入先名", "発注方法",
+             "ロット候補", "単価", "発注点", "在庫定数", "保管ロケーション", "有効フラグ", "備考"]
 df = pd.DataFrame(view)
 for c in edit_cols:
     if c not in df.columns:
@@ -77,8 +85,12 @@ edited = st.data_editor(
             help="買掛の取引先マスタの仕入先cd（例 n001）。発注先口座と連携") if len(sup_codes) > 1
             else st.column_config.TextColumn("NE仕入先cd", help="買掛の仕入先cd（例 n001）"),
         "仕入先名": st.column_config.TextColumn("仕入先名", help="表示用。cdから補完できます"),
-        "ロット": st.column_config.NumberColumn("ロット", help="発注単位", min_value=0),
-        "単価": st.column_config.NumberColumn("単価", min_value=0),
+        "発注方法": st.column_config.SelectboxColumn(
+            "発注方法", options=["", "メール発注", "社内チャット依頼", "FAX発注"]),
+        "ロット候補": st.column_config.TextColumn(
+            "ロット候補", help="発注単位。カンマ区切りで複数可（全/半角OK）。先頭＝既定。例 20,100"),
+        "単価": st.column_config.TextColumn(
+            "単価", help="ロット候補に対応してカンマ区切り。例 1400,6500（1つだけなら全ロット共通）"),
         "発注点": st.column_config.NumberColumn("発注点", help="この在庫数以下で要発注", min_value=0),
         "在庫定数": st.column_config.NumberColumn("在庫定数", help="あるべき基準在庫", min_value=0),
         "有効フラグ": st.column_config.TextColumn("有効", help="✓で棚卸対象。空欄は対象外"),
@@ -119,9 +131,11 @@ if st.button("💾 変更を保存", type="primary", key="mm_save"):
 st.markdown("---")
 with st.expander("ℹ️ 使い方", expanded=False):
     st.markdown(
-        "- **発注点**：現在庫がこの数**以下**になったら『要発注』として抽出されます。\n"
+        "- **発注点**：現在庫がこの数**以下**になったら『要発注』として抽出されます。空欄の資材は棚卸の『都度確認』工程に回ります。\n"
         "- **在庫定数**：あるべき基準在庫。発注数量は『(在庫定数−現在庫)をロット単位に切上げ』で提案します。\n"
+        "- **ロット候補**：発注単位。`20,100` のようにカンマ区切り（全/半角OK）で複数登録でき、先頭が既定。発注時にプルダウンで選べます。\n"
+        "- **単価**：ロット候補に対応してカンマ区切り（例 `1400,6500`）。1つだけなら全ロット共通単価。ロット候補と個数が合わないと上部に警告が出ます。\n"
+        "- **発注方法**：メール発注／社内チャット依頼／FAX発注。`ワ`（社内ネット購入）は社内チャット依頼です。\n"
         "- **NE仕入先cd**：買掛の取引先マスタの仕入先cd（例 n001）を選ぶと、発注先の口座・宛先と連携できます。\n"
-        "- **有効フラグ**：`✓` の資材だけが棚卸チェックの対象になります。\n"
-        "- 行を削除したい場合は、行を選択して削除後に保存ではなく、有効フラグを外して棚卸対象から除外してください。"
+        "- **有効フラグ**：`✓` の資材だけが棚卸チェックの対象になります。"
     )
