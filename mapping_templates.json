@@ -597,8 +597,11 @@
       },
       "商品コード": {
         "type": "special",
-        "logic": "jan_master_code",
-        "source": "商品コード"
+        "logic": "supplier_code",
+        "source": "商品コード",
+        "map": {
+          "4580267730491": "MR4580267730491"
+        }
       },
       "商品価格": {
         "type": "column",
