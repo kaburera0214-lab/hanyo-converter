@@ -38,7 +38,7 @@ except Exception as e:  # noqa: BLE001
 
 if st.button("🔄 マスタを再読込", key="st_reload"):
     for k in ("st_master", "st_result", "st_order_df", "st_order_nonce",
-              "st_order_qty", "st_order_lot"):
+              "st_order_qty", "st_order_lot", "st_lastcounts"):
         st.session_state.pop(k, None)
 
 if "st_master" not in st.session_state:
@@ -59,55 +59,76 @@ if mismatched:
     st.warning("⚠️ ロット候補と単価の個数が一致しない資材があります（資材マスタで修正してください）："
                + "、".join(r["資材名"] for r in mismatched[:15]))
 
+# 前回の棚卸値（資材名→{現在庫, 棚卸日}）。減少量の表示に使う。
+if "st_lastcounts" not in st.session_state:
+    try:
+        st.session_state["st_lastcounts"] = N.last_counts(db_ids)
+    except Exception:  # noqa: BLE001
+        st.session_state["st_lastcounts"] = {}
+last = st.session_state["st_lastcounts"]
+
+
+def _days_since(day_str):
+    """『YYYY-MM-DD HH:MM』等から現在(JST)までの日数。失敗時None。"""
+    s = (day_str or "").strip()
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            dt = datetime.datetime.strptime(s, fmt).replace(tzinfo=JST)
+            return max((now_jst() - dt).days, 0)
+        except ValueError:
+            continue
+    return None
+
+
 st.markdown(f"### ① 現在庫の入力（発注点あり {len(auto_items)}件）")
-st.caption("保管ロケーションごとに現在庫を入力してください。")
+st.caption("資材ごとに現在庫を入力（前回値・発注点を表示）。最後に『要発注を判定』でまとめて確定します。"
+           "初期値は前回値です。減ったぶんだけ数を下げてください。")
 
-# --- 現在庫入力（ロケーションごとに分割表示）---
-inputs = {}
 locations = sorted({(r.get("保管ロケーション") or "（未設定）") for r in auto_items})
-for loc in locations:
-    grp = [r for r in auto_items if (r.get("保管ロケーション") or "（未設定）") == loc]
-    st.markdown(f"**📍 {loc}**（{len(grp)}件）")
-    base = [{
-        "id": r["id"], "カテゴリ": r.get("カテゴリ", ""), "資材名": r["資材名"],
-        "現在庫": "", "発注点": r.get("発注点", ""), "在庫定数": r.get("在庫定数", ""),
-        "ロット候補": r.get("ロット候補", ""), "備考": r.get("備考", ""),
-    } for r in grp]
-    ed = st.data_editor(
-        pd.DataFrame(base), use_container_width=True, hide_index=True,
-        key=f"st_editor_{loc}",
-        column_config={
-            "id": None,
-            "カテゴリ": st.column_config.TextColumn("分類", disabled=True, width="small"),
-            "資材名": st.column_config.TextColumn("資材名", disabled=True),
-            "現在庫": st.column_config.NumberColumn("現在庫（入力）", min_value=0,
-                                              help="棚卸でカウントした現在の在庫数"),
-            "発注点": st.column_config.NumberColumn("発注点", disabled=True),
-            "在庫定数": st.column_config.NumberColumn("在庫定数", disabled=True),
-            "ロット候補": st.column_config.TextColumn("ロット候補", disabled=True),
-            "備考": st.column_config.TextColumn("備考", disabled=True),
-        },
-    )
-    inputs[loc] = ed
+with st.form("st_input_form"):
+    for loc in locations:
+        grp = [r for r in auto_items if (r.get("保管ロケーション") or "（未設定）") == loc]
+        st.markdown(f"**📍 {loc}**（{len(grp)}件）")
+        for r in grp:
+            prev = last.get(r["資材名"], {})
+            pv = prev.get("現在庫")
+            meta = []
+            if pv is not None:
+                dsince = _days_since(prev.get("棚卸日"))
+                meta.append(f"前回 {O.to_num(pv):g}" + (f"・{dsince}日前" if dsince is not None else ""))
+            meta.append(f"発注点 {O.to_num(r.get('発注点')):g}")
+            lot = str(r.get("ロット候補", "")).strip()
+            if lot:
+                meta.append(f"ロット {lot}")
+            st.number_input(
+                f"{r['資材名']}　〔{' / '.join(meta)}〕",
+                min_value=0.0, step=1.0,
+                value=float(O.to_num(pv)) if pv is not None else 0.0,
+                key=f"cur_{r['id']}")
+    submitted = st.form_submit_button("🧮 要発注を判定", type="primary",
+                                      use_container_width=True)
 
-st.markdown("---")
-if st.button("🧮 要発注を判定", type="primary", key="st_judge"):
+if submitted:
     detail = []
-    for loc, ed in inputs.items():
-        for _, r in ed.iterrows():
-            cur = r.get("現在庫")
-            未入力 = pd.isna(cur) or str(cur).strip() == ""
-            lot_str = r.get("ロット候補", "")
-            rec = {
-                "id": r["id"], "資材名": r["資材名"], "ロケーション": loc,
-                "現在庫": "" if 未入力 else cur, "発注点": r.get("発注点", ""),
-                "在庫定数": r.get("在庫定数", ""), "ロット候補": lot_str,
-                "既定ロット": O.default_lot(lot_str), "未入力": 未入力,
-            }
-            rec["要発注"] = (not 未入力) and O.needs_order(rec["現在庫"], rec["発注点"])
-            rec["発注数量"] = O.suggest_qty(rec["現在庫"], rec["在庫定数"],
-                                        rec["既定ロット"]) if rec["要発注"] else 0
-            detail.append(rec)
+    for r in auto_items:
+        loc = r.get("保管ロケーション") or "（未設定）"
+        cur = st.session_state.get(f"cur_{r['id']}", 0.0)
+        lot_str = r.get("ロット候補", "")
+        prev = last.get(r["資材名"], {})
+        pv = prev.get("現在庫")
+        rec = {
+            "id": r["id"], "資材名": r["資材名"], "ロケーション": loc,
+            "現在庫": cur, "発注点": r.get("発注点", ""),
+            "在庫定数": r.get("在庫定数", ""), "ロット候補": lot_str,
+            "既定ロット": O.default_lot(lot_str), "未入力": False,
+            "前回在庫": pv,
+            "前回日数": _days_since(prev.get("棚卸日")) if pv is not None else None,
+            "減少": (O.to_num(pv) - O.to_num(cur)) if pv is not None else None,
+        }
+        rec["要発注"] = O.needs_order(rec["現在庫"], rec["発注点"])
+        rec["発注数量"] = O.suggest_qty(rec["現在庫"], rec["在庫定数"],
+                                    rec["既定ロット"]) if rec["要発注"] else 0
+        detail.append(rec)
     st.session_state["st_result"] = detail
     # 要発注の作業用データフレームを初期化（既定ロットでの提案値）
     st.session_state["st_order_df"] = pd.DataFrame([{
@@ -115,7 +136,7 @@ if st.button("🧮 要発注を判定", type="primary", key="st_judge"):
         "現在庫": O.to_num(d["現在庫"]), "発注点": O.to_num(d["発注点"]),
         "在庫定数": O.to_num(d["在庫定数"]), "ロット候補": d["ロット候補"],
         "適用ロット": d["既定ロット"], "発注数量": d["発注数量"],
-    } for d in result if d["要発注"]])
+    } for d in detail if d["要発注"]])
     st.session_state["st_order_nonce"] = st.session_state.get("st_order_nonce", 0) + 1
 
 result = st.session_state.get("st_result")
@@ -162,6 +183,22 @@ if result:
                                             for _, row in oedit.iterrows()}
         st.session_state["st_order_lot"] = {row["資材名"]: O.to_num(row["適用ロット"])
                                             for _, row in oedit.iterrows()}
+
+    # 前回からの減り（消費ペース）。前回値がある資材のみ。
+    consumed = [d for d in result if d.get("前回在庫") is not None and d.get("減少") is not None]
+    if consumed:
+        with st.expander(f"📉 前回からの減り（{len(consumed)}件）", expanded=False):
+            crows = []
+            for d in sorted(consumed, key=lambda x: (x["減少"] or 0), reverse=True):
+                days = d.get("前回日数")
+                per = (d["減少"] / days) if (days and days > 0) else None
+                crows.append({
+                    "資材名": d["資材名"], "前回": O.to_num(d["前回在庫"]),
+                    "今回": O.to_num(d["現在庫"]), "減少": d["減少"],
+                    "日数": days if days is not None else "—",
+                    "1日あたり": round(per, 2) if per is not None else "—",
+                })
+            st.dataframe(pd.DataFrame(crows), use_container_width=True, hide_index=True)
 
 # --- ③ 都度確認（発注点なし）：最後の確認工程 ---
 st.markdown("---")
@@ -229,6 +266,8 @@ if st.button("💾 この棚卸を保存", key="st_save", disabled=(result is No
                 "現在庫": O.to_num(d["現在庫"]), "発注点": O.to_num(d["発注点"]),
                 "在庫定数": O.to_num(d["在庫定数"]),
                 "適用ロット": order_lot.get(d["資材名"], d["既定ロット"]),
+                "前回在庫": d.get("前回在庫"), "前回日数": d.get("前回日数"),
+                "減少": d.get("減少"),
                 "要発注": bool(d["要発注"]),
                 "発注数量": order_qty.get(d["資材名"], d["発注数量"]) if d["要発注"] else 0,
             })
@@ -244,6 +283,7 @@ if st.button("💾 この棚卸を保存", key="st_save", disabled=(result is No
             N.save_stocktake(db_ids, 棚卸日=now_jst().strftime("%Y-%m-%d %H:%M"),
                              明細=save_detail)
             n_order = sum(1 for d in save_detail if d.get("要発注"))
+            st.session_state.pop("st_lastcounts", None)  # 次回の前回値に反映
             st.success(f"棚卸を保存しました（明細{len(save_detail)}件・要発注{n_order}件）。")
         except Exception as e:  # noqa: BLE001
             st.error(f"保存に失敗しました: {e}")

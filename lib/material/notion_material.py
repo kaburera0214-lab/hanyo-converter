@@ -280,6 +280,23 @@ def save_stocktake(db_ids, *, 棚卸日, 明細):
     })
 
 
+def last_counts(db_ids):
+    """
+    各資材の『直近の棚卸での現在庫と棚卸日』を返す。
+    戻り値: {資材名: {"現在庫": x, "棚卸日": "YYYY-MM-DD HH:MM"}}
+    新しい順に走査し、各資材の最初に見つかった(=最新の)現在庫を採用する。
+    """
+    res = {}
+    for h in load_stocktakes(db_ids):  # 生成日時の新しい順
+        day = h.get("棚卸日", "")
+        for d in h.get("明細", []):
+            name = d.get("資材名")
+            cur = d.get("現在庫")
+            if name and name not in res and cur not in (None, ""):
+                res[name] = {"現在庫": cur, "棚卸日": day}
+    return res
+
+
 def load_stocktakes(db_ids):
     rows = []
     for row in _query_all(db_ids["資材_棚卸"]):
