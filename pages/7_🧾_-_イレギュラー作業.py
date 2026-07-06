@@ -15,6 +15,9 @@ import streamlit as st
 import pandas as pd
 
 st.set_page_config(page_title="イレギュラー作業入力", layout="wide")
+
+from lib.auth import require_role
+require_role("invoice")  # 認証ゲート（AUTH_ENABLED=false なら素通り）
 st.title("イレギュラー作業入力")
 st.caption("日々のイレギュラー作業を記録します。請求書の[汎用]作業料に自動反映されます。")
 

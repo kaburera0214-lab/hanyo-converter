@@ -18,6 +18,9 @@ import streamlit as st
 import pandas as pd
 
 st.set_page_config(page_title="請求書発行", layout="wide")
+
+from lib.auth import require_role
+require_role("invoice")  # 認証ゲート（AUTH_ENABLED=false なら素通り）
 st.title("請求書発行")
 st.caption("倉庫業務クライアント向けの請求書を作成し、MFクラウド取込用CSVを出力します。（Phase1）")
 

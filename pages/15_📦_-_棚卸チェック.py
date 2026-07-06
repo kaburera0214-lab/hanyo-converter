@@ -13,6 +13,9 @@ import streamlit as st
 import pandas as pd
 
 st.set_page_config(page_title="棚卸チェック", layout="wide")
+
+from lib.auth import require_role
+require_role("material")  # 認証ゲート（AUTH_ENABLED=false なら素通り）
 st.title("📦 棚卸チェック")
 st.caption("有効な全資材の現在庫を入力 → 発注点以下を『要発注』として抽出。発注点のない資材は最後に必ず確認します。")
 

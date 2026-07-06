@@ -10,6 +10,9 @@ import streamlit as st
 import pandas as pd
 
 st.set_page_config(page_title="資材マスタ", layout="wide")
+
+from lib.auth import require_role
+require_role("material")  # 認証ゲート（AUTH_ENABLED=false なら素通り）
 st.title("📦 資材マスタ")
 st.caption("資材備品の発注点・在庫定数・仕入先（NE仕入先cd連携）を管理します。")
 

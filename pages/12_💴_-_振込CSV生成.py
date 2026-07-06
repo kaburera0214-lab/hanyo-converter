@@ -10,6 +10,9 @@ import streamlit as st
 import pandas as pd
 
 st.set_page_config(page_title="振込CSV生成", layout="wide")
+
+from lib.auth import require_role
+require_role("payable")  # 認証ゲート（AUTH_ENABLED=false なら素通り）
 st.title("💴 振込CSV生成（楽天銀行 総合振込）")
 st.caption("『確認済』の請求書から楽天銀行インポート用CSVを作成します。")
 

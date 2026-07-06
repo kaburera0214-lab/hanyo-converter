@@ -10,6 +10,9 @@ import streamlit as st
 import pandas as pd
 
 st.set_page_config(page_title="請求書取込", layout="wide")
+
+from lib.auth import require_role
+require_role("payable")  # 認証ゲート（AUTH_ENABLED=false なら素通り）
 st.title("💴 請求書取込（買掛）")
 st.caption("請求書PDF/画像をAIで読み取り、口座マスタと照合して登録します。")
 

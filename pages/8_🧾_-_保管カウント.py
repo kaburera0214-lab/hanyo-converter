@@ -14,6 +14,9 @@ import streamlit as st
 import pandas as pd
 
 st.set_page_config(page_title="保管カウント入力", layout="wide")
+
+from lib.auth import require_role
+require_role("invoice")  # 認証ゲート（AUTH_ENABLED=false なら素通り）
 st.title("保管カウント入力")
 st.caption("月2回（第1期=15日頃／第2期=末日頃）の在庫を、種別・ロケーションごとに記録します。")
 

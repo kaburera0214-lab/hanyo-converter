@@ -10,6 +10,9 @@ import streamlit as st
 import pandas as pd
 
 st.set_page_config(page_title="取引先マスタ（買掛）", layout="wide")
+
+from lib.auth import require_role
+require_role("payable")  # 認証ゲート（AUTH_ENABLED=false なら素通り）
 st.title("💴 取引先マスタ（買掛）")
 st.caption("振込先口座・支払条件・名寄せ（NE仕入先cd／別名）を管理します。")
 

@@ -10,6 +10,9 @@ import streamlit as st
 import pandas as pd
 
 st.set_page_config(page_title="突合確認", layout="wide")
+
+from lib.auth import require_role
+require_role("payable")  # 認証ゲート（AUTH_ENABLED=false なら素通り）
 st.title("💴 突合確認（発注データとの照合）")
 st.caption("ネクストエンジン発注データと請求書を会社名＋金額で突合します。")
 

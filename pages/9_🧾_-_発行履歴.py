@@ -9,6 +9,9 @@ import streamlit as st
 import pandas as pd
 
 st.set_page_config(page_title="発行履歴", layout="wide")
+
+from lib.auth import require_role
+require_role("invoice")  # 認証ゲート（AUTH_ENABLED=false なら素通り）
 st.title("発行履歴（請求書・見積）")
 st.caption("過去に確定した請求書を一覧・再ダウンロードできます。")
 
