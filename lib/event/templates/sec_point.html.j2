@@ -1,0 +1,8 @@
+{% from "macros.html.j2" import item_grid %}
+<div class="point-banner">
+  <span class="point-x">ポイント</span><span class="point-rate">{{ sec.rate or 2 }}</span><span class="point-x">倍</span>
+</div>
+{% if sec.lead %}<p class="sec-lead">{{ sec.lead }}</p>{% endif %}
+{% if sec.manage_numbers %}
+{{ item_grid(sec.manage_numbers, items, sec.columns or 3) }}
+{% endif %}

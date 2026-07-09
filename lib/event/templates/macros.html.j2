@@ -1,0 +1,22 @@
+{# 商品カード・商品グリッドの共通マクロ #}
+{% macro item_card(info) -%}
+<a class="item-card" href="{{ info.url }}">
+  <span class="item-img">
+    {% if info.image_url %}<img src="{{ info.image_url }}" alt="{{ info.name }}" loading="lazy">
+    {% else %}<span class="item-noimg">NO IMAGE</span>{% endif %}
+  </span>
+  <span class="item-name">{{ info.name }}</span>
+  {% if info.price %}<span class="item-price">{{ info.price | yen }}<small>（税込）</small></span>{% endif %}
+  {% if info.review_count %}
+  <span class="item-review"><span class="stars">{{ info.review_average | stars }}</span> {{ info.review_average }}（{{ info.review_count }}件）</span>
+  {% endif %}
+</a>
+{%- endmacro %}
+
+{% macro item_grid(manage_numbers, items, columns=3) -%}
+<div class="item-grid cols{{ columns }}">
+  {% for mn in manage_numbers %}
+    {% if mn in items %}{{ item_card(items[mn]) }}{% endif %}
+  {% endfor %}
+</div>
+{%- endmacro %}

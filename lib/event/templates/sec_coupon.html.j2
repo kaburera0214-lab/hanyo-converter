@@ -1,0 +1,12 @@
+{% if sec.lead %}<p class="sec-lead">{{ sec.lead }}</p>{% endif %}
+<div class="coupon-list">
+  {% for c in sec.coupons or [] %}
+  <div class="coupon-card">
+    <div class="coupon-label">{{ c.label }}</div>
+    {% if c.desc %}<div class="coupon-desc">{{ c.desc }}</div>{% endif %}
+    {% if c.getkey %}
+    <a class="coupon-btn" href="https://coupon.rakuten.co.jp/getCoupon?getkey={{ c.getkey }}">クーポンを獲得する</a>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>

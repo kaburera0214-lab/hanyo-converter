@@ -9,3 +9,4 @@ streamlit-autorefresh
 openpyxl>=3.1.0
 zengin_code
 PyMuPDF
+jinja2>=3.1
