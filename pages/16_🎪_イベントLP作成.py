@@ -39,6 +39,21 @@ def _load_events_cached(_nonce):
     return N.load_events(db_ids)
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_coupons_cached(_nonce):
+    return N.load_coupons(db_ids)
+
+
+def _issued_coupons():
+    return _load_coupons_cached(st.session_state.get("coupon_nonce", 0))
+
+
+def _getkey_from_url(url):
+    import re as _re
+    m = _re.search(r"getkey=([^&]+)", str(url or ""))
+    return m.group(1) if m else str(url or "")
+
+
 def _events():
     return _load_events_cached(st.session_state.get("event_nonce", 0))
 
@@ -174,8 +189,30 @@ for i, sec in enumerate(sections):
                                           key=f"sec_{uid}_rate")
             st.caption("※ RMSへのポイント変倍の自動設定はPhase 2で対応予定。現状はページ表示のみ。")
         if sec["type"] == "coupon":
-            st.caption("※ クーポンURLの getkey（getCoupon?getkey=◯◯ の◯◯部分）を貼り付けてください。"
-                       "APIによる自動発行はPhase 2で対応予定。")
+            issued = _issued_coupons()
+            if issued:
+                sc1, sc2 = st.columns([4, 1])
+                pick_cp = sc1.selectbox(
+                    "発行済みクーポンから選択（ページ17で発行したもの）",
+                    [f"{c['クーポン名']}（{c['値引き表示']}）" for c in issued],
+                    key=f"sec_{uid}_cppick")
+                sc2.write("")
+                if sc2.button("＋ 追加", key=f"sec_{uid}_cppick_add"):
+                    c = issued[[f"{c['クーポン名']}（{c['値引き表示']}）"
+                                for c in issued].index(pick_cp)]
+                    sec.setdefault("coupons", [])
+                    # 空の初期枠が残っていれば置き換える
+                    sec["coupons"] = [x for x in sec["coupons"]
+                                      if x.get("label") or x.get("getkey")]
+                    sec["coupons"].append({
+                        "label": c["値引き表示"] or c["クーポン名"],
+                        "desc": c["説明"] or c["クーポン名"],
+                        "getkey": _getkey_from_url(c["getkey URL"]) or c["couponCode"],
+                    })
+                    st.rerun()
+            else:
+                st.caption("※ クーポンの自動発行は「クーポン・ポイント」ページ(17)から。"
+                           "発行するとここで選択できます。getkey手貼りでもOK。")
             for j, cp in enumerate(sec.get("coupons", [])):
                 cc1, cc2, cc3, cc4 = st.columns([2, 3, 3, 1])
                 cp["label"] = cc1.text_input("表示（例 500円OFF）", value=cp.get("label", ""),

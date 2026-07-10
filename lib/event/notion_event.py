@@ -14,7 +14,7 @@ import json
 
 # スキーマ(列)を変更したらこの版数を上げる。app_initがセッションキャッシュを
 # 無視して ensure_databases(不足列の自動追加) を再実行する。
-SCHEMA_VERSION = "2026-07-09a"
+SCHEMA_VERSION = "2026-07-10a"
 
 STATUS_OPTIONS = ["下書き", "生成済", "公開中", "終了"]
 
@@ -37,6 +37,25 @@ DB_SCHEMAS = {
         "商品スナップショットJSON": {"rich_text": {}},
         "生成日時": {"rich_text": {}},
         "最終アップ日時": {"rich_text": {}},
+    },
+    "イベント_クーポン": {
+        "クーポン名": {"title": {}},
+        "couponCode": {"rich_text": {}},
+        "getkey URL": {"rich_text": {}},
+        "値引き表示": {"rich_text": {}},
+        "説明": {"rich_text": {}},
+        "期間開始": {"rich_text": {}},
+        "期間終了": {"rich_text": {}},
+        "対象商品": {"rich_text": {}},
+        "発行方式": {"select": {"options": [
+            {"name": "API自動", "color": "green"},
+            {"name": "手動", "color": "gray"},
+        ]}},
+        "状態": {"select": {"options": [
+            {"name": "有効", "color": "green"},
+            {"name": "削除済", "color": "default"},
+        ]}},
+        "発行日時": {"rich_text": {}},
     },
 }
 
@@ -229,3 +248,64 @@ def upsert_event(db_ids, ev):
 
 def delete_event(db_ids, page_id):
     _client().pages.update(page_id=page_id, archived=True)
+
+
+# ============================================================
+# クーポン
+# ============================================================
+def save_coupon(db_ids, cp):
+    """
+    発行したクーポンを保存しidを返す。
+    cp: クーポン名/couponCode/getkey URL/値引き表示/説明/期間開始/期間終了/
+        対象商品/発行方式(API自動|手動)
+    """
+    client = _client()
+    props = {
+        "クーポン名": {"title": _title(cp.get("クーポン名", ""))},
+        "couponCode": {"rich_text": _rt(cp.get("couponCode", ""))},
+        "getkey URL": {"rich_text": _rt(cp.get("getkey URL", ""))},
+        "値引き表示": {"rich_text": _rt(cp.get("値引き表示", ""))},
+        "説明": {"rich_text": _rt(cp.get("説明", ""))},
+        "期間開始": {"rich_text": _rt(cp.get("期間開始", ""))},
+        "期間終了": {"rich_text": _rt(cp.get("期間終了", ""))},
+        "対象商品": {"rich_text": _rt(cp.get("対象商品", ""))},
+        "発行方式": {"select": {"name": cp.get("発行方式", "API自動")}},
+        "状態": {"select": {"name": "有効"}},
+        "発行日時": {"rich_text": _rt(
+            datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))},
+    }
+    created = client.pages.create(
+        parent={"database_id": db_ids["イベント_クーポン"]}, properties=props)
+    return created["id"]
+
+
+def load_coupons(db_ids, active_only=True):
+    """クーポン一覧(新しい順)。"""
+    rows = []
+    for row in _query_all(db_ids["イベント_クーポン"]):
+        p = row["properties"]
+        state = _read_select(p.get("状態")) or "有効"
+        if active_only and state != "有効":
+            continue
+        rows.append({
+            "id": row["id"],
+            "クーポン名": _read_title(p.get("クーポン名")),
+            "couponCode": _read_rt(p.get("couponCode")),
+            "getkey URL": _read_rt(p.get("getkey URL")),
+            "値引き表示": _read_rt(p.get("値引き表示")),
+            "説明": _read_rt(p.get("説明")),
+            "期間開始": _read_rt(p.get("期間開始")),
+            "期間終了": _read_rt(p.get("期間終了")),
+            "対象商品": _read_rt(p.get("対象商品")),
+            "発行方式": _read_select(p.get("発行方式")),
+            "状態": state,
+            "発行日時": _read_rt(p.get("発行日時")),
+        })
+    rows.sort(key=lambda r: r.get("発行日時") or "", reverse=True)
+    return rows
+
+
+def mark_coupon_deleted(db_ids, page_id):
+    """クーポンを削除済みにする(Notion上は履歴として残す)。"""
+    _client().pages.update(page_id=page_id, properties={
+        "状態": {"select": {"name": "削除済"}}})
