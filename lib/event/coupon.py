@@ -62,6 +62,10 @@ def build_issue_xml(*, coupon_name, caption, start, end, discount_label,
         f"<discountType>{conf['discountType']}</discountType>",
         f"<discountFactor>{int(discount_factor)}</discountFactor>",
         f"<memberAvailMaxCount>{int(member_max)}</memberAvailMaxCount>",
+        # 以下3つは「条件なし」でも必須要素(bububa/rakuten-go実装より。欠けるとwrong format)
+        "<purchaseHistoryCond><type>0</type></purchaseHistoryCond>",
+        "<genderCond></genderCond>",
+        "<birthmonthCond>0</birthmonthCond>",
         f"<combineFlag>{1 if combine else 0}</combineFlag>",
         f"<displayFlag>{1 if display else 0}</displayFlag>",
     ]
