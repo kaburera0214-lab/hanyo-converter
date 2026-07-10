@@ -57,8 +57,12 @@ def _fetch_rms(manage_number):
     images = item.get("images") or []
     if images and isinstance(images[0], dict):
         loc = images[0].get("location") or ""
+        typ = str(images[0].get("type") or "").upper()
         if loc.startswith("http"):
             image_url = loc
+        elif loc and typ == "GOLD":
+            # GOLD領域の画像(例 /gold/LP/xxx.jpg → https://shop.r10s.jp/gold/{shop}/gold/LP/xxx.jpg)
+            image_url = f"https://shop.r10s.jp/gold/{shop_code()}{loc}"
         elif loc:
             image_url = f"https://image.rakuten.co.jp/{shop_code()}/cabinet{loc}"
     return {"name": name, "price": price, "image_url": image_url}
@@ -77,8 +81,11 @@ def _fetch_search(manage_number):
         "hits": 1,
     }
     resp = requests.get(SEARCH_URL, params=params, timeout=TIMEOUT)
-    if resp.status_code == 404 or not resp.ok:
-        return None
+    if resp.status_code == 404:
+        return None  # 該当商品なし(検索インデックス未反映等)
+    if not resp.ok:
+        # アプリID無効等はUIに出す(呼び出し側がwarningsに積む)
+        raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:200]}")
     items = (resp.json() or {}).get("Items") or []
     if not items:
         return None
