@@ -73,9 +73,10 @@ def patch(path, json_body):
 
 
 def post_xml(path, xml_body):
-    """POST {BASE_URL}{path} (XML) → レスポンステキスト。Phase 2のクーポンAPI用。"""
+    """POST {BASE_URL}{path} (XML) → レスポンステキスト。Phase 2のクーポンAPI用。
+    Content-Typeはapplication/xml必須(text/xmlだと『Request data is wrong format』で拒否される)。"""
     headers = _headers()
-    headers["Content-Type"] = "text/xml; charset=utf-8"
+    headers["Content-Type"] = "application/xml; charset=utf-8"
     resp = requests.post(BASE_URL + path, data=xml_body.encode("utf-8"),
                          headers=headers, timeout=TIMEOUT)
     return _check(resp).text
