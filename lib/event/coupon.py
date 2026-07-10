@@ -42,8 +42,15 @@ def build_issue_xml(*, coupon_name, caption, start, end, discount_label,
     if discount_label not in DISCOUNT_TYPES:
         raise CouponError(f"値引きタイプが不正です: {discount_label}")
     conf = DISCOUNT_TYPES[discount_label]
-    item_type = 4 if all_items else conf["itemType"]  # 4=受注(全商品対象)
-    lines = [
+    # itemType: 1=単一商品 / 3=複数商品 / 4=受注(全商品) / 5=送料無料
+    if all_items:
+        item_type = 4
+    elif conf["itemType"] == 5:
+        item_type = 5
+    else:
+        item_type = 1 if len(manage_numbers or []) == 1 else 3
+    # 要素間に改行等のテキストノードを入れるとXSD検証で弾かれるため1行で組む
+    parts = [
         '<?xml version="1.0" encoding="UTF-8"?>',
         "<request><couponIssueRequest><coupon>",
         f"<couponName>{escape(str(coupon_name))}</couponName>",
@@ -59,12 +66,12 @@ def build_issue_xml(*, coupon_name, caption, start, end, discount_label,
         f"<displayFlag>{1 if display else 0}</displayFlag>",
     ]
     if not all_items and manage_numbers:
-        lines.append("<items>")
+        parts.append("<items>")
         for mn in manage_numbers:
-            lines.append(f"<item><itemUrl>{escape(str(mn).strip())}</itemUrl></item>")
-        lines.append("</items>")
-    lines.append("</coupon></couponIssueRequest></request>")
-    return "\n".join(lines)
+            parts.append(f"<item><itemUrl>{escape(str(mn).strip())}</itemUrl></item>")
+        parts.append("</items>")
+    parts.append("</coupon></couponIssueRequest></request>")
+    return "".join(parts)
 
 
 def _parse_result(xml_text):
