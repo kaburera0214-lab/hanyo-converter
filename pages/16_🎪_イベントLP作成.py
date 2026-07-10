@@ -316,32 +316,43 @@ with s1:
                 st.error(f"保存に失敗しました: {e}")
 
 with s2:
-    if not gold_ftp.is_configured():
-        st.info("GOLD FTPのSecrets（GOLD_FTP_USER/GOLD_FTP_PASS）が未設定です。"
-                "HTMLをダウンロードして tools/gold_upload_local.py でもアップできます。")
+    if html:
+        ev = _current_event()
+        st.download_button(
+            "📦 アップ用パッケージをダウンロード", type="primary", use_container_width=True,
+            data=gold_ftp.build_upload_package(ev["GOLDパス"], html),
+            file_name="gold_upload.zip", mime="application/zip")
+        st.caption("ダウンロードしたzipをローカルPCの `tools\\gold_upload.bat` に"
+                   "ドラッグ&ドロップするとGOLDへアップされます。"
+                   f"公開URL: {gold_ftp.public_url(ev['GOLDパス'])}")
     else:
-        if st.button("🔌 FTP接続テスト", use_container_width=True):
-            try:
-                names = gold_ftp.test_connection()
-                st.success(f"接続OK。ルート直下: {', '.join(names[:10]) or '(空)'}")
-            except gold_ftp.GoldFTPError as e:
-                st.error(str(e))
-        if st.button("🚀 楽天GOLDへアップロード", type="primary", use_container_width=True,
-                     disabled=not html):
-            ev = _current_event()
-            try:
-                result = gold_ftp.upload_html(ev["GOLDパス"], html)
-                now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                ev.update({"ステータス": "公開中", "公開URL": result["url"],
-                           "最終アップ日時": now})
-                page_id = N.upsert_event(db_ids, ev)
-                st.session_state["event_editing_id"] = page_id
-                st.session_state["ev_status_pending"] = "公開中"
-                _bump_nonce()
-                st.success(f"アップロード完了（{result['size']:,} bytes）")
-                st.markdown(f"**公開URL**: [{result['url']}]({result['url']})")
-                st.caption("※ GOLDは反映まで数分かかることがあります。")
-            except gold_ftp.GoldFTPError as e:
-                st.error(str(e))
-            except Exception as e:  # noqa: BLE001
-                st.error(f"アップロードに失敗しました: {e}")
+        st.info("HTMLを生成すると、GOLDアップ用パッケージをダウンロードできます。")
+    with st.expander("クラウドから直接FTP（Streamlit Cloudは遮断のため通常は不可）"):
+        if not gold_ftp.is_configured():
+            st.info("GOLD FTPのSecrets（GOLD_FTP_USER/GOLD_FTP_PASS）が未設定です。")
+        else:
+            if st.button("🔌 FTP接続テスト", use_container_width=True):
+                try:
+                    names = gold_ftp.test_connection()
+                    st.success(f"接続OK。ルート直下: {', '.join(names[:10]) or '(空)'}")
+                except gold_ftp.GoldFTPError as e:
+                    st.error(str(e))
+            if st.button("🚀 楽天GOLDへアップロード", use_container_width=True,
+                         disabled=not html):
+                ev = _current_event()
+                try:
+                    result = gold_ftp.upload_html(ev["GOLDパス"], html)
+                    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    ev.update({"ステータス": "公開中", "公開URL": result["url"],
+                               "最終アップ日時": now})
+                    page_id = N.upsert_event(db_ids, ev)
+                    st.session_state["event_editing_id"] = page_id
+                    st.session_state["ev_status_pending"] = "公開中"
+                    _bump_nonce()
+                    st.success(f"アップロード完了（{result['size']:,} bytes）")
+                    st.markdown(f"**公開URL**: [{result['url']}]({result['url']})")
+                    st.caption("※ GOLDは反映まで数分かかることがあります。")
+                except gold_ftp.GoldFTPError as e:
+                    st.error(str(e))
+                except Exception as e:  # noqa: BLE001
+                    st.error(f"アップロードに失敗しました: {e}")

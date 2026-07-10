@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-楽天GOLDへのローカルFTPアップローダ(Streamlit CloudからFTPが通らない場合のフォールバック)。
+楽天GOLDへのローカルFTPアップローダ(Streamlit CloudはFTPを遮断しているため、これが正式ルート)。
 
-使い方:
-    python tools/gold_upload_local.py <HTMLファイル> <リモートパス>
-    例) python tools/gold_upload_local.py index.html event/2609_ss/index.html
+使い方(どちらか):
+    1. アプリの「アップ用パッケージをダウンロード」で取得したzipを gold_upload.bat にドロップ
+       (= python tools/gold_upload_local.py <zipファイル>)
+    2. HTMLファイルとリモートパスを直接指定
+       python tools/gold_upload_local.py index.html event/2609_ss/index.html
 
 認証情報は次の優先順で読む:
     1. 環境変数 GOLD_FTP_USER / GOLD_FTP_PASS (任意で GOLD_FTP_HOST, GOLD_SHOP_URL)
@@ -17,6 +19,7 @@ import json
 import os
 import posixpath
 import sys
+import zipfile
 
 
 def load_conf():
@@ -35,21 +38,40 @@ def load_conf():
                 conf[k] = conf[k] or str(file_conf.get(k, ""))
     conf["host"] = conf["host"] or "ftp.rakuten.ne.jp"
     if not conf["user"] or not conf["pass"]:
-        sys.exit("認証情報がありません。環境変数 GOLD_FTP_USER/GOLD_FTP_PASS か "
-                 "~/.gold_ftp.json を設定してください。")
+        sys.exit("認証情報がありません。%USERPROFILE%\\.gold_ftp.json を作成してください。\n"
+                 '内容例: {"host": "ftp.rakuten.ne.jp", "user": "FTPユーザー名", '
+                 '"pass": "FTPパスワード", "shop": "babygoodsfactory"}')
     return conf
 
 
-def main():
-    if len(sys.argv) != 3:
+def read_input(path):
+    """引数からアップ対象を読み取り (data, remote_path, shop_hint) を返す。"""
+    if path.lower().endswith(".zip"):
+        with zipfile.ZipFile(path) as z:
+            meta = json.loads(z.read("upload.json").decode("utf-8"))
+            data = z.read("index.html")
+        remote_path = meta.get("remote_path", "")
+        if not remote_path:
+            sys.exit("zip内のupload.jsonにremote_pathがありません。")
+        return data, remote_path, meta.get("shop", "")
+    if len(sys.argv) < 3:
         sys.exit(__doc__)
-    local_file, remote_path = sys.argv[1], sys.argv[2].strip().lstrip("/")
-    if not os.path.exists(local_file):
-        sys.exit(f"ファイルが見つかりません: {local_file}")
-    with open(local_file, "rb") as fp:
+    with open(path, "rb") as fp:
         data = fp.read()
-    conf = load_conf()
+    return data, sys.argv[2].strip().lstrip("/"), ""
 
+
+def main():
+    if len(sys.argv) < 2:
+        sys.exit(__doc__)
+    path = sys.argv[1]
+    if not os.path.exists(path):
+        sys.exit(f"ファイルが見つかりません: {path}")
+    data, remote_path, shop_hint = read_input(path)
+    conf = load_conf()
+    shop = conf["shop"] or shop_hint
+
+    print(f"接続中: {conf['host']} ...")
     ftp = ftplib.FTP()
     ftp.connect(conf["host"], 21, timeout=20)
     ftp.login(conf["user"], conf["pass"])
@@ -70,8 +92,8 @@ def main():
     ftp.quit()
 
     print(f"アップロード完了: {remote_path} ({len(data):,} bytes, サーバ側 {size})")
-    if conf["shop"]:
-        print(f"公開URL: https://www.rakuten.ne.jp/gold/{conf['shop']}/{remote_path}")
+    if shop:
+        print(f"公開URL: https://www.rakuten.ne.jp/gold/{shop}/{remote_path}")
 
 
 if __name__ == "__main__":

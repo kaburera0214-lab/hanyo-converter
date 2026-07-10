@@ -38,6 +38,25 @@ def public_url(remote_path):
     return f"https://www.rakuten.ne.jp/gold/{shop}/{remote_path.lstrip('/')}"
 
 
+def build_upload_package(remote_path, html_text):
+    """
+    ローカルアップローダ用のzip(index.html + upload.json)を返す。
+    tools/gold_upload.bat にドロップするとupload.jsonのremote_pathへアップされる。
+    """
+    import json
+    import zipfile
+    import streamlit as st
+    buf = io.BytesIO()
+    meta = {
+        "remote_path": remote_path.strip().lstrip("/"),
+        "shop": str(st.secrets.get("GOLD_SHOP_URL", "")).strip(),
+    }
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("index.html", html_text)
+        z.writestr("upload.json", json.dumps(meta, ensure_ascii=False, indent=2))
+    return buf.getvalue()
+
+
 def _connect():
     host, user, pw = _conf()
     try:
@@ -46,12 +65,13 @@ def _connect():
         ftp.login(user, pw)
         ftp.set_pasv(True)
         return ftp
-    except OSError as e:
-        raise GoldFTPError(
-            f"FTP接続に失敗しました({e})。Streamlit CloudからFTPが通らない場合は、"
-            "HTMLをダウンロードして tools/gold_upload_local.py でアップしてください。") from e
     except ftplib.error_perm as e:
         raise GoldFTPError(f"FTPログインに失敗しました({e})。ID/パスワードを確認してください。") from e
+    except Exception as e:  # noqa: BLE001  (EOFError等もStreamlit CloudのFTP遮断で発生する)
+        raise GoldFTPError(
+            f"FTP接続に失敗しました({type(e).__name__}: {e})。"
+            "Streamlit CloudはFTPを遮断しているため、クラウドからのアップはできません。"
+            "「アップ用パッケージをダウンロード」→ローカルの gold_upload.bat にドロップしてください。") from e
 
 
 def test_connection():
