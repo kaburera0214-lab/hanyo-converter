@@ -66,15 +66,43 @@ if not invoices:
 master_rows = N.load_master(db_ids)
 look = matching.build_master_lookup(master_rows)
 
-def _extax(inv):
-    """突合に使う当月税抜額。無ければ当月請求額(税込)で代替。"""
+def _parse_extax_breakdown(s):
+    """税内訳 '10%:税抜68489/税6849, 8%:…' から税抜合計を復元。無ければNone。"""
+    import re
+    import unicodedata
+    if not s:
+        return None
+    vals = re.findall(r"税抜\s*(-?[\d,]+)", unicodedata.normalize("NFKC", str(s)))
+    if not vals:
+        return None
+    try:
+        return sum(int(v.replace(",", "")) for v in vals)
+    except ValueError:
+        return None
+
+
+def _extax_info(inv):
+    """突合に使う税抜額と、その出所('税抜'/'内訳'/'税込代替')を返す。"""
     v = inv.get("当月税抜額")
-    return v if v else (inv.get("当月請求額") or 0)
+    if v:
+        return v, "税抜"
+    bd = _parse_extax_breakdown(inv.get("税内訳", ""))
+    if bd is not None:
+        return bd, "内訳"
+    return (inv.get("当月請求額") or 0), "税込代替"
+
+
+def _extax(inv):
+    return _extax_info(inv)[0]
 
 
 st.markdown("### 2. 突合結果")
-st.caption("NE発注データは税抜のため、突合は『当月税抜額』で行います（振込CSVは税込で作成）。")
+st.caption("NE発注データは税抜のため、突合は『当月税抜額』で行います（振込CSVは税込で作成）。"
+           "税抜額が未読取のものは税内訳から復元し、それも無ければ税込額で代替（『（税込）』表記）。")
 if st.button("🔁 突合を実行/再計算", type="primary", key="match_run"):
+    # 取込ページでの会社名修正・金額修正を確実に反映するため、最新をNotionから再取得
+    st.session_state["match_invoices"] = N.load_invoices(db_ids, target_ym=target_ym)
+    invoices = st.session_state["match_invoices"]
     for inv in invoices:
         if inv.get("突合状態") == "対象外":
             continue  # 「突合しない」指定のファイルはスキップ(保持はする)
@@ -136,7 +164,8 @@ def _shiire_no_order(inv):
     return inv.get("突合状態") == "発注なし" and _kamoku(inv) == "仕入"
 
 df = pd.DataFrame([{
-    "会社名": i["会社名"], "当月税抜(突合)": yen(_extax(i)),
+    "会社名": i["会社名"],
+    "当月税抜(突合)": yen(_extax(i)) + ("（税込）" if _extax_info(i)[1] == "税込代替" else ""),
     "NE発注額": yen(i.get("NE合算額")), "送料": yen(i.get("NE送料")),
     "NE合計": yen(_ne_total(i)), "差額": yen(i.get("差額")),
     "突合状態": (i.get("突合状態", "未突合")
@@ -162,6 +191,12 @@ st.caption(f"一致 {n_ok}件 / 要確認 {n_err}件 / 全{len(invoices)}件")
 if any(_shiire_no_order(i) for i in invoices):
     st.warning("🔴 科目『仕入』なのに発注が見つからない取引先があります。"
                "締め日の跨ぎ（月初/末日でのズレ）の可能性があるため、NEの発注日や前後月をご確認ください。")
+_fallback = [i["会社名"] for i in invoices
+             if i.get("突合状態") != "対象外" and _extax_info(i)[1] == "税込代替"]
+if _fallback:
+    st.warning("💴 税抜額が読み取れず税込額のまま突合している請求書があります"
+               "（差額が消費税分ズレます）。取込ページで『当月税抜額』を修正してください： "
+               + "、".join(_fallback))
 
 # 同一会社名の重複検知(突合対象外=対象外は除外)
 from collections import defaultdict

@@ -466,18 +466,41 @@ for gkey, items in _groups.items():
                 st.divider()
 
 st.markdown("---")
+# 直前の登録結果メッセージ(rerun後に表示)
+_save_msg = st.session_state.pop("payable_save_msg", None)
+if _save_msg:
+    st.success(_save_msg)
+
 if st.button("💾 読取済として登録", type="primary", key="payable_save_btn"):
     if not target_ym.strip():
         st.error("対象月を入力してください。")
         st.stop()
-    saved = 0
+    # 二重登録防止: 同一対象月×同一ファイル名は上書き(置き換え)。
+    # ただしステータスが進んでいる(確認済など)ものはスキップして保護。
+    try:
+        existing = {e.get("ファイルリンク", ""): e
+                    for e in N.load_invoices(db_ids, target_ym=target_ym)
+                    if e.get("ファイルリンク", "")}
+    except Exception:  # noqa: BLE001
+        existing = {}
+    saved = replaced = protected = 0
     learned = 0
     for r in rows_for_save:
         if not str(r["会社名"]).strip():
             continue
+        old = existing.get(r.get("ファイルリンク", ""))
         try:
-            N.save_invoice(db_ids, r)
-            saved += 1
+            if old:
+                if old["ステータス"] in ("保留", "読取済"):
+                    N.delete_invoice(db_ids, old["id"])
+                    N.save_invoice(db_ids, r)
+                    replaced += 1
+                else:
+                    protected += 1  # 確認済以降は上書きしない
+                    continue
+            else:
+                N.save_invoice(db_ids, r)
+                saved += 1
             # 学習: 手修正で会社名が変わり、修正後がマスタに一致するなら、
             # AIの読取値(誤読)を別名として登録 → 次回から自動補正される
             ai_name = str(r.get("_ai会社名", "")).strip()
@@ -496,7 +519,13 @@ if st.button("💾 読取済として登録", type="primary", key="payable_save_
     st.session_state.pop("match_invoices", None)
     if learned:
         st.session_state["payable_master_nonce"] = st.session_state.get("payable_master_nonce", 0) + 1
-    msg = f"{saved}件を「読取済」で登録しました。次は『突合確認』ページへ。"
+    msg = f"新規{saved}件を登録しました"
+    if replaced:
+        msg += f"（同一ファイルの再登録{replaced}件は上書き）"
+    if protected:
+        msg += f"（確認済以降の{protected}件は保護のためスキップ）"
     if learned:
-        msg += f"（{learned}件の会社名の読み間違いを別名として学習しました）"
-    st.success(msg)
+        msg += f"（{learned}件の会社名の読み間違いを別名として学習）"
+    msg += "。次は『突合確認』ページへ。"
+    st.session_state["payable_save_msg"] = msg
+    st.rerun()

@@ -548,9 +548,10 @@ def update_invoice_fields(db_ids, page_id, **fields):
     for k, v in fields.items():
         if k in ("ステータス", "突合状態", "カテゴリ"):
             props[k] = {"select": {"name": v}} if v else {"select": None}
-        elif k in ("当月請求額", "当月税抜額", "今回請求額", "NE合算額", "NE送料", "差額", "前月繰越額"):
+        elif k in ("当月請求額", "当月税抜額", "今回請求額", "NE合算額", "NE送料", "差額",
+                   "前月繰越額", "消費税額"):
             props[k] = {"number": _to_num(v)}
-        elif k in ("口座相違フラグ", "突合対象"):
+        elif k in ("口座相違フラグ", "突合対象", "軽減税率"):
             props[k] = {"checkbox": bool(v)}
         else:
             props[k] = {"rich_text": _rt(v)}
