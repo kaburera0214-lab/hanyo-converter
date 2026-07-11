@@ -79,6 +79,7 @@ DB_SCHEMAS = {
             {"name": "発注なし", "color": "orange"},
             {"name": "マスタ未登録", "color": "yellow"},
             {"name": "対象外", "color": "default"},
+            {"name": "口座振替", "color": "blue"},
         ]}},
         "NE合算額": {"number": {}},
         "NE送料": {"number": {}},

@@ -110,8 +110,8 @@ if st.button("🔁 突合を実行/再計算", type="primary", key="match_run"):
     for _k in [k for k in list(st.session_state.keys()) if str(k).startswith("match_st_")]:
         del st.session_state[_k]
     for inv in invoices:
-        if inv.get("突合状態") == "対象外":
-            continue  # 「突合しない」指定のファイルはスキップ(保持はする)
+        if inv.get("突合状態") in ("対象外", "口座振替"):
+            continue  # 突合しない指定・口座振替はスキップ(保持はする)
         r = matching.match_invoice(inv["会社名"], _extax(inv), look, ne_agg, tolerance=tol)
         denpyo = ",".join(str(d) for d in r.get("NE伝票", []))
         try:
@@ -198,7 +198,7 @@ if any(_shiire_no_order(i) for i in invoices):
     st.warning("🔴 科目『仕入』なのに発注が見つからない取引先があります。"
                "締め日の跨ぎ（月初/末日でのズレ）の可能性があるため、NEの発注日や前後月をご確認ください。")
 _fallback = [i["会社名"] for i in invoices
-             if i.get("突合状態") != "対象外" and _extax_info(i)[1] == "逆算"]
+             if i.get("突合状態") not in ("対象外", "口座振替") and _extax_info(i)[1] == "逆算"]
 if _fallback:
     st.info("💴 税抜額が読み取れなかったため、税込額から逆算して突合している請求書があります"
             "（端数で±数円ズレる場合は許容誤差を設定してください）： "
@@ -208,7 +208,7 @@ if _fallback:
 from collections import defaultdict
 _groups = defaultdict(list)
 for inv in invoices:
-    if inv.get("突合状態") == "対象外":
+    if inv.get("突合状態") in ("対象外", "口座振替"):
         continue
     _groups[matching.normalize_name(inv["会社名"])].append(inv)
 _dups = {k: v for k, v in _groups.items() if len(v) > 1}
@@ -254,7 +254,7 @@ _STAT = ["読取済", "確認済"]  # 簡素化: 読取済→確認済の2段(�
 
 # 対象外・保留はこのページには出さない(取込ページで扱う)
 visible = [i for i in invoices
-           if i.get("突合状態") != "対象外" and i.get("ステータス") != "保留"]
+           if i.get("突合状態") not in ("対象外", "口座振替") and i.get("ステータス") != "保留"]
 if not visible:
     st.info("表示対象の請求書がありません（保留・対象外を除く）。")
 for inv in visible:

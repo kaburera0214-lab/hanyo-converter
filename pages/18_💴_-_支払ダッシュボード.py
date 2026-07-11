@@ -20,6 +20,9 @@ import streamlit as st
 import pandas as pd
 
 st.set_page_config(page_title="支払ダッシュボード", layout="wide")
+
+from lib.auth import require_role
+require_role("payable")  # 認証ゲート（AUTH_ENABLED=false なら素通り）
 st.title("💴 支払ダッシュボード")
 st.caption("毎月の支払を見える化：増減アラート・銀行別資金必要額・資金繰りカレンダー・科目別推移")
 
@@ -119,12 +122,16 @@ months = sorted(df["対象月"].unique())
 # ---------- フィルタ・しきい値 ----------
 f1, f2, f3, f4 = st.columns([1, 1, 1, 1])
 target = f1.selectbox("対象月", list(reversed(months)), index=0, key="dash_target")
-n_show = f2.slider("表示月数", 3, 24, 12, key="dash_nshow")
+past = [m for m in months if m <= target]
+_start_options = list(reversed(past))
+_start_default = past[-6] if len(past) >= 6 else past[0]  # 既定=過去6ヶ月
+start = f2.selectbox("開始月（マトリクス期間）", _start_options,
+                     index=_start_options.index(_start_default), key="dash_start")
 rate_th = f3.number_input("増減アラート閾値（％）", 5, 200, 30, step=5, key="dash_rate")
 amt_th = f4.number_input("増減アラート閾値（円）", 0, 10_000_000, 50_000, step=10_000,
                          key="dash_amt")
 
-show_months = [m for m in months if m <= target][-n_show:]
+show_months = [m for m in past if m >= start]
 pivot = (df.pivot_table(index="会社名", columns="対象月", values="金額", aggfunc="sum")
          .fillna(0.0))
 for m in show_months:
