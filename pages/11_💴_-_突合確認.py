@@ -106,6 +106,9 @@ if st.button("🔁 突合を実行/再計算", type="primary", key="match_run"):
     # 取込ページでの会社名修正・金額修正を確実に反映するため、最新をNotionから再取得
     st.session_state["match_invoices"] = N.load_invoices(db_ids, target_ym=target_ym)
     invoices = st.session_state["match_invoices"]
+    # ステータスのプルダウン既定値を再適用するため、既存のウィジェット状態をリセット
+    for _k in [k for k in list(st.session_state.keys()) if str(k).startswith("match_st_")]:
+        del st.session_state[_k]
     for inv in invoices:
         if inv.get("突合状態") == "対象外":
             continue  # 「突合しない」指定のファイルはスキップ(保持はする)
@@ -302,15 +305,14 @@ for inv in visible:
             f"- AIメモ: {inv.get('抽出メモ','') or '—'}")
         # 操作
         oc1, oc2, oc3 = st.columns([2, 1, 1])
-        # 既定値: 問題なし(一致・口座相違なし)は『確認済』、要確認は現状(読取済)のまま
-        ok_row = (stt == "一致" and not inv.get("口座相違フラグ")
-                  and not _shiire_no_order(inv))
-        default_stat = ("確認済" if (ok_row and inv["ステータス"] == "読取済")
+        # 既定値: 一致(緑・アコーディオンが閉じるもの)は『確認済』、要確認(開くもの)は現状のまま。
+        # selectboxはセッションに値が残るとindexが効かないため、明示的に初期化する。
+        default_stat = ("確認済" if (stt == "一致" and inv["ステータス"] == "読取済")
                         else inv["ステータス"])
-        new_status = oc1.selectbox(
-            "ステータス", _STAT,
-            index=_STAT.index(default_stat) if default_stat in _STAT else 0,
-            key=f"match_st_{inv['id']}")
+        skey = f"match_st_{inv['id']}"
+        if skey not in st.session_state:
+            st.session_state[skey] = default_stat if default_stat in _STAT else _STAT[0]
+        new_status = oc1.selectbox("ステータス", _STAT, key=skey)
         if oc2.button("更新", key=f"match_upd_{inv['id']}", use_container_width=True):
             N.update_invoice_fields(db_ids, inv["id"], ステータス=new_status)
             inv["ステータス"] = new_status
@@ -324,3 +326,27 @@ for inv in visible:
                 N.delete_invoice(db_ids, inv["id"])
                 st.session_state.pop("match_invoices", None)
                 st.rerun()
+
+# 一括更新: 各行のプルダウンの値でまとめてステータス更新
+if visible:
+    st.markdown("---")
+    _bulk_msg = st.session_state.pop("match_bulk_msg", None)
+    if _bulk_msg:
+        st.success(_bulk_msg)
+    _pending = sum(
+        1 for inv in visible
+        if st.session_state.get(f"match_st_{inv['id']}", inv["ステータス"]) != inv["ステータス"])
+    if st.button(f"💾 全取引先を一括更新（変更 {_pending}件）", type="primary",
+                 key="match_bulk_upd", disabled=_pending == 0):
+        n = 0
+        for inv in visible:
+            new_st = st.session_state.get(f"match_st_{inv['id']}", inv["ステータス"])
+            if new_st != inv["ステータス"]:
+                try:
+                    N.update_invoice_fields(db_ids, inv["id"], ステータス=new_st)
+                    n += 1
+                except Exception as e:  # noqa: BLE001
+                    st.error(f"{inv['会社名']} の更新に失敗: {e}")
+        st.session_state.pop("match_invoices", None)
+        st.session_state["match_bulk_msg"] = f"{n}件のステータスを一括更新しました。"
+        st.rerun()
