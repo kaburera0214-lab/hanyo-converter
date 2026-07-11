@@ -82,14 +82,17 @@ def _parse_extax_breakdown(s):
 
 
 def _extax_info(inv):
-    """突合に使う税抜額と、その出所('税抜'/'内訳'/'税込代替')を返す。"""
+    """突合に使う税抜額と、その出所('税抜'/'内訳'/'逆算')を返す。
+    税込しか読めなかった場合は税率で逆算して税抜換算する(突合画面のみの計算)。"""
     v = inv.get("当月税抜額")
     if v:
         return v, "税抜"
     bd = _parse_extax_breakdown(inv.get("税内訳", ""))
     if bd is not None:
         return bd, "内訳"
-    return (inv.get("当月請求額") or 0), "税込代替"
+    inc = inv.get("当月請求額") or 0
+    rate = 1.08 if inv.get("軽減税率") else 1.10
+    return round(inc / rate), "逆算"
 
 
 def _extax(inv):
@@ -98,7 +101,7 @@ def _extax(inv):
 
 st.markdown("### 2. 突合結果")
 st.caption("NE発注データは税抜のため、突合は『当月税抜額』で行います（振込CSVは税込で作成）。"
-           "税抜額が未読取のものは税内訳から復元し、それも無ければ税込額で代替（『（税込）』表記）。")
+           "税抜額が未読取のものは税内訳から復元し、それも無ければ税込額から逆算（『（逆算）』表記）。")
 if st.button("🔁 突合を実行/再計算", type="primary", key="match_run"):
     # 取込ページでの会社名修正・金額修正を確実に反映するため、最新をNotionから再取得
     st.session_state["match_invoices"] = N.load_invoices(db_ids, target_ym=target_ym)
@@ -165,7 +168,7 @@ def _shiire_no_order(inv):
 
 df = pd.DataFrame([{
     "会社名": i["会社名"],
-    "当月税抜(突合)": yen(_extax(i)) + ("（税込）" if _extax_info(i)[1] == "税込代替" else ""),
+    "当月税抜(突合)": yen(_extax(i)) + ("（逆算）" if _extax_info(i)[1] == "逆算" else ""),
     "NE発注額": yen(i.get("NE合算額")), "送料": yen(i.get("NE送料")),
     "NE合計": yen(_ne_total(i)), "差額": yen(i.get("差額")),
     "突合状態": (i.get("突合状態", "未突合")
@@ -192,11 +195,11 @@ if any(_shiire_no_order(i) for i in invoices):
     st.warning("🔴 科目『仕入』なのに発注が見つからない取引先があります。"
                "締め日の跨ぎ（月初/末日でのズレ）の可能性があるため、NEの発注日や前後月をご確認ください。")
 _fallback = [i["会社名"] for i in invoices
-             if i.get("突合状態") != "対象外" and _extax_info(i)[1] == "税込代替"]
+             if i.get("突合状態") != "対象外" and _extax_info(i)[1] == "逆算"]
 if _fallback:
-    st.warning("💴 税抜額が読み取れず税込額のまま突合している請求書があります"
-               "（差額が消費税分ズレます）。取込ページで『当月税抜額』を修正してください： "
-               + "、".join(_fallback))
+    st.info("💴 税抜額が読み取れなかったため、税込額から逆算して突合している請求書があります"
+            "（端数で±数円ズレる場合は許容誤差を設定してください）： "
+            + "、".join(_fallback))
 
 # 同一会社名の重複検知(突合対象外=対象外は除外)
 from collections import defaultdict
@@ -299,9 +302,14 @@ for inv in visible:
             f"- AIメモ: {inv.get('抽出メモ','') or '—'}")
         # 操作
         oc1, oc2, oc3 = st.columns([2, 1, 1])
+        # 既定値: 問題なし(一致・口座相違なし)は『確認済』、要確認は現状(読取済)のまま
+        ok_row = (stt == "一致" and not inv.get("口座相違フラグ")
+                  and not _shiire_no_order(inv))
+        default_stat = ("確認済" if (ok_row and inv["ステータス"] == "読取済")
+                        else inv["ステータス"])
         new_status = oc1.selectbox(
             "ステータス", _STAT,
-            index=_STAT.index(inv["ステータス"]) if inv["ステータス"] in _STAT else 0,
+            index=_STAT.index(default_stat) if default_stat in _STAT else 0,
             key=f"match_st_{inv['id']}")
         if oc2.button("更新", key=f"match_upd_{inv['id']}", use_container_width=True):
             N.update_invoice_fields(db_ids, inv["id"], ステータス=new_status)
