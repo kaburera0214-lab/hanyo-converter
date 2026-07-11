@@ -63,7 +63,7 @@ if df.empty:
 else:
     edit_cols = ["id", "会社名", "別名", "NE仕入先cd", "支払区分", "科目", "支払方法",
                  "支払日", "銀行", "支店", "銀行番号", "支店番号", "預金種目", "口座番号",
-                 "受取人口座名", "顧客番号", "固定額", "除外フラグ", "支払元銀行", "備考"]
+                 "受取人口座名", "顧客番号", "固定額", "除外フラグ", "ルール", "支払元銀行", "備考"]
     for c in edit_cols:
         if c not in df.columns:
             df[c] = ""
@@ -77,6 +77,8 @@ else:
             "支払区分": st.column_config.SelectboxColumn(
                 "支払区分", options=["銀行振込", "カード払い"],
                 help="カード払いは楽天振込CSVの対象外"),
+            "ルール": st.column_config.TextColumn(
+                "ルール", help="『100万超で振込』のように書くと、ダッシュボードで該当月にアラート"),
             "預金種目": st.column_config.SelectboxColumn("預金種目", options=["", "普通", "当座"]),
             "除外フラグ": st.column_config.TextColumn("除外", help="✓で振込CSV対象外"),
         },

@@ -52,6 +52,9 @@ for inv in confirmed:
     if str(m.get("支払区分", "")).strip() == "カード払い":
         skipped.append((inv["会社名"], "カード払い（振込CSV対象外）"))
         continue
+    if any(k in str(m.get("支払方法", "")) for k in ("口座振替", "現金")):
+        skipped.append((inv["会社名"], f"{m.get('支払方法')}（振込CSV対象外）"))
+        continue
     if str(m.get("除外フラグ", "")).strip() in ("✓", "○", "1"):
         skipped.append((inv["会社名"], "除外フラグ"))
         continue
