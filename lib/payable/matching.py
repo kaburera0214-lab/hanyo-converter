@@ -232,14 +232,21 @@ def match_invoice(company, amount, master_lookup, ne_agg, tolerance=0):
     cd = (m.get("NE仕入先cd", "") or "").strip()
     result["NE仕入先cd"] = cd
 
-    # NE合算を引く: 仕入先cd優先、無ければ正規化名で
+    # NE合算を引く: 仕入先cd優先。無ければ名称で照合する。
+    # 名称はマスタの会社名だけでなく、別名(旧名称・請求書表記ゆれ)と
+    # 請求書上の表記そのものも許容(NE側が旧名称のままでも拾えるように)。
+    accept_norms = {normalize_name(m.get("会社名", "")), norm}
+    for alias in re.split(r"[;,、/／]", m.get("別名", "") or ""):
+        alias = alias.strip()
+        if alias:
+            accept_norms.add(normalize_name(alias))
+    accept_norms.discard("")
     ne = None
     if cd and cd in ne_agg:
         ne = ne_agg[cd]
     else:
-        target_norm = normalize_name(m.get("会社名", ""))
         for v in ne_agg.values():
-            if v.get("正規名") == target_norm or v.get("仕入先cd") == cd:
+            if v.get("正規名") in accept_norms or (cd and v.get("仕入先cd") == cd):
                 ne = v
                 break
     if ne is None:
