@@ -21,8 +21,8 @@ Secrets 設定例（Streamlit Cloud の Secrets に貼る）:
     password = "genba-dake-no-pw"
     roles = ["material"]                 # 資材・棚卸のみ
 
-ロール: invoice=請求書発行(6-9) / payable=買掛・支払(10-13) / material=資材・棚卸(14-15) /
-       event=イベントLP作成(16-18) / all=全部
+ロール: invoice=請求書発行(6-9) / payable=買掛・支払(10-13,18-19) / material=資材・棚卸(14-15) /
+       event=イベントLP作成(16-17) / pricing=価格改定(20) / all=全部
 - パスワードだけでログインする方式（誰のパスワードかで本人とロールを判定）なので、
   ユーザーごとに必ず別のパスワードにすること。
 - ログインはブラウザセッション中1回だけ。ページ遷移のたびに聞かれることはない。
@@ -35,6 +35,7 @@ ROLE_LABELS = {
     "payable": "買掛・支払",
     "material": "資材・棚卸",
     "event": "イベントLP作成",
+    "pricing": "価格改定",
 }
 
 _USER_KEY = "auth_user"
