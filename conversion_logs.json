@@ -772,5 +772,14 @@
     "rows": 285,
     "error": null,
     "unknown_jan": 0
+  },
+  {
+    "ts": "2026-07-13T11:01:54",
+    "func": "shipment_custom",
+    "template": "未来様",
+    "orders": 1,
+    "rows": 1,
+    "error": null,
+    "unknown_jan": 0
   }
 ]
