@@ -1,42 +1,49 @@
 # -*- coding: utf-8 -*-
 """
-価格改定で使うマスタの読込。
+価格改定で使うマスタの読込・保存。
 
 1) 送料・資材マスタ（項目1のサイズコード → 送料/資材/配送種別）
-   一次ソース: 価格変更スプレッドシート（Secrets PRICING_SHEET_ID、リンク共有のxlsx export）。
-   取得失敗・未設定時は同梱の lib/pricing/data/cost_master.csv にフォールバック。
-   シート側（「送料表」D:E・「費用」E:F）を直せばアプリも追従する。
+   正本は Drive の pricing_cost_master.csv（画面で行の追加・削除・編集→保存）。
+   初期値はスプレッドシート（Secrets PRICING_SHEET_ID の「送料表」「費用」タブ）
+   または同梱の lib/pricing/data/cost_master.csv から取り込む。
 
 2) NE商品マスタ（JAN→商品コード・売価・原価・項目1）
-   共有 master.csv（汎用マスタ変換）には売価・原価が無いため、価格改定用に
-   NEカスタムCSV（売価・原価入り）を Drive に pricing_ne_master.csv として保存・再利用する。
-   Drive まわりは請求書モジュールの drive_master をそのまま使う。
+   汎用マスタ変換・請求書発行と共通（リポジトリの master.csv ／ Driveの master_YYYYMMDD_NNN.csv）。
+   価格改定には売価・原価列も必要なので、無い場合は警告して差し替えを促す。
+
+3) 楽天SKU対応表（NE商品コード → 商品管理番号・SKU管理番号）
+   楽天の価格CSVはSKU形式（親行＋SKU行、SKU管理番号は楽天側の採番）のため、
+   RMSの商品一括ダウンロードCSVから対応表を作り Drive の rakuten_sku_master.csv に保存・再利用する。
+
+Drive まわりは請求書モジュールの drive_master をそのまま使う。
 """
 import io
 import os
+import re
 import unicodedata
 
 import pandas as pd
 
 from lib.invoice import csv_import, drive_master
 
-# Drive上の価格改定用NE商品マスタの固定ファイル名（フォルダはPRODUCT_MASTER_FOLDER_ID）
-PRICING_MASTER_NAME = "pricing_ne_master.csv"
+# Drive上の固定ファイル名（フォルダはPRODUCT_MASTER_FOLDER_ID）
+COST_MASTER_NAME = "pricing_cost_master.csv"
+RAKUTEN_SKU_MASTER_NAME = "rakuten_sku_master.csv"
 
 _DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 
 # 列名のゆらぎ → 正規名
 _COL_ALIASES = {
     "JANコード": ("JANコード", "JAN", "jan", "JANCD", "JANcd"),
-    "商品コード": ("商品コード", "商品CD", "商品cd"),
-    "売価": ("売価", "販売価格", "商品価格", "NE売価"),
-    "原価": ("原価", "仕入原価", "下代", "NE原価", "仕入価格"),
+    "商品コード": ("商品コード", "商品CD", "商品cd", "syohin_code"),
+    "売価": ("売価", "販売価格", "商品価格", "NE売価", "baika_tnk"),
+    "原価": ("原価", "仕入原価", "下代", "NE原価", "仕入価格", "genka_tnk"),
     "項目1": ("項目1", "項目１"),
 }
 
 
 def norm_key(value):
-    """サイズコード/JAN/商品コードの正規化: NFKC・前後空白・末尾".0"除去・小文字はそのまま。"""
+    """サイズコード/JAN/商品コードの正規化: NFKC・前後空白・末尾".0"除去。"""
     s = unicodedata.normalize("NFKC", str(value)).strip()
     if s.endswith(".0"):
         s = s[:-2]
@@ -62,6 +69,22 @@ def _norm_columns(df):
 def _mail_or_takuhai(key):
     """項目1コードから配送種別を推定（数値サイズ=宅配便、メール便系コード=メール便）。"""
     return "メール便" if key in ("nekop", "yuup1", "yuup2", "yuup3", "1", "3") else "宅配便"
+
+
+def _normalize_cost_df(df):
+    """送料・資材マスタDataFrameの型を揃える（項目1=str、送料/資材=数値、配送種別を補完）。"""
+    df = df.copy()
+    df["項目1"] = df["項目1"].map(norm_key)
+    for c in ("送料", "資材"):
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    if "配送種別" not in df.columns:
+        df["配送種別"] = ""
+    df["配送種別"] = [
+        str(v).strip() if str(v).strip() in ("宅配便", "メール便") else _mail_or_takuhai(k)
+        for k, v in zip(df["項目1"], df["配送種別"])
+    ]
+    df = df[df["項目1"] != ""].reset_index(drop=True)
+    return df[["項目1", "送料", "資材", "配送種別"]]
 
 
 def load_cost_master_from_sheet(sheet_id):
@@ -90,38 +113,58 @@ def load_cost_master_from_sheet(sheet_id):
     shipping.pop("値", None)
     keys = list(shipping.keys()) + [k for k in material if k not in shipping]
     rows = [{"項目1": k, "送料": shipping.get(k), "資材": material.get(k),
-             "配送種別": _mail_or_takuhai(k)} for k in keys]
+             "配送種別": ""} for k in keys]
     df = pd.DataFrame(rows)
     if df.empty or df["送料"].isna().all():
         raise ValueError("シートから送料マスタを取得できませんでした")
-    return df
+    return _normalize_cost_df(df)
 
 
 def load_cost_master_bundled():
     """同梱CSV（シートから抽出したスナップショット）を読む。"""
     path = os.path.join(_DATA_DIR, "cost_master.csv")
     df = pd.read_csv(path, dtype=str, encoding="utf-8-sig").fillna("")
-    df["項目1"] = df["項目1"].map(norm_key)
-    for c in ("送料", "資材"):
-        df[c] = pd.to_numeric(df[c], errors="coerce")
-    return df
+    return _normalize_cost_df(df)
+
+
+def load_cost_master_drive(folder_id):
+    """Drive上の pricing_cost_master.csv を読む（無ければNone）。"""
+    f = drive_master.find_file(COST_MASTER_NAME, folder_id)
+    if not f:
+        return None
+    raw = drive_master.download_bytes(f["id"])
+    df = _norm_columns(csv_import.read_csv_auto(raw))
+    return _normalize_cost_df(df)
+
+
+def save_cost_master_drive(df, folder_id):
+    """送料・資材マスタをDriveへ保存（上書き）。"""
+    df = _normalize_cost_df(df)
+    data = df.to_csv(index=False, lineterminator="\r\n").encode("utf-8-sig")
+    return drive_master.upload_or_replace(data, COST_MASTER_NAME, folder_id)
 
 
 def cost_lookup(df):
     """DataFrame → {項目1: (送料, 資材, 配送種別)}。送料/資材はNaN→None。"""
     table = {}
     for _, r in df.iterrows():
-        ship = r["送料"]
-        mat = r["資材"]
-        table[norm_key(r["項目1"])] = (
+        ship = pd.to_numeric(r["送料"], errors="coerce")
+        mat = pd.to_numeric(r["資材"], errors="coerce")
+        key = norm_key(r["項目1"])
+        if not key or key == "nan":
+            continue
+        delivery = str(r.get("配送種別", "")).strip()
+        if delivery not in ("宅配便", "メール便"):
+            delivery = _mail_or_takuhai(key)
+        table[key] = (
             None if pd.isna(ship) else float(ship),
             None if pd.isna(mat) else float(mat),
-            str(r.get("配送種別", "")) or _mail_or_takuhai(norm_key(r["項目1"])),
+            delivery,
         )
     return table
 
 
-# ── NE商品マスタ ─────────────────────────────────────────
+# ── NE商品マスタ（汎用マスタ変換と共通） ─────────────────
 
 def load_ne_master(file_bytes):
     """NEカスタム(商品マスタ)CSVを読む。商品コード必須。売価・原価・JAN・項目1は有無を検査して返す。"""
@@ -132,24 +175,19 @@ def load_ne_master(file_bytes):
     return df, missing
 
 
-def find_drive_master(folder_id):
-    """Drive上の pricing_ne_master.csv を探す（無ければNone）。"""
-    return drive_master.find_file(PRICING_MASTER_NAME, folder_id)
-
-
-def download_drive_master(file_id):
-    return drive_master.download_bytes(file_id)
-
-
-def save_drive_master(file_bytes, folder_id):
-    """pricing_ne_master.csv を上書き保存（無ければ新規作成）。"""
-    return drive_master.upload_or_replace(file_bytes, PRICING_MASTER_NAME, folder_id)
+def load_repo_master(repo_root):
+    """リポジトリ直下の master.csv（汎用マスタ変換と共有）を読む。無ければ(None, None)。"""
+    path = os.path.join(repo_root, "master.csv")
+    if not os.path.exists(path):
+        return None, None
+    with open(path, "rb") as f:
+        return load_ne_master(f.read())
 
 
 def build_lookup(ne_df):
     """
     NE商品マスタ → 突合用のインデックスを作る。
-    返り値: (jan→商品コード dict, 商品コード→{売価,原価,項目1,商品名} dict)
+    返り値: (jan→商品コード dict, 商品コード(小文字)→{売価,原価,項目1,商品名} dict)
     """
     cols = ne_df.columns
     jan_map = {}
@@ -170,3 +208,68 @@ def build_lookup(ne_df):
             "項目1": norm_key(r.get("項目1", "")) if "項目1" in cols else "",
         }
     return jan_map, info
+
+
+# ── 楽天SKU対応表 ─────────────────────────────────────────
+
+def parse_rakuten_item_csv(file_bytes):
+    """
+    RMSの商品一括ダウンロードCSV（normal-item.csv形式）からSKU対応表を作る。
+    SKU行（SKU管理番号あり）だけを拾い、NE商品コード＝システム連携用SKU番号（無ければSKU管理番号）。
+    返り値: DataFrame[商品管理番号, SKU管理番号, システム連携用SKU番号, NE商品コード]
+    """
+    df = csv_import.read_csv_auto(file_bytes)
+    df = df.rename(columns={c: unicodedata.normalize("NFKC", str(c)).strip() for c in df.columns})
+    c_parent = next((c for c in df.columns if c.startswith("商品管理番号")), None)
+    if c_parent is None or "SKU管理番号" not in df.columns:
+        raise ValueError(
+            f"「商品管理番号（商品URL）」「SKU管理番号」列が必要です / 実際の列: {list(df.columns)}")
+    c_renkei = "システム連携用SKU番号" if "システム連携用SKU番号" in df.columns else None
+    rows = []
+    for _, r in df.iterrows():
+        sku = norm_key(r["SKU管理番号"])
+        if not sku or sku == "nan":
+            continue  # 親行
+        renkei = norm_key(r[c_renkei]) if c_renkei else ""
+        if renkei == "nan":
+            renkei = ""
+        rows.append({
+            "商品管理番号": norm_key(r[c_parent]),
+            "SKU管理番号": sku,
+            "システム連携用SKU番号": renkei,
+            "NE商品コード": renkei or sku,
+        })
+    if not rows:
+        raise ValueError("SKU行が見つかりませんでした（SKU管理番号がすべて空）")
+    return pd.DataFrame(rows).drop_duplicates(subset=["NE商品コード"], keep="first")
+
+
+def load_sku_master_drive(folder_id):
+    """Drive上の rakuten_sku_master.csv を読む（無ければNone）。"""
+    f = drive_master.find_file(RAKUTEN_SKU_MASTER_NAME, folder_id)
+    if not f:
+        return None
+    df = csv_import.read_csv_auto(drive_master.download_bytes(f["id"]))
+    return df
+
+
+def save_sku_master_drive(df, folder_id):
+    """楽天SKU対応表をDriveへ保存（上書き）。"""
+    data = df.to_csv(index=False, lineterminator="\r\n").encode("utf-8-sig")
+    return drive_master.upload_or_replace(data, RAKUTEN_SKU_MASTER_NAME, folder_id)
+
+
+def sku_lookup(df):
+    """SKU対応表 → {NE商品コード(小文字): (商品管理番号, SKU管理番号, システム連携用SKU番号)}"""
+    table = {}
+    for _, r in df.iterrows():
+        code = norm_key(r["NE商品コード"]).lower()
+        if code and code not in table:
+            table[code] = (norm_key(r["商品管理番号"]), norm_key(r["SKU管理番号"]),
+                           norm_key(r.get("システム連携用SKU番号", "")))
+    return table
+
+
+def parent_code(code):
+    """NE商品コード→親コード推定（末尾の -数字 を除去。kei0001-01→kei0001）。"""
+    return re.sub(r"-\d+$", "", str(code))

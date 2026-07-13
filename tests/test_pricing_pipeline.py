@@ -65,19 +65,24 @@ def test_tab1_end_to_end():
     assert r["新販売価格"] == r["現販売価格"] == 2200
     assert "据え置き" in r["適用ルール"]
 
-    # 出力CSV
+    # 出力CSV（実際のアップロード実績ファイルの形式）
     ok = [r for r in rows if r["新販売価格"]]
     changed = [r for r in ok if r["新販売価格"] != r["現販売価格"]]
     mall = [{"商品コード": r["商品コード"], "楽天販売価格": r["新販売価格"],
              "Yahoo販売価格": r["新販売価格"]} for r in changed]
-    rak = ex.rakuten_csv(mall).decode("cp932")
-    assert "コントロールカラム,商品管理番号（商品URL）,販売価格" in rak
-    assert "u,miya0284,9103" in rak and "artc9999" not in rak
-    yah = ex.yahoo_csv(mall).decode("cp932")
-    assert "code,price" in yah and "kwgc0414,2054" in yah
+    rak_records, rak_missing = ex.rakuten_rows(mall, {})  # 対応表なし＝枝番なしは単品扱い
+    assert rak_missing == []
+    rak = ex.rakuten_csv(rak_records).decode("cp932")
+    assert "商品管理番号（商品URL）,商品番号,SKU管理番号,システム連携用SKU番号,販売価格,表示価格" in rak
+    assert "miya0284,miya0284,,,," in rak            # 親行
+    assert "miya0284,,miya0284,,9103,9103" in rak    # 単品SKU行
+    assert "artc9999" not in rak                     # 据え置きは含まない
+    yah_records, yah_diff = ex.yahoo_rows(mall, {})
+    yah = ex.yahoo_csv(yah_records).decode("cp932")
+    assert "code,price" in yah and "kwgc0414,2054" in yah and yah_diff == []
     ne = ex.ne_csv([{"商品コード": r["商品コード"], "NE売価": r["NE売価"],
                      "NE原価": r["新下代"]} for r in ok]).decode("cp932")
-    assert "商品コード,売価,原価" in ne
+    assert "syohin_code,baika_tnk,genka_tnk" in ne
     assert "miya0284,8275,5200" in ne
     assert "artc9999,2000,1200" in ne  # 据え置きでも原価は更新
 
@@ -116,6 +121,44 @@ def test_tab3_size_change_end_to_end():
     item1 = ex.ne_item1_csv([{"商品コード": r["商品コード"], "新項目1": r["新項目1"]}
                              for r in rows]).decode("cp932")
     assert "slvb0144,60" in item1 and "kwgc0414,nekop" in item1
+
+
+def test_rakuten_sku_master_and_export():
+    """RMS商品一括DL → SKU対応表 → normal-item.csv（実物2024-01-16 keiの構造を再現）"""
+    rms = (
+        "商品管理番号（商品URL）,商品番号,SKU管理番号,システム連携用SKU番号,販売価格,表示価格\n"
+        "kei0001,kei0001,,,,\n"
+        "kei0001,,8577,kei0001-01,2530,2530\n"
+        "kei0001,,8578,kei0001-02,2530,2530\n"
+        "kei0018,kei0018,,,,\n"
+        "kei0018,,kei0018,,2530,2530\n"
+    ).encode("cp932")
+    sku_df = masters.parse_rakuten_item_csv(rms)
+    table = masters.sku_lookup(sku_df)
+    assert table["kei0001-01"] == ("kei0001", "8577", "kei0001-01")
+    assert table["kei0018"] == ("kei0018", "kei0018", "")
+
+    mall = [
+        {"商品コード": "kei0001-01", "楽天販売価格": 2783, "Yahoo販売価格": 2783},
+        {"商品コード": "kei0001-02", "楽天販売価格": 2530, "Yahoo販売価格": 2530},
+        {"商品コード": "kei0018", "楽天販売価格": 2783, "Yahoo販売価格": 2783},
+        {"商品コード": "zzz0001-01", "楽天販売価格": 999, "Yahoo販売価格": 999},  # 対応表に無い枝番付き
+    ]
+    records, missing = ex.rakuten_rows(mall, table)
+    assert missing == ["zzz0001-01"]
+    rak = ex.rakuten_csv(records).decode("cp932")
+    assert "kei0001,kei0001,,,," in rak                    # 親行
+    assert "kei0001,,8577,kei0001-01,2783,2783" in rak     # SKU行（楽天採番）
+    assert "kei0001,,8578,kei0001-02,2530,2530" in rak
+    assert "kei0018,,kei0018,,2783,2783" in rak            # 単品
+    assert "zzz0001" not in rak
+
+    yah_records, diff = ex.yahoo_rows(mall, table)
+    yah = {r["code"]: r["price"] for r in yah_records}
+    assert yah["kei0001"] == 2783        # SKUで割れたら最高値
+    assert yah["kei0018"] == 2783
+    assert yah["zzz0001"] == 999         # Yahooは枝番を落として親コードで出せる
+    assert diff == ["kei0001"]
 
 
 def test_overrides_and_force():

@@ -6,7 +6,10 @@
 楽天RMS・Yahoo!ショッピング・ネクストエンジンの価格更新CSVを出力する。
 計算ロジックはGoogleスプレッドシート「パピー納品価格変更」の数式を再現（lib/pricing/calc.py）。
 突合〜ルール適用は lib/pricing/pipeline.py（Streamlit非依存・テスト共用）。
+出力形式は実際のアップロード実績ファイルに一致（lib/pricing/export.py）。
 """
+import os
+
 import pandas as pd
 import streamlit as st
 
@@ -19,8 +22,13 @@ st.title("💰 価格改定")
 st.caption("インプットCSV（JAN・新下代）→ 楽天・Yahoo・ネクストエンジンの価格更新CSVを作ります。"
            "アップロード（本番反映）は必ず内容を確認してから手動で行ってください。")
 
-from lib.invoice import csv_import
+from lib.invoice import csv_import, drive_master
 from lib.pricing import calc, export as ex, masters, pipeline
+
+_REPO_ROOT = os.path.join(os.path.dirname(__file__), "..")
+
+product_folder = st.secrets.get(
+    "PRODUCT_MASTER_FOLDER_ID", "1pQJgn7tYX0KF4x70WY6mlOiruZWPInd-")
 
 
 # ══ サイドバー: 計算パラメータ ══════════════════════════════
@@ -39,65 +47,129 @@ with st.sidebar:
     params["margin_warn"] = st.number_input("利益率の警告ライン(%)", 0.0, 50.0, 10.0, 1.0) / 100.0
 
 
-# ══ マスタ読込 ══════════════════════════════════════════════
+# ══ 送料・資材マスタ（Drive保存・画面で追加/削除/編集） ══════
 
-@st.cache_data(ttl=3600, show_spinner="送料・資材マスタを読み込み中...")
-def _load_cost_master(sheet_id):
-    """スプレッドシート優先→同梱CSVフォールバック。(df, 取得元ラベル)を返す。"""
-    if sheet_id:
+def _init_cost_master():
+    """session → Drive → スプレッドシート → 同梱CSV の順で初期化。"""
+    if "pricing_cost_df" in st.session_state:
+        return
+    df, src = None, ""
+    if product_folder:
         try:
-            return masters.load_cost_master_from_sheet(sheet_id), "スプレッドシート（送料表・費用タブ）"
+            df = masters.load_cost_master_drive(product_folder)
+            if df is not None:
+                src = "Drive保存版（この画面で編集・保存）"
         except Exception as e:  # noqa: BLE001
-            return masters.load_cost_master_bundled(), f"同梱CSV（シート取得失敗: {e}）"
-    return masters.load_cost_master_bundled(), "同梱CSV（Secrets PRICING_SHEET_ID 未設定）"
+            st.caption(f"（Driveの送料マスタ読込をスキップ: {e}）")
+    if df is None:
+        sheet_id = st.secrets.get("PRICING_SHEET_ID", "")
+        if sheet_id:
+            try:
+                df = masters.load_cost_master_from_sheet(sheet_id)
+                src = "スプレッドシートから初期取込（まだDrive未保存）"
+            except Exception as e:  # noqa: BLE001
+                st.caption(f"（シートからの取込をスキップ: {e}）")
+    if df is None:
+        df = masters.load_cost_master_bundled()
+        src = "同梱CSV（初期値・まだDrive未保存）"
+    st.session_state["pricing_cost_df"] = df
+    st.session_state["pricing_cost_src"] = src
 
 
-cost_df, cost_src = _load_cost_master(st.secrets.get("PRICING_SHEET_ID", ""))
-cost_table = masters.cost_lookup(cost_df)
+_init_cost_master()
+cost_df = st.session_state["pricing_cost_df"]
 
-with st.expander("🚚 送料・資材マスタ（項目1のサイズコード → 送料/資材/配送種別）", expanded=False):
-    st.caption(f"取得元: {cost_src}。シート側の「送料表」「費用」タブを直せばアプリも追従します"
-               "（Secrets に PRICING_SHEET_ID を設定した場合）。")
-    if st.button("🔄 マスタを再取得", key="cost_reload"):
-        _load_cost_master.clear()
+with st.expander("🚚 送料・資材マスタ（行の追加・削除・編集ができます）", expanded=False):
+    st.caption(f"取得元: {st.session_state['pricing_cost_src']}。"
+               "表を直接編集し、行の追加（最下行）・削除（行選択→ゴミ箱）ができます。"
+               "**変更したら「Driveに保存」を押してください**（次回から保存版を自動で読み込みます）。")
+    edited_cost = st.data_editor(
+        cost_df, key="cost_editor", num_rows="dynamic",
+        use_container_width=True, hide_index=True,
+        column_config={
+            "項目1": st.column_config.TextColumn("項目1（サイズコード）", required=True),
+            "送料": st.column_config.NumberColumn("送料(円)"),
+            "資材": st.column_config.NumberColumn("資材(円)"),
+            "配送種別": st.column_config.SelectboxColumn("配送種別", options=["宅配便", "メール便"]),
+        })
+    c1, c2, c3 = st.columns(3)
+    if c1.button("💾 Driveに保存", key="cost_save", type="primary"):
+        try:
+            masters.save_cost_master_drive(edited_cost, product_folder)
+            st.session_state["pricing_cost_df"] = edited_cost
+            st.session_state["pricing_cost_src"] = "Drive保存版（この画面で編集・保存）"
+            st.success("送料・資材マスタをDriveに保存しました。")
+            st.rerun()
+        except Exception as e:  # noqa: BLE001
+            st.error(f"Drive保存に失敗しました: {e}")
+    if c2.button("📥 スプレッドシートから取り込み直す", key="cost_reimport",
+                 help="「送料表」「費用」タブの現在値を取り込みます（保存するまでDriveには反映されません）"):
+        sheet_id = st.secrets.get("PRICING_SHEET_ID", "")
+        if not sheet_id:
+            st.error("Secrets に PRICING_SHEET_ID が未設定です。")
+        else:
+            try:
+                st.session_state["pricing_cost_df"] = masters.load_cost_master_from_sheet(sheet_id)
+                st.session_state["pricing_cost_src"] = "スプレッドシートから再取込（まだDrive未保存）"
+                st.rerun()
+            except Exception as e:  # noqa: BLE001
+                st.error(f"シートからの取込に失敗: {e}")
+    if c3.button("🔄 Driveの保存版を読み直す", key="cost_reload"):
+        for k in ("pricing_cost_df", "pricing_cost_src"):
+            st.session_state.pop(k, None)
         st.rerun()
-    st.dataframe(cost_df, use_container_width=True, hide_index=True)
 
-# ── NE商品マスタ（Drive保存・毎回アップ不要） ──
-product_folder = st.secrets.get(
-    "PRODUCT_MASTER_FOLDER_ID", "1pQJgn7tYX0KF4x70WY6mlOiruZWPInd-")
+# 計算にはこの画面での編集内容を即時反映（保存前でも有効）
+cost_table = masters.cost_lookup(edited_cost)
+
+
+# ══ NE商品マスタ（汎用マスタ変換と共通） ════════════════════
 
 ne_df = st.session_state.get("pricing_ne_df")
 ne_meta = st.session_state.get("pricing_ne_meta", "")
 ne_missing = st.session_state.get("pricing_ne_missing", [])
 
-if ne_df is None and product_folder:
+if ne_df is None:
+    candidates = []
+    if product_folder:
+        try:
+            f = drive_master.find_latest(product_folder, "master")
+            if f:
+                mdf, missing = masters.load_ne_master(drive_master.download_bytes(f["id"]))
+                candidates.append((mdf, missing, f"Drive保存版 {f['name']}（汎用と共通・{len(mdf):,}件）"))
+        except Exception as e:  # noqa: BLE001
+            st.caption(f"（DriveのNE商品マスタ読込をスキップ: {e}）")
     try:
-        f = masters.find_drive_master(product_folder)
-        if f:
-            ne_df, ne_missing = masters.load_ne_master(
-                masters.download_drive_master(f["id"]))
-            ne_meta = f"Drive保存版 {f['name']}（{len(ne_df):,}件・更新 {f.get('modifiedTime', '')[:10]}）"
-            st.session_state["pricing_ne_df"] = ne_df
-            st.session_state["pricing_ne_meta"] = ne_meta
-            st.session_state["pricing_ne_missing"] = ne_missing
+        mdf, missing = masters.load_repo_master(_REPO_ROOT)
+        if mdf is not None:
+            candidates.append((mdf, missing, f"共有master.csv（汎用と共通・{len(mdf):,}件）"))
     except Exception as e:  # noqa: BLE001
-        st.caption(f"（DriveのNE商品マスタ読込をスキップ: {e}）")
+        st.caption(f"（共有master.csvの読込をスキップ: {e}）")
+    # 売価・原価が揃っているものを優先。無ければ先頭（Drive優先）を使う
+    chosen = next(((d, m, meta) for d, m, meta in candidates
+                   if "売価" not in m and "原価" not in m), None)
+    if chosen is None and candidates:
+        chosen = candidates[0]
+    if chosen:
+        ne_df, ne_missing, ne_meta = chosen
+        st.session_state["pricing_ne_df"] = ne_df
+        st.session_state["pricing_ne_meta"] = ne_meta
+        st.session_state["pricing_ne_missing"] = ne_missing
 
-with st.expander("📚 NE商品マスタの管理（毎回アップ不要・Drive保存）", expanded=(ne_df is None)):
-    st.caption("価格改定にはNEカスタム（商品マスタ）CSVの "
-               "**商品コード・JANコード・売価・原価・項目1** を使います。"
-               "初回にアップすればDriveに保存され、次回からは自動で読み込みます。"
-               "NE側でマスタが変わったら、新しいCSVをアップして差し替えてください。")
+with st.expander("📚 NE商品マスタ（汎用マスタ変換と共通・毎回アップ不要）", expanded=(ne_df is None)):
+    st.caption("汎用マスタ変換・請求書発行と同じ商品マスタを使います。"
+               "価格改定には **商品コード・JANコード・売価・原価・項目1** の列が必要です。"
+               "ここでアップロードするとDriveにバックアップされ（master_日付_版数.csv）、"
+               "他のページからも最新版として参照されます。")
     if ne_df is not None:
-        st.success(f"NE商品マスタ利用中: {ne_meta}（{len(ne_df):,}件）")
+        st.success(f"NE商品マスタ利用中: {ne_meta}")
         if ne_missing:
             st.warning("このマスタには次の列がありません: " + "・".join(ne_missing) + "。"
-                       "JANコードが無いとJANでの突合、売価が無いと現販売価格の取得、"
-                       "原価が無いと値上げ/値下げ判定ができません。")
+                       "**売価・原価が無いと価格計算ができません。** "
+                       "次回マスタ更新時は、NEカスタムのダウンロード項目に売価・原価も含めてください。")
     else:
-        st.info("NE商品マスタが未保存です。初回のみNEカスタムCSVをアップロードしてください。")
-    if st.button("🔄 マスタを再取得（Driveから読み直す）", key="pricing_ne_reload"):
+        st.info("NE商品マスタが見つかりません。NEカスタムCSVをアップロードしてください。")
+    if st.button("🔄 マスタを再取得（最新を読み直す）", key="pricing_ne_reload"):
         for k in ("pricing_ne_df", "pricing_ne_meta", "pricing_ne_missing"):
             st.session_state.pop(k, None)
         st.rerun()
@@ -119,15 +191,55 @@ with st.expander("📚 NE商品マスタの管理（毎回アップ不要・Driv
             st.success(f"NE商品マスタを更新しました（{len(mdf):,}件）。")
             if product_folder:
                 try:
-                    masters.save_drive_master(data, product_folder)
-                    st.caption(f"Driveに保存しました（{masters.PRICING_MASTER_NAME}・次回から自動読込）。")
+                    bn = drive_master.upload_versioned(data, "master", product_folder)
+                    st.caption(f"Driveにバックアップしました（{bn}・汎用/請求書と共通の最新版になります）。")
                 except Exception as e:  # noqa: BLE001
-                    st.warning(f"⚠️ Drive保存に失敗しました（今回のセッションでは利用可能）: {e}")
+                    st.warning(f"⚠️ Driveバックアップに失敗しました（今回のセッションでは利用可能）: {e}")
 
 if ne_df is not None:
     jan_map, code_info = masters.build_lookup(ne_df)
 else:
     jan_map, code_info = {}, {}
+
+
+# ══ 楽天SKU対応表（RMS商品一括DLから作成・Drive保存） ═══════
+
+sku_df = st.session_state.get("pricing_sku_df")
+if sku_df is None and product_folder:
+    try:
+        sku_df = masters.load_sku_master_drive(product_folder)
+        if sku_df is not None:
+            st.session_state["pricing_sku_df"] = sku_df
+    except Exception:  # noqa: BLE001
+        pass
+
+with st.expander("🔴 楽天SKU対応表（NE商品コード → 商品管理番号・SKU管理番号）", expanded=False):
+    st.caption("楽天の価格CSV（normal-item.csv）はSKU形式で、**SKU管理番号（楽天側の採番）**が必要です。"
+               "RMSの**商品一括ダウンロードCSV**をここにアップすると対応表を作ってDriveに保存します。"
+               "対応表に無い枝番付き商品（-01等）は楽天CSVから除外して警告します"
+               "（枝番なしの単品はそのまま出力できます）。")
+    if sku_df is not None:
+        st.success(f"楽天SKU対応表 利用中（{len(sku_df):,}SKU）")
+    else:
+        st.info("SKU対応表が未保存です。RMSの商品一括ダウンロードCSVをアップしてください。")
+    new_sku = st.file_uploader("RMS商品一括ダウンロードCSV（normal-item.csv形式）",
+                               type=["csv"], key="pricing_sku_upload")
+    if new_sku is not None:
+        try:
+            parsed = masters.parse_rakuten_item_csv(new_sku.getvalue())
+            st.session_state["pricing_sku_df"] = parsed
+            sku_df = parsed
+            st.success(f"SKU対応表を更新しました（{len(parsed):,}SKU）。")
+            if product_folder:
+                try:
+                    masters.save_sku_master_drive(parsed, product_folder)
+                    st.caption(f"Driveに保存しました（{masters.RAKUTEN_SKU_MASTER_NAME}・次回から自動読込）。")
+                except Exception as e:  # noqa: BLE001
+                    st.warning(f"⚠️ Drive保存に失敗（今回のセッションでは利用可能）: {e}")
+        except Exception as e:  # noqa: BLE001
+            st.error(f"SKU対応表の作成に失敗: {e}")
+
+sku_table = masters.sku_lookup(sku_df) if sku_df is not None else {}
 
 
 # ══ 画面部品 ════════════════════════════════════════════════
@@ -137,7 +249,7 @@ def show_unmatched(unmatched):
         st.error(f"⚠️ NE商品マスタに存在しない行が {len(unmatched)} 件あります（計算から除外）")
         st.dataframe(pd.DataFrame({"未マッチ": unmatched}),
                      use_container_width=True, hide_index=True)
-        st.warning("NE商品マスタが古い可能性があります。上の「NE商品マスタの管理」から最新版に差し替えてください。")
+        st.warning("NE商品マスタが古い可能性があります。上の「NE商品マスタ」から最新版に差し替えてください。")
 
 
 def editable_result(df, key):
@@ -172,19 +284,30 @@ def download_buttons(result_df, key_prefix, include_unchanged):
     ne_rows = [{"商品コード": r["商品コード"], "NE売価": r["NE売価"], "NE原価": r["新下代"]}
                for _, r in ok.iterrows()]
 
+    rak_records, rak_missing = ex.rakuten_rows(mall_rows, sku_table)
+    yah_records, yah_diff = ex.yahoo_rows(mall_rows, sku_table)
+    if rak_missing:
+        st.warning(f"🔴 楽天CSVから {len(rak_missing)}件 を除外しました"
+                   f"（SKU対応表に無い枝番付き商品）: {', '.join(rak_missing[:10])}"
+                   f"{' …' if len(rak_missing) > 10 else ''}　"
+                   "→ 上の「楽天SKU対応表」に最新のRMS商品一括DLをアップしてください。")
+    if yah_diff:
+        st.caption(f"🟡 Yahooは親コード単位のため、SKUで価格が割れた {len(yah_diff)}件 は最高値を採用: "
+                   f"{', '.join(yah_diff[:10])}{' …' if len(yah_diff) > 10 else ''}")
+
     st.caption(f"モール向け: {len(mall_rows)}件（価格変更あり{'＋据え置き' if include_unchanged else 'のみ'}）"
                f" ／ NE向け: {len(ne_rows)}件（原価更新のため据え置きも含む）")
     c1, c2, c3, c4 = st.columns(4)
-    c1.download_button("🔴 楽天 item.csv", ex.rakuten_csv(mall_rows),
-                       "rakuten_item.csv", "text/csv",
-                       key=f"{key_prefix}_dl_rakuten", disabled=not mall_rows,
+    c1.download_button("🔴 楽天 normal-item.csv", ex.rakuten_csv(rak_records),
+                       "normal-item.csv", "text/csv",
+                       key=f"{key_prefix}_dl_rakuten", disabled=not rak_records,
                        use_container_width=True)
-    c2.download_button("🟡 Yahoo data.csv", ex.yahoo_csv(mall_rows),
+    c2.download_button("🟡 Yahoo data.csv", ex.yahoo_csv(yah_records),
                        "yahoo_data.csv", "text/csv",
-                       key=f"{key_prefix}_dl_yahoo", disabled=not mall_rows,
+                       key=f"{key_prefix}_dl_yahoo", disabled=not yah_records,
                        use_container_width=True)
     c3.download_button("🟢 NE商品マスタ更新CSV", ex.ne_csv(ne_rows),
-                       "ne_master_update.csv", "text/csv",
+                       "ne_price_update.csv", "text/csv",
                        key=f"{key_prefix}_dl_ne", disabled=not ne_rows,
                        use_container_width=True)
     c4.download_button("📄 計算明細CSV", ex.detail_csv(result_df),
@@ -238,7 +361,7 @@ with tab1:
             st.error(f"CSVの読込に失敗: {e}")
 
     if in_df is not None and ne_df is None:
-        st.error("先に上の「NE商品マスタの管理」からNEカスタムCSVをアップロードしてください。")
+        st.error("先に上の「NE商品マスタ」からNEカスタムCSVをアップロードしてください。")
     elif in_df is not None:
         c_jan = pipeline.pick_col(in_df, "JANコード", "JAN", "jan")
         c_code = pipeline.pick_col(in_df, "商品コード")
@@ -271,7 +394,7 @@ with tab2:
                "価格ルールは納品価格変更と同じです。")
     up2 = st.file_uploader("直送価格変更の入力CSV", type=["csv"], key="t2_upload")
     if up2 is not None and ne_df is None:
-        st.error("先に上の「NE商品マスタの管理」からNEカスタムCSVをアップロードしてください。")
+        st.error("先に上の「NE商品マスタ」からNEカスタムCSVをアップロードしてください。")
     elif up2 is not None:
         try:
             in_df2 = csv_import.read_csv_auto(up2.getvalue())
@@ -307,7 +430,7 @@ with tab3:
                "③配送設定修正（宅配便⇔メール便が変わるか）")
     up3 = st.file_uploader("サイズ変更の入力CSV", type=["csv"], key="t3_upload")
     if up3 is not None and ne_df is None:
-        st.error("先に上の「NE商品マスタの管理」からNEカスタムCSVをアップロードしてください。")
+        st.error("先に上の「NE商品マスタ」からNEカスタムCSVをアップロードしてください。")
     elif up3 is not None:
         try:
             in_df3 = csv_import.read_csv_auto(up3.getvalue())
