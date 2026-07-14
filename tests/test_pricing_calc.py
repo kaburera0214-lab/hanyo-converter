@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-価格改定の計算ロジック回帰テスト。
+価格改定の計算ロジックテスト。
 
-期待値はGoogleスプレッドシート「パピー納品価格変更」の実データ
-（2026-07-13時点・数式解読時に取得した計算結果）と突合している。
-実行: hanyo-converter直下で  python -m pytest tests/test_pricing_calc.py -q
-      （pytestが無ければ python tests/test_pricing_calc.py でも可）
+期待値は2026-07-14にユーザーが提示した実例（artc0486）と確定仕様に基づく:
+- 3980円未満はお客様が送料を払う（宅配880/メール350）→ 利益は送料込みベースMで判定
+- 目標利益率価格 = 利益率がちょうど目標値(15%)に着地する価格を逆算
+- 値上げ率価格 = M(現価格)×(新下代/旧下代) を販売価格に戻す
+  例) (891+880)×365/363=1781 → 1781−880=901円
+実行: hanyo-converter直下で  python tests/test_pricing_calc.py
 """
 import os
 import sys
@@ -14,87 +16,93 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from lib.pricing import calc, rules  # noqa: E402
 
-P = dict(calc.DEFAULT_PARAMS)
+P = dict(calc.DEFAULT_PARAMS)  # 目標利益率15%
 
 
-def _new_price(cur_price, new_cost, shipping, material, delivery,
-               old_cost=None, mode="normal"):
-    base = calc.compute_row(cur_price, new_cost, shipping, material, delivery, P, mode=mode)
-    ctx = {"現販売価格": cur_price, "新下代": new_cost, "旧下代": old_cost,
-           "利益20%価格": base["利益20%価格"]}
+def _decide(cur_price, new_cost, old_cost, shipping, material, delivery, mode="normal"):
+    base = calc.compute_row(cur_price, new_cost, old_cost, shipping, material,
+                            delivery, P, mode=mode)
+    ctx = {"現販売価格": cur_price, "利益計算価格": base["利益計算価格"],
+           "新下代": new_cost, "旧下代": old_cost,
+           "目標利益率価格": base["目標利益率価格"],
+           "配送種別": delivery, "mode": mode}
     price, rule = rules.decide_price(ctx, P)
     return base, price, rule
 
 
 def test_excel_round_half_up():
-    assert calc.excel_round(2054.25) == 2054
     assert calc.excel_round(0.5) == 1          # Pythonのround(0.5)=0 と違うこと
-    assert calc.excel_round(9102.5) == 9103
-    assert calc.excel_round(8275.45) == 8275
+    assert calc.excel_round(1780.76) == 1781
+    assert calc.excel_round(580.47) == 580
 
 
-def test_miya0284_takuhai_60():
-    """シート行: miya0284 現価格7150・新下代5200・60サイズ宅配便 → 新価格9103・NE売価8275"""
-    base, price, _ = _new_price(7150, 5200, 675, 30.5, "宅配便")
-    assert base["利益計算価格"] == 7150                    # 3980以上→加算なし
-    assert abs(base["変動費合計"] - 7282.55) < 0.01        # シート表示7,283
-    assert price == 9103
-    out = calc.output_prices(price, 5200, P)
-    assert out["NE売価"] == 8275
-    assert out["楽天販売価格"] == 9103 and out["Yahoo販売価格"] == 9103
-    profit, margin = calc.simulate_price(price, base["変動費合計"], base["旧手数料"], P)
-    assert round(profit) == 1534                           # シート表示 1,534
-    assert abs(margin - 0.1685) < 0.001                    # 16.85%
+def test_profit_base_and_m_to_price():
+    """利益計算価格M（送料込みベース）と、Mから販売価格への逆変換"""
+    assert calc.profit_base_price(891, "宅配便", P) == 1771     # +880
+    assert calc.profit_base_price(600, "メール便", P) == 950    # +350
+    assert calc.profit_base_price(7150, "宅配便", P) == 7150    # 3980以上は加算なし
+    assert calc.m_to_price(1781, "宅配便", P) == 901            # ユーザー実例
+    assert calc.m_to_price(2405, "メール便", P) == 2055
+    assert calc.m_to_price(7290, "宅配便", P) == 7290           # 引くと3980以上→そのまま
+    assert calc.m_to_price(5000, "宅配便", P, mode="direct") == 5000
 
 
-def test_kwgc0414_mail_yuup3():
-    """シート行: kwgc0414 現価格1760・新下代1026・yuup3メール便 → 新価格2054"""
-    base, price, _ = _new_price(1760, 1026, 269, 23, "メール便")
-    assert base["利益計算価格"] == 1760 + 350              # 3980未満メール便+350
-    assert abs(base["変動費合計"] - 1643.4) < 0.01
-    assert price == 2054
+def test_artc0486_user_example():
+    """ユーザー提示の実例: 現891円・宅配60・下代363→365 → 新価格901円"""
+    base, price, rule = _decide(891, 365, 363, 675, 30.5, "宅配便")
+    assert base["目標利益率価格"] == 580        # 15%にちょうど着地する価格
+    assert price == 901 and rule == "値上げ率価格"
+    profit, margin = calc.simulate_price(price, 365, 675, 30.5, "宅配便", P)
+    assert round(profit) == 504 and abs(margin - 0.283) < 0.001
+    assert calc.output_prices(price, 365, P)["NE売価"] == 819  # 901÷1.1
 
 
-def test_popo0161_nekop():
-    """シート行: popo0161-25 現価格600・新下代360・nekop → 新価格866"""
-    base, price, _ = _new_price(600, 360, 194, 15.9, "メール便")
-    assert base["利益計算価格"] == 950
-    assert price == 866
+def test_target_price_lands_on_target_margin():
+    """目標利益率価格は実際にその利益率に着地する（丸め誤差±1%以内）"""
+    cases = [
+        (365, 675, 30.5, "宅配便"),    # 3980未満・宅配
+        (1026, 269, 23, "メール便"),   # 3980未満・メール
+        (5200, 675, 30.5, "宅配便"),   # 3980以上
+    ]
+    for cost, ship, mat, deliv in cases:
+        tp = calc.target_price(cost, ship, mat, deliv, P)
+        _, margin = calc.simulate_price(tp, cost, ship, mat, deliv, P)
+        assert abs(margin - P["target_margin"]) < 0.01, (cost, tp, margin)
+    # 3980以上のケースの具体値（miya0284: 下代5200・60サイズ → 8778円）
+    assert calc.target_price(5200, 675, 30.5, "宅配便", P) == 8778
 
 
-def test_takuhai_add_under_line():
-    """3980未満の宅配便は+880で利益判定（miya0306: 1760+880=2640）"""
-    base, _, _ = _new_price(1760, 1560, 938, 115, "宅配便")
-    assert base["利益計算価格"] == 2640
-    assert abs(base["変動費合計"] - 3067.9) < 0.01         # シート表示 3,068
+def test_old_and_new_margin_same_formula():
+    """据え置き・下代同一なら旧利益率＝新利益率（同じ式・送料込みベース）"""
+    base, price, rule = _decide(1914, 783, 783, 675, 30.5, "宅配便")
+    assert price == 1914 and "据え置き" in rule
+    _, new_margin = calc.simulate_price(price, 783, 675, 30.5, "宅配便", P)
+    assert abs(base["旧利益率"] - new_margin) < 1e-9
+    assert abs(new_margin - 0.3386) < 0.001    # はちまき1914円: M=2794で33.86%
+
 
 def test_rule_price_down_keeps_current():
     """下代値下げ→据え置き"""
-    base, price, rule = _new_price(7150, 4000, 675, 30.5, "宅配便", old_cost=5200)
-    assert price == 7150
-    assert "据え置き" in rule
+    _, price, rule = _decide(7150, 4000, 5200, 675, 30.5, "宅配便")
+    assert price == 7150 and "据え置き" in rule
 
 
-def test_rule_price_up_takes_max():
-    """値上げ→max(利益20%価格, 現価格×新下代/旧下代)"""
-    # 20%価格が勝つケース（大幅値上げで原価比例では足りない）
-    base, price, rule = _new_price(7150, 5200, 675, 30.5, "宅配便", old_cost=5100)
-    ratio = calc.excel_round(7150 * 5200 / 5100)  # ≈ 7290 < 9103
-    assert price == base["利益20%価格"] == 9103
-    # 値上げ率価格が勝つケース
-    base2, price2, rule2 = _new_price(20000, 5200, 675, 30.5, "宅配便", old_cost=5000)
-    ratio2 = calc.excel_round(20000 * 5200 / 5000)  # = 20800
-    assert price2 == ratio2 == 20800
-    assert "値上げ率" in rule2
+def test_rule_floor_at_current_price():
+    """計算値が現価格以下なら据え置き（値下げ事故防止。旧下代不明→目標価格のみの場合など）"""
+    _, price, rule = _decide(9000, 5200, None, 675, 30.5, "宅配便")
+    assert price == 9000 and "現価格以下" in rule  # 目標8778 < 現9000
+    # 旧下代があれば値上げ率価格が現価格を必ず上回るのでそちらが採用される
+    _, price2, rule2 = _decide(9000, 5200, 5100, 675, 30.5, "宅配便")
+    assert price2 == 9176 and rule2 == "値上げ率価格"  # 9000×5200/5100
 
 
 def test_direct_mode():
-    """直送: 資材0・送料込み換算なし（miya0284直送行: 送料1000 → 新価格9550）"""
-    base, price, _ = _new_price(7150, 5200, 1000, 0, "宅配便", mode="direct")
+    """直送: 送料込み換算なし（M=価格）・送料手入力。miya0284直送: 送料1000→9216円"""
+    base, price, rule = _decide(7150, 5200, 5100, 1000, 0, "宅配便", mode="direct")
     assert base["利益計算価格"] == 7150
-    # Q = (1000+0+715+5200)*1.1 = 7606.5 → T = ROUND(9508.125) = 9508
-    assert abs(base["変動費合計"] - 7606.5) < 0.01
-    assert price == 9508
+    assert price == 9216
+    _, margin = calc.simulate_price(price, 5200, 1000, 0, "宅配便", P, mode="direct")
+    assert abs(margin - 0.15) < 0.01
 
 
 def test_size_change_check():
@@ -120,7 +128,9 @@ if __name__ == "__main__":
             try:
                 fn()
                 print(f"OK   {name}")
-            except AssertionError as e:
+            except AssertionError:
                 fails += 1
-                print(f"FAIL {name}: {e}")
+                import traceback
+                print(f"FAIL {name}")
+                traceback.print_exc()
     sys.exit(1 if fails else 0)

@@ -55,15 +55,17 @@ def test_tab1_end_to_end():
     rows = pipeline.build_price_rows(matched, c_cost, cost_table, P, cur_prices=RK_PRICES)
     by_code = {r["商品コード"]: r for r in rows}
 
-    # miya0284: 現価格=6500*1.1=7150、値上げ率価格=7150*5200/5100=7290 < 9103 → 20%価格
+    # miya0284: 3980以上・値上げ率価格7290 < 目標利益率価格8778 → 8778
     r = by_code["miya0284"]
     assert r["現販売価格"] == 7150
-    assert r["新販売価格"] == 9103 and r["NE売価"] == 8275
-    assert r["新利益額"] == 1534
+    assert r["新販売価格"] == 8778 and r["NE売価"] == 7980
+    assert r["適用ルール"] == "目標利益率価格"
+    assert r["新利益額"] == 1316 and abs(r["新利益率"] - 0.15) < 0.01
 
-    # kwgc0414: 現価格=1600*1.1=1760、20%価格2054 vs 値上げ率 1760*1026/900=2006 → 2054
+    # kwgc0414: メール便・値上げ率価格 (1760+350)*1026/900=2405 → 2405-350=2055 > 目標1557
     r = by_code["kwgc0414"]
-    assert r["現販売価格"] == 1760 and r["新販売価格"] == 2054
+    assert r["現販売価格"] == 1760 and r["新販売価格"] == 2055
+    assert r["適用ルール"] == "値上げ率価格"
 
     # artc9999: 値下げ → 据え置き（現価格2200のまま）
     r = by_code["artc9999"]
@@ -80,16 +82,16 @@ def test_tab1_end_to_end():
     rak = ex.rakuten_csv(rak_records).decode("cp932")
     assert "商品管理番号（商品URL）,商品番号,SKU管理番号,システム連携用SKU番号,販売価格,表示価格" in rak
     assert "miya0284,miya0284,,,," in rak            # 親行
-    assert "miya0284,,miya0284,,9103,9103" in rak    # 単品SKU行
+    assert "miya0284,,miya0284,,8778,8778" in rak    # 単品SKU行
     assert "artc9999" not in rak                     # 据え置きは含まない
     yah_records, yah_diff = ex.yahoo_rows(mall, {})
     yah = ex.yahoo_csv(yah_records).decode("cp932")
-    assert "code,price" in yah and "kwgc0414,2054" in yah and yah_diff == []
+    assert "code,price" in yah and "kwgc0414,2055" in yah and yah_diff == []
     ne = ex.ne_csv([{"商品コード": r["商品コード"], "NE売価": r["NE売価"],
                      "NE原価": r["新下代"]} for r in ok]).decode("cp932")
     assert "syohin_code,baika_tnk,genka_tnk" in ne
-    assert "miya0284,8275,5200" in ne
-    assert "artc9999,2000,1200" in ne  # 据え置きでも原価は更新
+    assert "miya0284,7980,5200" in ne
+    assert "artc9999,2000,1200" in ne  # 据え置きでも原価は更新（NE売価=2200÷1.1）
 
 
 def test_tab2_direct_end_to_end():
@@ -99,8 +101,8 @@ def test_tab2_direct_end_to_end():
     matched, unmatched = pipeline.match_input(in_df, None, c_jan, jan_map, code_info)
     rows = pipeline.build_price_rows(matched, "新下代", {}, P, mode="direct", c_ship="新送料",
                                      cur_prices=RK_PRICES)
-    # Q=(1000+0+715+5200)*1.1=7606.5 → 20%価格9508 vs 値上げ率7290 → 9508
-    assert rows[0]["新販売価格"] == 9508
+    # 直送: M=価格そのまま。目標15%価格=(1000+5200)*1.1/0.74=9216 vs 値上げ率7290 → 9216
+    assert rows[0]["新販売価格"] == 9216
 
 
 def test_tab3_size_change_end_to_end():
@@ -181,7 +183,7 @@ def test_rakuten_price_required():
     # 取得済みなら計算できる
     rows = pipeline.build_price_rows(matched, "新下代", cost_table, P,
                                      cur_prices={"miya0284": 7150})
-    assert rows[0]["現販売価格"] == 7150 and rows[0]["新販売価格"] == 9103
+    assert rows[0]["現販売価格"] == 7150 and rows[0]["新販売価格"] == 8778
     # 未取得は計算不可（フォールバックしない）
     rows2 = pipeline.build_price_rows(matched, "新下代", cost_table, P)
     assert rows2[0]["新販売価格"] is None
@@ -218,10 +220,12 @@ def test_overrides_and_force():
     cost_table = _cost_table()
     in_df = pd.DataFrame([{"商品コード": "artc9999", "新下代": "1200"}])
     matched, _ = pipeline.match_input(in_df, "商品コード", None, jan_map, code_info)
-    # force_reprice: 値下げでも20%価格に再設定される
+    # force_reprice: 値下げでも目標利益率価格に再設定される
+    # （現価格1000は利益NG想定 → 80サイズの目標15%価格2017に引き上げ）
     rows = pipeline.build_price_rows(matched, "新下代", cost_table, P, force_reprice=True,
-                                     cur_prices=RK_PRICES)
-    assert rows[0]["新販売価格"] != rows[0]["現販売価格"]
+                                     cur_prices={"artc9999": 1000})
+    assert rows[0]["新販売価格"] == 2017
+    assert rows[0]["適用ルール"] == "目標利益率価格"
     # 手修正が最優先
     rows = pipeline.build_price_rows(matched, "新下代", cost_table, P,
                                      overrides={"artc9999": 3300}, cur_prices=RK_PRICES)

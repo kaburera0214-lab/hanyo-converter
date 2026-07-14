@@ -36,9 +36,10 @@ params = dict(calc.DEFAULT_PARAMS)
 with st.sidebar:
     st.markdown("### ⚙️ 計算パラメータ")
     st.caption("この画面でのみ有効。恒久変更は lib/pricing/calc.py の DEFAULT_PARAMS を修正。")
-    target_margin = st.number_input("目標利益率(%)", 0.0, 90.0, 20.0, 1.0,
-                                    help="新価格 = 変動費 ÷ (1 − 目標利益率)")
-    params["target_cost_ratio"] = 1 - target_margin / 100.0
+    target_margin = st.number_input("目標利益率(%)", 0.0, 80.0, 15.0, 1.0,
+                                    help="新価格はこの利益率にちょうど着地するよう逆算します"
+                                         "（送料込みの入金ベース・楽天手数料込み）")
+    params["target_margin"] = target_margin / 100.0
     params["fee_rate"] = st.number_input("楽天手数料率(%)", 0.0, 30.0, 10.0, 0.5) / 100.0
     params["free_ship_line"] = st.number_input("送料込みライン(円)", 0, 100000, 3980, 10,
                                                help="この金額以上は送料込み扱い（利益計算での加算なし）")
@@ -361,7 +362,8 @@ tab1, tab2, tab3 = st.tabs(["📦 納品価格変更", "🚛 直送価格＆送�
 # ── タブ1: 納品価格変更（本流） ─────────────────────────────
 with tab1:
     st.markdown("##### 入力CSV: **JAN（またはNE商品コード）・新下代** ＋ 任意列（指定価格／値上げ率／項目1）")
-    st.caption("値下げ→据え置き、値上げ→「利益20%確保価格」と「値上げ率価格（現価格×新下代÷旧下代）」の高い方。"
+    st.caption("値下げ→据え置き、値上げ→「目標利益率価格」と「値上げ率価格（送料込みベース×新下代÷旧下代）」の高い方。"
+               "3980円未満はお客様負担の送料（宅配880円/メール350円）を差し引いた価格を設定します。"
                "旧下代はNE商品マスタの原価を使います。")
 
     prefill = st.session_state.get("pricing_tab1_prefill")
@@ -398,7 +400,7 @@ with tab1:
         else:
             st.caption(f"列の割り当て: JAN={c_jan or '－'} / 商品コード={c_code or '－'} / 新下代={c_cost}"
                        f" / 指定価格={c_fixed or '－'} / 値上げ率={c_pct or '－'} / 項目1上書き={c_size or '－'}")
-            force = st.checkbox("下代が同じ・値下げでも利益20%価格に再設定する（サイズ変更由来など）",
+            force = st.checkbox("下代が同じ・値下げでも目標利益率価格に再設定する（サイズ変更由来など）",
                                 value=prefill is not None, key="t1_force")
             matched, unmatched = pipeline.match_input(in_df, c_code, c_jan, jan_map, code_info)
             show_unmatched(unmatched)
@@ -499,7 +501,7 @@ with tab3:
                     if len(ng):
                         st.markdown("###### 利益NG品の価格再設定")
                         st.caption("下代は変わっていないため、「納品価格変更」タブへ引き継いで"
-                                   "利益20%確保価格に再設定します（新サイズの送料・資材で計算）。")
+                                   "目標利益率価格に再設定します（新サイズの送料・資材で計算）。")
                         if st.button(f"📦 利益NG {len(ng)}件を「納品価格変更」タブへ送る", key="t3_to_t1"):
                             pre = pd.DataFrame([{
                                 "商品コード": r["商品コード"],

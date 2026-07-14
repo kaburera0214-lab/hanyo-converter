@@ -108,17 +108,19 @@ def build_price_rows(matched, c_cost, cost_table, params, mode="normal",
             rows.append(row)
             continue
 
-        base = calc.compute_row(cur_price, new_cost, shipping, material, delivery,
-                                params, mode=mode)
-        ctx = {"現販売価格": cur_price, "新下代": new_cost, "旧下代": old_cost,
-               "利益20%価格": base["利益20%価格"],
+        base = calc.compute_row(cur_price, new_cost, old_cost, shipping, material,
+                                delivery, params, mode=mode)
+        ctx = {"現販売価格": cur_price, "利益計算価格": base["利益計算価格"],
+               "新下代": new_cost, "旧下代": old_cost,
+               "目標利益率価格": base["目標利益率価格"],
+               "配送種別": delivery, "mode": mode,
                "指定価格": r[c_fixed] if c_fixed else None,
                "値上げ率": r[c_pct] if c_pct else None}
         new_price, rule_name = rules.decide_price(ctx, params, rule_list)
         if overrides.get(code):
             new_price, rule_name = int(overrides[code]), "手修正"
-        profit, margin = calc.simulate_price(new_price, base["変動費合計"],
-                                             base["旧手数料"], params)
+        profit, margin = calc.simulate_price(new_price, new_cost, shipping, material,
+                                             delivery, params, mode=mode)
         if margin is not None and margin < params["margin_warn"]:
             warn.append(f"利益率{margin:.1%}が警告ライン未満")
         out = calc.output_prices(new_price, new_cost, params)
