@@ -107,20 +107,14 @@ def output_prices(new_price, new_cost, params):
     }
 
 
-def size_change_check(ne_price, cur_price, cost, shipping_new, material_new,
-                      delivery_old, delivery_new, params, rakuten_price=None):
+def size_change_check(cur_price, cost, shipping_new, material_new,
+                      delivery_old, delivery_new, params):
     """
-    梱包サイズ変更の3チェック（シート「梱包サイズ変更」A〜C列の再現）。
-      ①販売価格チェック: NE売価×1.1 が楽天販売価格と一致するか（楽天価格未提供なら判定不能"-"）
-      ②利益チェック: 新サイズの送料・資材で利益率が margin_warn 以上か
-      ③配送設定修正: 新旧で配送種別（宅配便/メール便）が変わるなら要修正
-    返り値: dict(価格チェック, 利益チェック, 配送設定要修正, 新利益額, 新利益率)
+    梱包サイズ変更のチェック（シート「梱包サイズ変更」B〜C列の再現）。
+      利益チェック: 新サイズの送料・資材で利益率が margin_warn 以上か
+      配送設定修正: 新旧で配送種別（宅配便/メール便）が変わるなら要修正
+    返り値: dict(利益チェック, 配送設定要修正, 新利益額, 新利益率)
     """
-    if rakuten_price is None:
-        price_ok = "-"
-    else:
-        price_ok = "〇" if excel_round(ne_price * (1 + params["tax_rate"])) == rakuten_price else "×"
-
     fee, q = variable_cost(cur_price, cost, shipping_new, material_new, params)
     m = profit_base_price(cur_price, delivery_old, params)
     profit = m - q
@@ -128,7 +122,6 @@ def size_change_check(ne_price, cur_price, cost, shipping_new, material_new,
     profit_ok = "〇" if (margin is not None and margin >= params["margin_warn"]) else "×"
 
     return {
-        "価格チェック": price_ok,
         "利益チェック": profit_ok,
         "配送設定要修正": "要修正" if delivery_old != delivery_new else "不要",
         "新利益額": profit,

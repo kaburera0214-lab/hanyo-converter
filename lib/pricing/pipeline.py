@@ -53,7 +53,9 @@ def build_price_rows(matched, c_cost, cost_table, params, mode="normal",
     mode: "normal"=納品価格変更 / "direct"=直送（送料手入力・資材0・込み換算なし）
     force_reprice: 据え置きルールを外し、下代が同じ/値下げでも再設定する（サイズ変更由来）
     overrides: {商品コード: 手修正価格}
-    cur_prices: {商品コード(小文字): 楽天から取得した現在販売価格}。あればNE売価×1.1より優先
+    cur_prices: {商品コード(小文字): 楽天から取得した現在販売価格}。
+                販売価格は楽天でのみ管理しているため、これが唯一の現販売価格の源
+                （未取得の商品は計算不可になる。NE売価での代用はしない）
     """
     overrides = overrides or {}
     cur_prices = cur_prices or {}
@@ -66,19 +68,12 @@ def build_price_rows(matched, c_cost, cost_table, params, mode="normal",
         warn = []
         new_cost = calc.to_number(r[c_cost]) if c_cost else None
         old_cost = calc.to_number(info.get("原価"))
-        ne_price = calc.to_number(info.get("売価"))
         if new_cost is None:
             warn.append("新下代が空")
-        derived = calc.excel_round(ne_price * (1 + params["tax_rate"])) if ne_price else 0
         rakuten = cur_prices.get(code.lower())
-        if rakuten:
-            cur_price, price_src = int(rakuten), "楽天"
-            if derived and derived != cur_price:
-                warn.append(f"NE売価×1.1({derived:,}円)と楽天価格({cur_price:,}円)が不一致")
-        else:
-            cur_price, price_src = derived, ("NE売価×1.1" if derived else "")
-            if not ne_price:
-                warn.append("現販売価格なし → 📡「楽天から現在価格を取得」を押してください")
+        cur_price = int(rakuten) if rakuten else 0
+        if not cur_price:
+            warn.append("現販売価格が未取得 → 📡「楽天から現在価格を取得」を押してください")
 
         # 項目1（サイズ）→ 送料・資材・配送種別（入力CSVの項目1列があれば上書き）
         size = masters.norm_key(r[c_size]) if (c_size and str(r[c_size]).strip()) else info.get("項目1", "")
@@ -103,7 +98,7 @@ def build_price_rows(matched, c_cost, cost_table, params, mode="normal",
 
         row = {
             "商品コード": code, "商品名": info.get("商品名", ""), "項目1": size,
-            "配送種別": delivery, "現販売価格": cur_price, "価格取得元": price_src,
+            "配送種別": delivery, "現販売価格": cur_price,
             "旧下代": old_cost, "新下代": new_cost,
         }
         if new_cost is None or not cur_price or shipping is None:
@@ -139,36 +134,32 @@ def build_price_rows(matched, c_cost, cost_table, params, mode="normal",
 
 def size_change_rows(matched, c_size, c_rprice, cost_table, params, cur_prices=None):
     """梱包サイズ変更のチェック行リストを作る。
-    cur_prices: {商品コード(小文字): 楽天から取得した現在販売価格}（CSVの楽天販売価格列が優先）。"""
+    現販売価格はCSVの楽天販売価格列＞楽天から取得した価格（cur_prices）の順。NE売価は使わない。"""
     cur_prices = cur_prices or {}
     rows = []
     for r, info in matched:
         code = info["商品コード"]
         old_size = info.get("項目1", "")
         new_size = masters.norm_key(r[c_size])
-        ne_price = calc.to_number(info.get("売価"), 0)
         cost = calc.to_number(info.get("原価"), 0)
-        rakuten = calc.to_number(r[c_rprice]) if c_rprice else None
-        if rakuten is None:
-            rakuten = cur_prices.get(code.lower())
-        cur_price = rakuten or (calc.excel_round(ne_price * (1 + params["tax_rate"])) if ne_price else 0)
+        cur_price = calc.to_number(r[c_rprice]) if c_rprice else None
+        if cur_price is None:
+            cur_price = cur_prices.get(code.lower(), 0)
         old = cost_table.get(old_size)
         new = cost_table.get(new_size)
         row = {"商品コード": code, "商品名": info.get("商品名", ""),
                "旧項目1": old_size, "新項目1": new_size, "現販売価格": cur_price}
         if new is None or new[0] is None or not cur_price:
             why = (f"新サイズ「{new_size}」が送料マスタに無い" if new is None or new[0] is None
-                   else "現販売価格なし → 📡楽天から取得するか、CSVに楽天販売価格列を追加")
-            row.update({"価格チェック": "-", "利益チェック": "-",
-                        "配送設定": "-", "新利益率": None, "警告": why})
+                   else "現販売価格が未取得 → 📡「楽天から現在価格を取得」を押してください")
+            row.update({"利益チェック": "-", "配送設定": "-", "新利益率": None, "警告": why})
         else:
             chk = calc.size_change_check(
-                ne_price, cur_price, cost,
+                cur_price, cost,
                 shipping_new=new[0], material_new=(new[1] or 0.0),
                 delivery_old=(old[2] if old else "宅配便"), delivery_new=new[2],
-                params=params, rakuten_price=rakuten)
-            row.update({"価格チェック": chk["価格チェック"],
-                        "利益チェック": chk["利益チェック"],
+                params=params)
+            row.update({"利益チェック": chk["利益チェック"],
                         "配送設定": chk["配送設定要修正"],
                         "新利益率": chk["新利益率"], "警告": ""})
         rows.append(row)

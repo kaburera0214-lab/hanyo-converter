@@ -98,20 +98,17 @@ def test_direct_mode():
 
 
 def test_size_change_check():
-    """サイズ変更チェック: 宅配便60→nekopは配送設定要修正、利益率で〇×"""
+    """サイズ変更チェック: メール便→宅配便は配送設定要修正、利益率で〇×"""
     chk = calc.size_change_check(
-        ne_price=800, cur_price=880, cost=446,
+        cur_price=880, cost=446,
         shipping_new=269, material_new=23,
-        delivery_old="メール便", delivery_new="メール便",
-        params=P, rakuten_price=880)
-    assert chk["価格チェック"] == "〇"      # 800*1.1=880
+        delivery_old="メール便", delivery_new="メール便", params=P)
     assert chk["配送設定要修正"] == "不要"
+    assert chk["利益チェック"] == "〇"
     chk2 = calc.size_change_check(
-        ne_price=800, cur_price=880, cost=446,
+        cur_price=880, cost=446,
         shipping_new=675, material_new=30.5,
-        delivery_old="メール便", delivery_new="宅配便",
-        params=P, rakuten_price=990)
-    assert chk2["価格チェック"] == "×"
+        delivery_old="メール便", delivery_new="宅配便", params=P)
     assert chk2["配送設定要修正"] == "要修正"
     assert chk2["利益チェック"] == "×"      # 送料が上がって利益率10%未満
 

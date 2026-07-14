@@ -74,9 +74,8 @@ cost_df = st.session_state["pricing_cost_df"]
 
 with st.expander("🚚 送料・資材マスタ（この画面だけで管理・行の追加・削除・編集）", expanded=False):
     st.caption(f"取得元: {st.session_state['pricing_cost_src']}。"
-               "表を直接編集できます。行の追加＝最下段の空行に入力、"
-               "行の削除＝左端のチェックで行を選び右上のゴミ箱。"
-               "**変更したら「Driveに保存」を押してください**（次回から保存版を自動で読み込みます）。")
+               "表を直接編集すると**自動で保存されます**（ボタン不要）。"
+               "行の追加＝最下段の空行に入力、行の削除＝左端のチェックで行を選び右上のゴミ箱。")
     edited_cost = st.data_editor(
         cost_df, key="cost_editor", num_rows="dynamic",
         use_container_width=True, hide_index=True,
@@ -86,23 +85,23 @@ with st.expander("🚚 送料・資材マスタ（この画面だけで管理・
             "資材": st.column_config.NumberColumn("資材(円)"),
             "配送種別": st.column_config.SelectboxColumn("配送種別", options=["宅配便", "メール便"]),
         })
-    c1, c2 = st.columns(2)
-    if c1.button("💾 Driveに保存", key="cost_save", type="primary"):
+    # 編集を検知したら即Driveへ保存（正本を常に最新に保つ）
+    edited_norm = masters.normalize_cost_df(edited_cost)
+    if not edited_norm.equals(cost_df):
+        st.session_state["pricing_cost_df"] = edited_norm
         try:
-            masters.save_cost_master_drive(edited_cost, product_folder)
-            st.session_state["pricing_cost_df"] = edited_cost
+            masters.save_cost_master_drive(edited_norm, product_folder)
             st.session_state["pricing_cost_src"] = "Drive保存版"
-            st.success("送料・資材マスタをDriveに保存しました。")
-            st.rerun()
+            st.toast("送料・資材マスタを保存しました ✅")
         except Exception as e:  # noqa: BLE001
-            st.error(f"Drive保存に失敗しました: {e}")
-    if c2.button("🔄 Driveの保存版を読み直す（編集を破棄）", key="cost_reload"):
+            st.warning(f"Drive保存に失敗しました（この画面の計算には反映済み）: {e}")
+    if st.button("🔄 Driveの保存版を読み直す", key="cost_reload"):
         for k in ("pricing_cost_df", "pricing_cost_src"):
             st.session_state.pop(k, None)
         st.rerun()
 
-# 計算にはこの画面での編集内容を即時反映（保存前でも有効）
-cost_table = masters.cost_lookup(edited_cost)
+# 計算にはこの画面での編集内容を即時反映
+cost_table = masters.cost_lookup(edited_norm)
 
 
 # ══ NE商品マスタ（汎用マスタ変換と共通） ════════════════════
@@ -139,8 +138,8 @@ if ne_df is None:
 
 with st.expander("📚 NE商品マスタ（汎用マスタ変換と共通・毎回アップ不要）", expanded=(ne_df is None)):
     st.caption("汎用マスタ変換・請求書発行と同じ商品マスタを使います。"
-               "価格改定に必要な列は **商品コード・JANコード・原価（旧下代）・項目1**。"
-               "売価列は無くてOKです（現販売価格は📡楽天から自動取得。売価があれば未取得時の代用に使います）。"
+               "価格改定に必要な列は **商品コード・JANコード・原価（旧下代）・項目1** の4つだけ。"
+               "売価は使いません（現販売価格は必ず📡楽天から取得します）。"
                "ここでアップロードするとDriveにバックアップされ（master_日付_版数.csv）、"
                "他のページからも最新版として参照されます。")
     if product_folder:
@@ -149,17 +148,13 @@ with st.expander("📚 NE商品マスタ（汎用マスタ変換と共通・毎�
                        use_container_width=True)
     if ne_df is not None:
         st.success(f"NE商品マスタ利用中: {ne_meta}")
-        need = [c for c in ne_missing if c != "売価"]
-        if need:
+        if ne_missing:
             msgs = {"JANコード": "JANでの突合ができません",
                     "原価": "値上げ/値下げの判定と原価更新ができません",
                     "項目1": "送料・資材を引けません"}
             st.warning("このマスタには次の列がありません: "
-                       + "／".join(f"{c}（{msgs.get(c, '')}）" for c in need)
+                       + "／".join(f"{c}（{msgs.get(c, '')}）" for c in ne_missing)
                        + "。次回のNEカスタム更新時に列を追加してください。")
-        if "売価" in ne_missing:
-            st.info("売価列なしで運用中: 現販売価格は📡「楽天から現在価格を取得」が必須です"
-                    "（未取得の商品は計算不可になります）。")
     else:
         st.info("NE商品マスタが見つかりません。NEカスタムCSVをアップロードしてください。")
     if st.button("🔄 マスタを再取得（最新を読み直す）", key="pricing_ne_reload"):
@@ -238,7 +233,7 @@ def rakuten_price_controls(matched, key):
 
     楽天販売価格は楽天でしか管理していないため、RMS Item API 2.0でSKU単位で取得する。
     同じレスポンスからSKU対応表（楽天CSV出力に必要）も自動構築してDriveに保存する。
-    未取得の場合はNE売価×1.1で計算する（結果表の「価格取得元」列で区別できる）。
+    販売価格は楽天でのみ管理しているため、未取得の商品は計算不可になる（NE売価での代用はしない）。
     """
     codes = [info["商品コード"] for _, info in matched]
     cache = st.session_state.setdefault("pricing_rk_prices", {})
@@ -263,11 +258,11 @@ def rakuten_price_controls(matched, key):
                        + ", ".join(list(errors)[:10]) + (" …" if len(errors) > 10 else ""))
         st.rerun()
     if not rakuten_price.is_configured():
-        c2.caption("RMSキー（RMS_SERVICE_SECRET / RMS_LICENSE_KEY）未設定のため取得不可。"
-                   "NE売価×1.1で計算します。")
+        c2.caption("⚠️ RMSキー（RMS_SERVICE_SECRET / RMS_LICENSE_KEY）未設定のため取得できません。"
+                   "現販売価格が無いと計算できません。")
     else:
-        c2.caption(f"楽天価格 取得済み {have}/{len(codes)}件。未取得分はNE売価×1.1で計算します"
-                   "（結果表の「価格取得元」列で確認できます）。")
+        c2.caption(f"楽天価格 取得済み {have}/{len(codes)}件。"
+                   "**現販売価格は楽天から取得したものだけを使います**（未取得の商品は計算不可）。")
     return cache
 
 
@@ -455,10 +450,10 @@ with tab2:
 
 # ── タブ3: 梱包サイズ変更 ───────────────────────────────────
 with tab3:
-    st.markdown("##### 入力CSV: **JAN（またはNE商品コード）・新項目1（新サイズ）** ＋ 任意列（楽天販売価格）")
-    st.caption("①販売価格チェック（NE売価×1.1＝楽天価格か・楽天販売価格列がある場合のみ） "
-               "②利益チェック（新サイズの送料・資材で利益率が警告ライン以上か） "
-               "③配送設定修正（宅配便⇔メール便が変わるか）")
+    st.markdown("##### 入力CSV: **JAN（またはNE商品コード）・新項目1（新サイズ）**")
+    st.caption("①利益チェック（新サイズの送料・資材で、現在の楽天価格のままだと利益率が警告ライン以上か） "
+               "②配送設定修正（宅配便⇔メール便が変わるか）。"
+               "現販売価格は📡「楽天から現在価格を取得」で取り込みます。")
     up3 = st.file_uploader("サイズ変更の入力CSV", type=["csv"], key="t3_upload")
     if up3 is not None and ne_df is None:
         st.error("先に上の「NE商品マスタ」からNEカスタムCSVをアップロードしてください。")

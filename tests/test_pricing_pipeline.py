@@ -17,16 +17,21 @@ P = dict(calc.DEFAULT_PARAMS)
 
 
 def _ne_master():
+    # 売価はNEで管理していないため列自体が無い（現販売価格は楽天から取得する運用）
     csv = (
-        "商品コード,商品名,JANコード,売価,原価,項目1\n"
-        "miya0284,テスト宮商品,4900000000284,6500,5100,60\n"
-        "kwgc0414,テストKWGC,4900000000414,1600,900,yuup3\n"
-        "artc9999,テスト値下げ,4900000009999,2000,1500,80\n"
-        "slvb0144,テストサイズ変更,4900000000144,800,480,yuup3\n"
+        "商品コード,商品名,JANコード,原価,項目1\n"
+        "miya0284,テスト宮商品,4900000000284,5100,60\n"
+        "kwgc0414,テストKWGC,4900000000414,900,yuup3\n"
+        "artc9999,テスト値下げ,4900000009999,1500,80\n"
+        "slvb0144,テストサイズ変更,4900000000144,480,yuup3\n"
     ).encode("cp932")
     df, missing = masters.load_ne_master(csv)
     assert missing == []
     return masters.build_lookup(df)
+
+
+# 楽天から取得した現在販売価格（テスト用の固定値）
+RK_PRICES = {"miya0284": 7150, "kwgc0414": 1760, "artc9999": 2200, "slvb0144": 880}
 
 
 def _cost_table():
@@ -47,7 +52,7 @@ def test_tab1_end_to_end():
     matched, unmatched = pipeline.match_input(in_df, None, c_jan, jan_map, code_info)
     assert len(matched) == 3 and unmatched == ["JAN 4999999999999"]
 
-    rows = pipeline.build_price_rows(matched, c_cost, cost_table, P)
+    rows = pipeline.build_price_rows(matched, c_cost, cost_table, P, cur_prices=RK_PRICES)
     by_code = {r["商品コード"]: r for r in rows}
 
     # miya0284: 現価格=6500*1.1=7150、値上げ率価格=7150*5200/5100=7290 < 9103 → 20%価格
@@ -92,7 +97,8 @@ def test_tab2_direct_end_to_end():
     in_df = pd.DataFrame([{"JAN": "4900000000284", "新下代": "5200", "新送料": "1000"}])
     c_jan = pipeline.pick_col(in_df, "JAN")
     matched, unmatched = pipeline.match_input(in_df, None, c_jan, jan_map, code_info)
-    rows = pipeline.build_price_rows(matched, "新下代", {}, P, mode="direct", c_ship="新送料")
+    rows = pipeline.build_price_rows(matched, "新下代", {}, P, mode="direct", c_ship="新送料",
+                                     cur_prices=RK_PRICES)
     # Q=(1000+0+715+5200)*1.1=7606.5 → 20%価格9508 vs 値上げ率7290 → 9508
     assert rows[0]["新販売価格"] == 9508
 
@@ -105,18 +111,19 @@ def test_tab3_size_change_end_to_end():
         {"JAN": "4900000000414", "新項目1": "nekop", "楽天販売価格": ""},   # メール便同士
     ])
     matched, _ = pipeline.match_input(in_df, None, "JAN", jan_map, code_info)
-    rows = pipeline.size_change_rows(matched, "新項目1", "楽天販売価格", cost_table, P)
+    rows = pipeline.size_change_rows(matched, "新項目1", "楽天販売価格", cost_table, P,
+                                     cur_prices=RK_PRICES)
     by_code = {r["商品コード"]: r for r in rows}
 
     r = by_code["slvb0144"]  # 880円のまま60サイズ宅配便になると利益NG・配送設定要修正
-    assert r["価格チェック"] == "〇"          # 800*1.1=880
+    assert r["現販売価格"] == 880             # CSVの楽天販売価格列を優先
     assert r["配送設定"] == "要修正"
     assert r["利益チェック"] == "×"
 
     r = by_code["kwgc0414"]  # yuup3→nekop（メール便同士・送料下がる）
+    assert r["現販売価格"] == 1760            # CSVに無ければ楽天取得価格
     assert r["配送設定"] == "不要"
     assert r["利益チェック"] == "〇"
-    assert r["価格チェック"] == "-"           # 楽天価格未提供
 
     item1 = ex.ne_item1_csv([{"商品コード": r["商品コード"], "新項目1": r["新項目1"]}
                              for r in rows]).decode("cp932")
@@ -165,21 +172,21 @@ def test_rakuten_sku_master_and_export():
     assert diff == ["kei0001"]
 
 
-def test_rakuten_cur_prices_priority():
-    """楽天から取得した現在価格がNE売価×1.1より優先され、不一致は警告に出る"""
+def test_rakuten_price_required():
+    """現販売価格は楽天から取得したものだけを使う（未取得は計算不可・NE売価での代用なし）"""
     jan_map, code_info = _ne_master()
     cost_table = _cost_table()
     in_df = pd.DataFrame([{"商品コード": "miya0284", "新下代": "5200"}])
     matched, _ = pipeline.match_input(in_df, "商品コード", None, jan_map, code_info)
-    # 楽天の実価格7480円（NE売価×1.1=7150円とズレている想定）
+    # 取得済みなら計算できる
     rows = pipeline.build_price_rows(matched, "新下代", cost_table, P,
-                                     cur_prices={"miya0284": 7480})
-    r = rows[0]
-    assert r["現販売価格"] == 7480 and r["価格取得元"] == "楽天"
-    assert "不一致" in r["警告"]
-    # 未取得ならNE売価×1.1にフォールバック
+                                     cur_prices={"miya0284": 7150})
+    assert rows[0]["現販売価格"] == 7150 and rows[0]["新販売価格"] == 9103
+    # 未取得は計算不可（フォールバックしない）
     rows2 = pipeline.build_price_rows(matched, "新下代", cost_table, P)
-    assert rows2[0]["現販売価格"] == 7150 and rows2[0]["価格取得元"] == "NE売価×1.1"
+    assert rows2[0]["新販売価格"] is None
+    assert rows2[0]["適用ルール"] == "計算不可"
+    assert "未取得" in rows2[0]["警告"]
 
 
 def test_match_variants():
@@ -212,11 +219,12 @@ def test_overrides_and_force():
     in_df = pd.DataFrame([{"商品コード": "artc9999", "新下代": "1200"}])
     matched, _ = pipeline.match_input(in_df, "商品コード", None, jan_map, code_info)
     # force_reprice: 値下げでも20%価格に再設定される
-    rows = pipeline.build_price_rows(matched, "新下代", cost_table, P, force_reprice=True)
+    rows = pipeline.build_price_rows(matched, "新下代", cost_table, P, force_reprice=True,
+                                     cur_prices=RK_PRICES)
     assert rows[0]["新販売価格"] != rows[0]["現販売価格"]
     # 手修正が最優先
     rows = pipeline.build_price_rows(matched, "新下代", cost_table, P,
-                                     overrides={"artc9999": 3300})
+                                     overrides={"artc9999": 3300}, cur_prices=RK_PRICES)
     assert rows[0]["新販売価格"] == 3300 and rows[0]["適用ルール"] == "手修正"
 
 

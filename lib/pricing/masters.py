@@ -6,9 +6,9 @@
    正本は Drive の pricing_cost_master.csv（画面で行の追加・削除・編集→保存）。
    スプレッドシートとは紐づけない（初期値のみ同梱の lib/pricing/data/cost_master.csv）。
 
-2) NE商品マスタ（JAN→商品コード・原価・項目1。売価は任意）
+2) NE商品マスタ（JAN→商品コード・原価・項目1）
    汎用マスタ変換・請求書発行と共通（リポジトリの master.csv ／ Driveの master_YYYYMMDD_NNN.csv）。
-   現販売価格は楽天から自動取得する運用のため、売価列は無くてもよい（あればフォールバックに使う）。
+   売価はNEで管理していない項目のため一切使わない（現販売価格は必ず楽天APIから取得）。
 
 3) 楽天SKU対応表（NE商品コード → 商品管理番号・SKU管理番号）
    「楽天から現在価格を取得」時にRMS APIのレスポンスから自動構築し（rakuten_price）、
@@ -31,10 +31,10 @@ RAKUTEN_SKU_MASTER_NAME = "rakuten_sku_master.csv"
 _DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 
 # 列名のゆらぎ → 正規名
+# ※売価はNEで管理していない項目のため扱わない（現販売価格は楽天APIから取得する）
 _COL_ALIASES = {
     "JANコード": ("JANコード", "JAN", "jan", "JANCD", "JANcd"),
     "商品コード": ("商品コード", "商品CD", "商品cd", "syohin_code"),
-    "売価": ("売価", "販売価格", "商品価格", "NE売価", "baika_tnk"),
     "原価": ("原価", "仕入原価", "下代", "NE原価", "仕入価格", "genka_tnk"),
     "項目1": ("項目1", "項目１"),
 }
@@ -69,7 +69,7 @@ def _mail_or_takuhai(key):
     return "メール便" if key in ("nekop", "yuup1", "yuup2", "yuup3", "1", "3") else "宅配便"
 
 
-def _normalize_cost_df(df):
+def normalize_cost_df(df):
     """送料・資材マスタDataFrameの型を揃える（項目1=str、送料/資材=数値、配送種別を補完）。"""
     df = df.copy()
     df["項目1"] = df["項目1"].map(norm_key)
@@ -89,7 +89,7 @@ def load_cost_master_bundled():
     """同梱CSV（シートから抽出したスナップショット）を読む。"""
     path = os.path.join(_DATA_DIR, "cost_master.csv")
     df = pd.read_csv(path, dtype=str, encoding="utf-8-sig").fillna("")
-    return _normalize_cost_df(df)
+    return normalize_cost_df(df)
 
 
 def load_cost_master_drive(folder_id):
@@ -99,12 +99,12 @@ def load_cost_master_drive(folder_id):
         return None
     raw = drive_master.download_bytes(f["id"])
     df = _norm_columns(csv_import.read_csv_auto(raw))
-    return _normalize_cost_df(df)
+    return normalize_cost_df(df)
 
 
 def save_cost_master_drive(df, folder_id):
     """送料・資材マスタをDriveへ保存（上書き）。"""
-    df = _normalize_cost_df(df)
+    df = normalize_cost_df(df)
     data = df.to_csv(index=False, lineterminator="\r\n").encode("utf-8-sig")
     return drive_master.upload_or_replace(data, COST_MASTER_NAME, folder_id)
 
@@ -132,11 +132,11 @@ def cost_lookup(df):
 # ── NE商品マスタ（汎用マスタ変換と共通） ─────────────────
 
 def load_ne_master(file_bytes):
-    """NEカスタム(商品マスタ)CSVを読む。商品コード必須。売価・原価・JAN・項目1は有無を検査して返す。"""
+    """NEカスタム(商品マスタ)CSVを読む。商品コード必須。原価・JAN・項目1は有無を検査して返す。"""
     df = _norm_columns(csv_import.read_csv_auto(file_bytes))
     if "商品コード" not in df.columns:
         raise ValueError(f"必須列「商品コード」が見つかりません / 実際の列: {list(df.columns)}")
-    missing = [c for c in ("JANコード", "売価", "原価", "項目1") if c not in df.columns]
+    missing = [c for c in ("JANコード", "原価", "項目1") if c not in df.columns]
     return df, missing
 
 
@@ -152,7 +152,7 @@ def load_repo_master(repo_root):
 def build_lookup(ne_df):
     """
     NE商品マスタ → 突合用のインデックスを作る。
-    返り値: (jan→商品コード dict, 商品コード(小文字)→{売価,原価,項目1,商品名} dict)
+    返り値: (jan→商品コード dict, 商品コード(小文字)→{原価,項目1,商品名} dict)
     """
     cols = ne_df.columns
     jan_map = {}
@@ -168,7 +168,6 @@ def build_lookup(ne_df):
         info[code.lower()] = {
             "商品コード": code,
             "商品名": str(r.get("商品名", "") or ""),
-            "売価": r.get("売価", ""),
             "原価": r.get("原価", ""),
             "項目1": norm_key(r.get("項目1", "")) if "項目1" in cols else "",
         }
