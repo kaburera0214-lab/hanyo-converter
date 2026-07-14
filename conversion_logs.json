@@ -889,5 +889,14 @@
     "rows": 107,
     "error": "不明JAN: 1件",
     "unknown_jan": 1
+  },
+  {
+    "ts": "2026-07-14T07:52:07",
+    "func": "shipment_std",
+    "template": null,
+    "orders": 101,
+    "rows": 101,
+    "error": null,
+    "unknown_jan": 0
   }
 ]
