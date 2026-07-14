@@ -161,6 +161,37 @@ def test_rakuten_sku_master_and_export():
     assert diff == ["kei0001"]
 
 
+def test_rakuten_cur_prices_priority():
+    """楽天から取得した現在価格がNE売価×1.1より優先され、不一致は警告に出る"""
+    jan_map, code_info = _ne_master()
+    cost_table = _cost_table()
+    in_df = pd.DataFrame([{"商品コード": "miya0284", "新下代": "5200"}])
+    matched, _ = pipeline.match_input(in_df, "商品コード", None, jan_map, code_info)
+    # 楽天の実価格7480円（NE売価×1.1=7150円とズレている想定）
+    rows = pipeline.build_price_rows(matched, "新下代", cost_table, P,
+                                     cur_prices={"miya0284": 7480})
+    r = rows[0]
+    assert r["現販売価格"] == 7480 and r["価格取得元"] == "楽天"
+    assert "不一致" in r["警告"]
+    # 未取得ならNE売価×1.1にフォールバック
+    rows2 = pipeline.build_price_rows(matched, "新下代", cost_table, P)
+    assert rows2[0]["現販売価格"] == 7150 and rows2[0]["価格取得元"] == "NE売価×1.1"
+
+
+def test_resolve_pairs():
+    """NEコード→(商品管理番号, SKU管理番号)の解決（対応表あり/なし）"""
+    from lib.pricing import rakuten_price
+    table = {"kei0001-01": ("kei0001", "8577", "kei0001-01")}
+    pairs = rakuten_price.resolve_pairs(["kei0001-01", "kei0018", "zzz0001-02"], table)
+    assert pairs["kei0001-01"] == ("kei0001", "8577")
+    assert pairs["kei0018"] == ("kei0018", "kei0018")       # 対応表なし単品
+    assert pairs["zzz0001-02"] == ("zzz0001", "zzz0001-02")  # 対応表なし枝番→親推定
+    prices = rakuten_price.prices_by_code(
+        ["kei0001-01", "kei0018"], table,
+        {("kei0001", "8577"): 2530, ("kei0018", "kei0018"): 2783})
+    assert prices == {"kei0001-01": 2530, "kei0018": 2783}
+
+
 def test_overrides_and_force():
     """手修正・据え置き外し（サイズ変更由来の再設定）"""
     jan_map, code_info = _ne_master()

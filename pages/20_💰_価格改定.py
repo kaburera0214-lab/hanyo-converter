@@ -23,7 +23,7 @@ st.caption("インプットCSV（JAN・新下代）→ 楽天・Yahoo・ネク�
            "アップロード（本番反映）は必ず内容を確認してから手動で行ってください。")
 
 from lib.invoice import csv_import, drive_master
-from lib.pricing import calc, export as ex, masters, pipeline
+from lib.pricing import calc, export as ex, masters, pipeline, rakuten_price
 
 _REPO_ROOT = os.path.join(os.path.dirname(__file__), "..")
 
@@ -160,7 +160,12 @@ with st.expander("📚 NE商品マスタ（汎用マスタ変換と共通・毎�
     st.caption("汎用マスタ変換・請求書発行と同じ商品マスタを使います。"
                "価格改定には **商品コード・JANコード・売価・原価・項目1** の列が必要です。"
                "ここでアップロードするとDriveにバックアップされ（master_日付_版数.csv）、"
-               "他のページからも最新版として参照されます。")
+               "他のページからも最新版として参照されます。"
+               "**原価（旧下代）はNEカスタムの項目に含めてアップしてください。**")
+    if product_folder:
+        st.link_button("📁 商品マスタのDriveフォルダを開く",
+                       f"https://drive.google.com/drive/folders/{product_folder}",
+                       use_container_width=True)
     if ne_df is not None:
         st.success(f"NE商品マスタ利用中: {ne_meta}")
         if ne_missing:
@@ -243,6 +248,43 @@ sku_table = masters.sku_lookup(sku_df) if sku_df is not None else {}
 
 
 # ══ 画面部品 ════════════════════════════════════════════════
+
+def rakuten_price_controls(matched, key):
+    """楽天から現在販売価格を取得するボタン＋状態表示。取得済み価格の辞書を返す。
+
+    楽天販売価格は楽天でしか管理していないため、RMS Item API 2.0でSKU単位で取得する。
+    未取得・未設定の場合はNE売価×1.1で計算する（結果表の「価格取得元」列で区別できる）。
+    """
+    codes = [info["商品コード"] for _, info in matched]
+    cache = st.session_state.setdefault("pricing_rk_prices", {})
+    have = sum(1 for c in codes if c.lower() in cache)
+    c1, c2 = st.columns([1, 2])
+    if c1.button("📡 楽天から現在価格を取得", key=key + "_rkfetch",
+                 disabled=not rakuten_price.is_configured(),
+                 help="RMS Item API 2.0でSKU単位の販売価格を取得します"):
+        pairs = rakuten_price.resolve_pairs(codes, sku_table)
+        parents = list(dict.fromkeys(p for p, _ in pairs.values()))
+        bar = st.progress(0.0, text=f"楽天から取得中… 0/{len(parents)}商品")
+        sku_prices, errors, warnings = rakuten_price.fetch_sku_prices(
+            parents,
+            on_progress=lambda done, total: bar.progress(
+                done / max(total, 1), text=f"楽天から取得中… {done}/{total}商品"))
+        bar.empty()
+        cache.update(rakuten_price.prices_by_code(codes, sku_table, sku_prices))
+        for w in warnings:
+            st.warning(w)
+        if errors:
+            st.warning(f"取得できなかった商品 {len(errors)}件: "
+                       + ", ".join(list(errors)[:10]) + (" …" if len(errors) > 10 else ""))
+        st.rerun()
+    if not rakuten_price.is_configured():
+        c2.caption("RMSキー（RMS_SERVICE_SECRET / RMS_LICENSE_KEY）未設定のため取得不可。"
+                   "NE売価×1.1で計算します。")
+    else:
+        c2.caption(f"楽天価格 取得済み {have}/{len(codes)}件。未取得分はNE売価×1.1で計算します"
+                   "（結果表の「価格取得元」列で確認できます）。")
+    return cache
+
 
 def show_unmatched(unmatched):
     if unmatched:
@@ -381,10 +423,12 @@ with tab1:
             matched, unmatched = pipeline.match_input(in_df, c_code, c_jan, jan_map, code_info)
             show_unmatched(unmatched)
             if matched:
+                cur_prices = rakuten_price_controls(matched, "t1")
                 rows = pipeline.build_price_rows(
                     matched, c_cost, cost_table, params, mode="normal",
                     c_fixed=c_fixed, c_pct=c_pct, c_size=c_size, force_reprice=force,
-                    overrides=st.session_state.get("t1_result_overrides"))
+                    overrides=st.session_state.get("t1_result_overrides"),
+                    cur_prices=cur_prices)
                 result_section(rows, "t1_result")
 
 # ── タブ2: 直送価格＆送料変更 ───────────────────────────────
@@ -416,10 +460,12 @@ with tab2:
                 matched, unmatched = pipeline.match_input(in_df2, c_code, c_jan, jan_map, code_info)
                 show_unmatched(unmatched)
                 if matched:
+                    cur_prices = rakuten_price_controls(matched, "t2")
                     rows = pipeline.build_price_rows(
                         matched, c_cost, cost_table, params, mode="direct",
                         c_fixed=c_fixed, c_pct=c_pct, c_ship=c_ship,
-                        overrides=st.session_state.get("t2_result_overrides"))
+                        overrides=st.session_state.get("t2_result_overrides"),
+                        cur_prices=cur_prices)
                     result_section(rows, "t2_result")
 
 # ── タブ3: 梱包サイズ変更 ───────────────────────────────────
@@ -449,7 +495,9 @@ with tab3:
             else:
                 matched, unmatched = pipeline.match_input(in_df3, c_code, c_jan, jan_map, code_info)
                 show_unmatched(unmatched)
-                rows3 = pipeline.size_change_rows(matched, c_size, c_rprice, cost_table, params)
+                cur_prices = rakuten_price_controls(matched, "t3") if matched else {}
+                rows3 = pipeline.size_change_rows(matched, c_size, c_rprice, cost_table, params,
+                                                  cur_prices=cur_prices)
                 if rows3:
                     df3 = pd.DataFrame(rows3)
                     st.dataframe(df3, use_container_width=True, hide_index=True,
