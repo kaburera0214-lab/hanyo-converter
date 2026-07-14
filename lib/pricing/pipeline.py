@@ -78,7 +78,7 @@ def build_price_rows(matched, c_cost, cost_table, params, mode="normal",
         else:
             cur_price, price_src = derived, ("NE売価×1.1" if derived else "")
             if not ne_price:
-                warn.append("NE売価が空（現販売価格を出せない）")
+                warn.append("現販売価格なし → 📡「楽天から現在価格を取得」を押してください")
 
         # 項目1（サイズ）→ 送料・資材・配送種別（入力CSVの項目1列があれば上書き）
         size = masters.norm_key(r[c_size]) if (c_size and str(r[c_size]).strip()) else info.get("項目1", "")
@@ -158,7 +158,7 @@ def size_change_rows(matched, c_size, c_rprice, cost_table, params, cur_prices=N
                "旧項目1": old_size, "新項目1": new_size, "現販売価格": cur_price}
         if new is None or new[0] is None or not cur_price:
             why = (f"新サイズ「{new_size}」が送料マスタに無い" if new is None or new[0] is None
-                   else "NE売価が空")
+                   else "現販売価格なし → 📡楽天から取得するか、CSVに楽天販売価格列を追加")
             row.update({"価格チェック": "-", "利益チェック": "-",
                         "配送設定": "-", "新利益率": None, "警告": why})
         else:

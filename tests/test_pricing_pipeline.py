@@ -124,19 +124,23 @@ def test_tab3_size_change_end_to_end():
 
 
 def test_rakuten_sku_master_and_export():
-    """RMS商品一括DL → SKU対応表 → normal-item.csv（実物2024-01-16 keiの構造を再現）"""
-    rms = (
-        "商品管理番号（商品URL）,商品番号,SKU管理番号,システム連携用SKU番号,販売価格,表示価格\n"
-        "kei0001,kei0001,,,,\n"
-        "kei0001,,8577,kei0001-01,2530,2530\n"
-        "kei0001,,8578,kei0001-02,2530,2530\n"
-        "kei0018,kei0018,,,,\n"
-        "kei0018,,kei0018,,2530,2530\n"
-    ).encode("cp932")
-    sku_df = masters.parse_rakuten_item_csv(rms)
-    table = masters.sku_lookup(sku_df)
+    """SKU対応表（RMS APIレスポンス由来）→ 保存/復元 → normal-item.csv（実物の構造を再現）"""
+    from lib.pricing import rakuten_price
+    # RMS Item API 2.0 の variants からSKU対応表を構築（kei0001=2SKU, kei0018=単品）
+    info = rakuten_price.match_variants(
+        ["kei0001-01", "kei0001-02"], "kei0001",
+        {"8577": {"merchantDefinedSkuId": "kei0001-01", "standardPrice": 2530},
+         "8578": {"merchantDefinedSkuId": "kei0001-02", "standardPrice": 2530}})
+    info.update(rakuten_price.match_variants(
+        ["kei0018"], "kei0018", {"kei0018": {"standardPrice": 2530}}))
+    table = rakuten_price.to_sku_table(info)
     assert table["kei0001-01"] == ("kei0001", "8577", "kei0001-01")
     assert table["kei0018"] == ("kei0018", "kei0018", "")
+    assert rakuten_price.to_prices(info)["kei0001-01"] == 2530
+
+    # Drive保存形式との往復（df→dict）が崩れないこと
+    df = masters.sku_table_to_df(table)
+    assert masters.sku_lookup(df) == table
 
     mall = [
         {"商品コード": "kei0001-01", "楽天販売価格": 2783, "Yahoo販売価格": 2783},
@@ -178,18 +182,27 @@ def test_rakuten_cur_prices_priority():
     assert rows2[0]["現販売価格"] == 7150 and rows2[0]["価格取得元"] == "NE売価×1.1"
 
 
-def test_resolve_pairs():
-    """NEコード→(商品管理番号, SKU管理番号)の解決（対応表あり/なし）"""
+def test_match_variants():
+    """variantsとNEコードの照合（連携番号一致→SKU番号一致→単一SKU）"""
     from lib.pricing import rakuten_price
-    table = {"kei0001-01": ("kei0001", "8577", "kei0001-01")}
-    pairs = rakuten_price.resolve_pairs(["kei0001-01", "kei0018", "zzz0001-02"], table)
-    assert pairs["kei0001-01"] == ("kei0001", "8577")
-    assert pairs["kei0018"] == ("kei0018", "kei0018")       # 対応表なし単品
-    assert pairs["zzz0001-02"] == ("zzz0001", "zzz0001-02")  # 対応表なし枝番→親推定
-    prices = rakuten_price.prices_by_code(
-        ["kei0001-01", "kei0018"], table,
-        {("kei0001", "8577"): 2530, ("kei0018", "kei0018"): 2783})
-    assert prices == {"kei0001-01": 2530, "kei0018": 2783}
+    variants = {
+        "8577": {"merchantDefinedSkuId": "kei0001-01", "standardPrice": 2530},
+        "8578": {"merchantDefinedSkuId": "kei0001-02", "standardPrice": 2640},
+    }
+    out = rakuten_price.match_variants(["kei0001-01", "kei0001-02", "kei0001-99"],
+                                       "kei0001", variants)
+    assert out["kei0001-01"]["sku"] == "8577" and out["kei0001-01"]["price"] == 2530
+    assert out["kei0001-02"]["price"] == 2640
+    assert "kei0001-99" not in out  # 該当SKUなし→呼び出し側で再試行/エラー
+    # 単一SKU・連携番号なし（単品）はコード=親で拾える
+    out2 = rakuten_price.match_variants(["kei0018"], "kei0018",
+                                        {"kei0018": {"standardPrice": 2783}})
+    assert out2["kei0018"] == {"parent": "kei0018", "sku": "kei0018",
+                               "renkei": "", "price": 2783}
+    # SKU管理番号がNEコードと同じ命名の店舗パターン
+    out3 = rakuten_price.match_variants(["abc0001-01"], "abc0001",
+                                        {"abc0001-01": {"standardPrice": 500}})
+    assert out3["abc0001-01"]["sku"] == "abc0001-01"
 
 
 def test_overrides_and_force():

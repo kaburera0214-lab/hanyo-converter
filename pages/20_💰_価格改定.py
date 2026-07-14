@@ -48,9 +48,10 @@ with st.sidebar:
 
 
 # ══ 送料・資材マスタ（Drive保存・画面で追加/削除/編集） ══════
+# スプレッドシートとは紐づけず、この画面だけで管理する（初期値のみ同梱CSV）。
 
 def _init_cost_master():
-    """session → Drive → スプレッドシート → 同梱CSV の順で初期化。"""
+    """session → Drive保存版 → 同梱CSV（初期値） の順で初期化。"""
     if "pricing_cost_df" in st.session_state:
         return
     df, src = None, ""
@@ -58,20 +59,12 @@ def _init_cost_master():
         try:
             df = masters.load_cost_master_drive(product_folder)
             if df is not None:
-                src = "Drive保存版（この画面で編集・保存）"
+                src = "Drive保存版"
         except Exception as e:  # noqa: BLE001
             st.caption(f"（Driveの送料マスタ読込をスキップ: {e}）")
     if df is None:
-        sheet_id = st.secrets.get("PRICING_SHEET_ID", "")
-        if sheet_id:
-            try:
-                df = masters.load_cost_master_from_sheet(sheet_id)
-                src = "スプレッドシートから初期取込（まだDrive未保存）"
-            except Exception as e:  # noqa: BLE001
-                st.caption(f"（シートからの取込をスキップ: {e}）")
-    if df is None:
         df = masters.load_cost_master_bundled()
-        src = "同梱CSV（初期値・まだDrive未保存）"
+        src = "初期値（まだDrive未保存）"
     st.session_state["pricing_cost_df"] = df
     st.session_state["pricing_cost_src"] = src
 
@@ -79,9 +72,10 @@ def _init_cost_master():
 _init_cost_master()
 cost_df = st.session_state["pricing_cost_df"]
 
-with st.expander("🚚 送料・資材マスタ（行の追加・削除・編集ができます）", expanded=False):
+with st.expander("🚚 送料・資材マスタ（この画面だけで管理・行の追加・削除・編集）", expanded=False):
     st.caption(f"取得元: {st.session_state['pricing_cost_src']}。"
-               "表を直接編集し、行の追加（最下行）・削除（行選択→ゴミ箱）ができます。"
+               "表を直接編集できます。行の追加＝最下段の空行に入力、"
+               "行の削除＝左端のチェックで行を選び右上のゴミ箱。"
                "**変更したら「Driveに保存」を押してください**（次回から保存版を自動で読み込みます）。")
     edited_cost = st.data_editor(
         cost_df, key="cost_editor", num_rows="dynamic",
@@ -92,29 +86,17 @@ with st.expander("🚚 送料・資材マスタ（行の追加・削除・編集
             "資材": st.column_config.NumberColumn("資材(円)"),
             "配送種別": st.column_config.SelectboxColumn("配送種別", options=["宅配便", "メール便"]),
         })
-    c1, c2, c3 = st.columns(3)
+    c1, c2 = st.columns(2)
     if c1.button("💾 Driveに保存", key="cost_save", type="primary"):
         try:
             masters.save_cost_master_drive(edited_cost, product_folder)
             st.session_state["pricing_cost_df"] = edited_cost
-            st.session_state["pricing_cost_src"] = "Drive保存版（この画面で編集・保存）"
+            st.session_state["pricing_cost_src"] = "Drive保存版"
             st.success("送料・資材マスタをDriveに保存しました。")
             st.rerun()
         except Exception as e:  # noqa: BLE001
             st.error(f"Drive保存に失敗しました: {e}")
-    if c2.button("📥 スプレッドシートから取り込み直す", key="cost_reimport",
-                 help="「送料表」「費用」タブの現在値を取り込みます（保存するまでDriveには反映されません）"):
-        sheet_id = st.secrets.get("PRICING_SHEET_ID", "")
-        if not sheet_id:
-            st.error("Secrets に PRICING_SHEET_ID が未設定です。")
-        else:
-            try:
-                st.session_state["pricing_cost_df"] = masters.load_cost_master_from_sheet(sheet_id)
-                st.session_state["pricing_cost_src"] = "スプレッドシートから再取込（まだDrive未保存）"
-                st.rerun()
-            except Exception as e:  # noqa: BLE001
-                st.error(f"シートからの取込に失敗: {e}")
-    if c3.button("🔄 Driveの保存版を読み直す", key="cost_reload"):
+    if c2.button("🔄 Driveの保存版を読み直す（編集を破棄）", key="cost_reload"):
         for k in ("pricing_cost_df", "pricing_cost_src"):
             st.session_state.pop(k, None)
         st.rerun()
@@ -145,9 +127,8 @@ if ne_df is None:
             candidates.append((mdf, missing, f"共有master.csv（汎用と共通・{len(mdf):,}件）"))
     except Exception as e:  # noqa: BLE001
         st.caption(f"（共有master.csvの読込をスキップ: {e}）")
-    # 売価・原価が揃っているものを優先。無ければ先頭（Drive優先）を使う
-    chosen = next(((d, m, meta) for d, m, meta in candidates
-                   if "売価" not in m and "原価" not in m), None)
+    # 原価（旧下代）があるものを優先。無ければ先頭（Drive優先）を使う
+    chosen = next(((d, m, meta) for d, m, meta in candidates if "原価" not in m), None)
     if chosen is None and candidates:
         chosen = candidates[0]
     if chosen:
@@ -158,20 +139,27 @@ if ne_df is None:
 
 with st.expander("📚 NE商品マスタ（汎用マスタ変換と共通・毎回アップ不要）", expanded=(ne_df is None)):
     st.caption("汎用マスタ変換・請求書発行と同じ商品マスタを使います。"
-               "価格改定には **商品コード・JANコード・売価・原価・項目1** の列が必要です。"
+               "価格改定に必要な列は **商品コード・JANコード・原価（旧下代）・項目1**。"
+               "売価列は無くてOKです（現販売価格は📡楽天から自動取得。売価があれば未取得時の代用に使います）。"
                "ここでアップロードするとDriveにバックアップされ（master_日付_版数.csv）、"
-               "他のページからも最新版として参照されます。"
-               "**原価（旧下代）はNEカスタムの項目に含めてアップしてください。**")
+               "他のページからも最新版として参照されます。")
     if product_folder:
         st.link_button("📁 商品マスタのDriveフォルダを開く",
                        f"https://drive.google.com/drive/folders/{product_folder}",
                        use_container_width=True)
     if ne_df is not None:
         st.success(f"NE商品マスタ利用中: {ne_meta}")
-        if ne_missing:
-            st.warning("このマスタには次の列がありません: " + "・".join(ne_missing) + "。"
-                       "**売価・原価が無いと価格計算ができません。** "
-                       "次回マスタ更新時は、NEカスタムのダウンロード項目に売価・原価も含めてください。")
+        need = [c for c in ne_missing if c != "売価"]
+        if need:
+            msgs = {"JANコード": "JANでの突合ができません",
+                    "原価": "値上げ/値下げの判定と原価更新ができません",
+                    "項目1": "送料・資材を引けません"}
+            st.warning("このマスタには次の列がありません: "
+                       + "／".join(f"{c}（{msgs.get(c, '')}）" for c in need)
+                       + "。次回のNEカスタム更新時に列を追加してください。")
+        if "売価" in ne_missing:
+            st.info("売価列なしで運用中: 現販売価格は📡「楽天から現在価格を取得」が必須です"
+                    "（未取得の商品は計算不可になります）。")
     else:
         st.info("NE商品マスタが見つかりません。NEカスタムCSVをアップロードしてください。")
     if st.button("🔄 マスタを再取得（最新を読み直す）", key="pricing_ne_reload"):
@@ -207,44 +195,40 @@ else:
     jan_map, code_info = {}, {}
 
 
-# ══ 楽天SKU対応表（RMS商品一括DLから作成・Drive保存） ═══════
+# ══ 楽天SKU対応表（📡取得時にRMS APIから自動構築・Drive保存） ═
 
-sku_df = st.session_state.get("pricing_sku_df")
-if sku_df is None and product_folder:
+if "pricing_sku_table" not in st.session_state:
+    table = {}
+    if product_folder:
+        try:
+            sku_df = masters.load_sku_master_drive(product_folder)
+            if sku_df is not None:
+                table = masters.sku_lookup(sku_df)
+        except Exception:  # noqa: BLE001
+            pass
+    st.session_state["pricing_sku_table"] = table
+
+sku_table = st.session_state["pricing_sku_table"]
+
+with st.expander("🔴 楽天SKU対応表（自動取得・アップロード不要）", expanded=False):
+    st.caption("楽天の価格CSV（normal-item.csv）に必要な**商品管理番号・SKU管理番号（楽天側の採番）**は、"
+               "📡「楽天から現在価格を取得」を押したときに**RMS APIのレスポンスから自動で取得**し、"
+               "Driveに保存して次回以降も使い回します。手作業でのCSVアップロードは不要です。")
+    if sku_table:
+        st.success(f"SKU対応表 保存済み {len(sku_table):,}件（📡取得のたびに自動で増えます）")
+    else:
+        st.info("SKU対応表はまだ空です。各タブで📡「楽天から現在価格を取得」を押すと自動で作られます。")
+
+
+def _save_sku_table():
+    """SKU対応表をDriveへ保存（ベストエフォート）。"""
+    if not product_folder:
+        return
     try:
-        sku_df = masters.load_sku_master_drive(product_folder)
-        if sku_df is not None:
-            st.session_state["pricing_sku_df"] = sku_df
+        masters.save_sku_master_drive(
+            masters.sku_table_to_df(st.session_state["pricing_sku_table"]), product_folder)
     except Exception:  # noqa: BLE001
         pass
-
-with st.expander("🔴 楽天SKU対応表（NE商品コード → 商品管理番号・SKU管理番号）", expanded=False):
-    st.caption("楽天の価格CSV（normal-item.csv）はSKU形式で、**SKU管理番号（楽天側の採番）**が必要です。"
-               "RMSの**商品一括ダウンロードCSV**をここにアップすると対応表を作ってDriveに保存します。"
-               "対応表に無い枝番付き商品（-01等）は楽天CSVから除外して警告します"
-               "（枝番なしの単品はそのまま出力できます）。")
-    if sku_df is not None:
-        st.success(f"楽天SKU対応表 利用中（{len(sku_df):,}SKU）")
-    else:
-        st.info("SKU対応表が未保存です。RMSの商品一括ダウンロードCSVをアップしてください。")
-    new_sku = st.file_uploader("RMS商品一括ダウンロードCSV（normal-item.csv形式）",
-                               type=["csv"], key="pricing_sku_upload")
-    if new_sku is not None:
-        try:
-            parsed = masters.parse_rakuten_item_csv(new_sku.getvalue())
-            st.session_state["pricing_sku_df"] = parsed
-            sku_df = parsed
-            st.success(f"SKU対応表を更新しました（{len(parsed):,}SKU）。")
-            if product_folder:
-                try:
-                    masters.save_sku_master_drive(parsed, product_folder)
-                    st.caption(f"Driveに保存しました（{masters.RAKUTEN_SKU_MASTER_NAME}・次回から自動読込）。")
-                except Exception as e:  # noqa: BLE001
-                    st.warning(f"⚠️ Drive保存に失敗（今回のセッションでは利用可能）: {e}")
-        except Exception as e:  # noqa: BLE001
-            st.error(f"SKU対応表の作成に失敗: {e}")
-
-sku_table = masters.sku_lookup(sku_df) if sku_df is not None else {}
 
 
 # ══ 画面部品 ════════════════════════════════════════════════
@@ -253,7 +237,8 @@ def rakuten_price_controls(matched, key):
     """楽天から現在販売価格を取得するボタン＋状態表示。取得済み価格の辞書を返す。
 
     楽天販売価格は楽天でしか管理していないため、RMS Item API 2.0でSKU単位で取得する。
-    未取得・未設定の場合はNE売価×1.1で計算する（結果表の「価格取得元」列で区別できる）。
+    同じレスポンスからSKU対応表（楽天CSV出力に必要）も自動構築してDriveに保存する。
+    未取得の場合はNE売価×1.1で計算する（結果表の「価格取得元」列で区別できる）。
     """
     codes = [info["商品コード"] for _, info in matched]
     cache = st.session_state.setdefault("pricing_rk_prices", {})
@@ -261,16 +246,16 @@ def rakuten_price_controls(matched, key):
     c1, c2 = st.columns([1, 2])
     if c1.button("📡 楽天から現在価格を取得", key=key + "_rkfetch",
                  disabled=not rakuten_price.is_configured(),
-                 help="RMS Item API 2.0でSKU単位の販売価格を取得します"):
-        pairs = rakuten_price.resolve_pairs(codes, sku_table)
-        parents = list(dict.fromkeys(p for p, _ in pairs.values()))
-        bar = st.progress(0.0, text=f"楽天から取得中… 0/{len(parents)}商品")
-        sku_prices, errors, warnings = rakuten_price.fetch_sku_prices(
-            parents,
+                 help="RMS Item API 2.0でSKU単位の販売価格とSKU番号を取得します"):
+        bar = st.progress(0.0, text="楽天から取得中…")
+        info, errors, warnings = rakuten_price.fetch_for_codes(
+            codes, sku_table,
             on_progress=lambda done, total: bar.progress(
                 done / max(total, 1), text=f"楽天から取得中… {done}/{total}商品"))
         bar.empty()
-        cache.update(rakuten_price.prices_by_code(codes, sku_table, sku_prices))
+        cache.update(rakuten_price.to_prices(info))
+        st.session_state["pricing_sku_table"].update(rakuten_price.to_sku_table(info))
+        _save_sku_table()
         for w in warnings:
             st.warning(w)
         if errors:

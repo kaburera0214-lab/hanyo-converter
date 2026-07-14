@@ -4,20 +4,18 @@
 
 1) 送料・資材マスタ（項目1のサイズコード → 送料/資材/配送種別）
    正本は Drive の pricing_cost_master.csv（画面で行の追加・削除・編集→保存）。
-   初期値はスプレッドシート（Secrets PRICING_SHEET_ID の「送料表」「費用」タブ）
-   または同梱の lib/pricing/data/cost_master.csv から取り込む。
+   スプレッドシートとは紐づけない（初期値のみ同梱の lib/pricing/data/cost_master.csv）。
 
-2) NE商品マスタ（JAN→商品コード・売価・原価・項目1）
+2) NE商品マスタ（JAN→商品コード・原価・項目1。売価は任意）
    汎用マスタ変換・請求書発行と共通（リポジトリの master.csv ／ Driveの master_YYYYMMDD_NNN.csv）。
-   価格改定には売価・原価列も必要なので、無い場合は警告して差し替えを促す。
+   現販売価格は楽天から自動取得する運用のため、売価列は無くてもよい（あればフォールバックに使う）。
 
 3) 楽天SKU対応表（NE商品コード → 商品管理番号・SKU管理番号）
-   楽天の価格CSVはSKU形式（親行＋SKU行、SKU管理番号は楽天側の採番）のため、
-   RMSの商品一括ダウンロードCSVから対応表を作り Drive の rakuten_sku_master.csv に保存・再利用する。
+   「楽天から現在価格を取得」時にRMS APIのレスポンスから自動構築し（rakuten_price）、
+   Drive の rakuten_sku_master.csv にキャッシュする。CSVアップロードでの管理はしない。
 
 Drive まわりは請求書モジュールの drive_master をそのまま使う。
 """
-import io
 import os
 import re
 import unicodedata
@@ -85,39 +83,6 @@ def _normalize_cost_df(df):
     ]
     df = df[df["項目1"] != ""].reset_index(drop=True)
     return df[["項目1", "送料", "資材", "配送種別"]]
-
-
-def load_cost_master_from_sheet(sheet_id):
-    """スプレッドシートのxlsx exportから「送料表」D:E・「費用」E:F を読み、DataFrameを返す。"""
-    import requests
-    from openpyxl import load_workbook
-    url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=xlsx"
-    res = requests.get(url, timeout=30)
-    res.raise_for_status()
-    wb = load_workbook(io.BytesIO(res.content), data_only=True, read_only=True)
-
-    def pairs(sheet, key_col, val_col):
-        ws = wb[sheet]
-        d = {}
-        for row in ws.iter_rows(min_col=key_col, max_col=val_col):
-            k, v = row[0].value, row[-1].value
-            if k is None or v is None or not isinstance(v, (int, float)):
-                continue
-            key = norm_key(k)
-            if key and key not in d:  # VLOOKUPと同じく最初の一致を採用
-                d[key] = float(v)
-        return d
-
-    shipping = pairs("送料表", 4, 5)   # D:E サイズ→平均運賃
-    material = pairs("費用", 5, 6)     # E:F サイズ→資材費
-    shipping.pop("値", None)
-    keys = list(shipping.keys()) + [k for k in material if k not in shipping]
-    rows = [{"項目1": k, "送料": shipping.get(k), "資材": material.get(k),
-             "配送種別": ""} for k in keys]
-    df = pd.DataFrame(rows)
-    if df.empty or df["送料"].isna().all():
-        raise ValueError("シートから送料マスタを取得できませんでした")
-    return _normalize_cost_df(df)
 
 
 def load_cost_master_bundled():
@@ -212,36 +177,13 @@ def build_lookup(ne_df):
 
 # ── 楽天SKU対応表 ─────────────────────────────────────────
 
-def parse_rakuten_item_csv(file_bytes):
-    """
-    RMSの商品一括ダウンロードCSV（normal-item.csv形式）からSKU対応表を作る。
-    SKU行（SKU管理番号あり）だけを拾い、NE商品コード＝システム連携用SKU番号（無ければSKU管理番号）。
-    返り値: DataFrame[商品管理番号, SKU管理番号, システム連携用SKU番号, NE商品コード]
-    """
-    df = csv_import.read_csv_auto(file_bytes)
-    df = df.rename(columns={c: unicodedata.normalize("NFKC", str(c)).strip() for c in df.columns})
-    c_parent = next((c for c in df.columns if c.startswith("商品管理番号")), None)
-    if c_parent is None or "SKU管理番号" not in df.columns:
-        raise ValueError(
-            f"「商品管理番号（商品URL）」「SKU管理番号」列が必要です / 実際の列: {list(df.columns)}")
-    c_renkei = "システム連携用SKU番号" if "システム連携用SKU番号" in df.columns else None
-    rows = []
-    for _, r in df.iterrows():
-        sku = norm_key(r["SKU管理番号"])
-        if not sku or sku == "nan":
-            continue  # 親行
-        renkei = norm_key(r[c_renkei]) if c_renkei else ""
-        if renkei == "nan":
-            renkei = ""
-        rows.append({
-            "商品管理番号": norm_key(r[c_parent]),
-            "SKU管理番号": sku,
-            "システム連携用SKU番号": renkei,
-            "NE商品コード": renkei or sku,
-        })
-    if not rows:
-        raise ValueError("SKU行が見つかりませんでした（SKU管理番号がすべて空）")
-    return pd.DataFrame(rows).drop_duplicates(subset=["NE商品コード"], keep="first")
+def sku_table_to_df(table):
+    """SKU対応表dict {code: (商品管理番号, SKU管理番号, 連携番号)} → 保存用DataFrame。"""
+    return pd.DataFrame([
+        {"NE商品コード": code, "商品管理番号": v[0], "SKU管理番号": v[1],
+         "システム連携用SKU番号": v[2]}
+        for code, v in sorted(table.items())
+    ], columns=["NE商品コード", "商品管理番号", "SKU管理番号", "システム連携用SKU番号"])
 
 
 def load_sku_master_drive(folder_id):

@@ -1,14 +1,18 @@
 # -*- coding: utf-8 -*-
 """
-楽天の現在販売価格の自動取得（RMS Item API 2.0）。
+楽天の現在販売価格とSKU情報の自動取得（RMS Item API 2.0）。
 
 楽天販売価格は楽天側でしか管理していないため、価格改定の「現販売価格」は
 RMSからSKU単位で取得する（クライアントはイベントLPモジュールの rms_api を流用。
 Secrets: RMS_SERVICE_SECRET / RMS_LICENSE_KEY）。
 
-Item API 2.0 の variants は {SKU管理番号: {...standardPrice...}} の形なので、
-SKU対応表（masters.sku_lookup）で NE商品コード→(商品管理番号, SKU管理番号) に
-変換してから引く。取得できなかった商品は NE売価×1.1 にフォールバックする（呼び出し側）。
+同じレスポンス（variants）に SKU管理番号・システム連携用SKU番号 が含まれるため、
+楽天CSV出力に必要なSKU対応表もここで同時に構築する（CSVアップロード不要）。
+
+商品管理番号の当たりの付け方:
+  1. 保存済みSKU対応表にあればその商品管理番号
+  2. 無ければNE商品コードの枝番（-01等）を落として推定
+  3. それでも見つからなければコード自身を商品管理番号として再試行
 """
 from lib.event import rms_api
 
@@ -30,63 +34,108 @@ def _variant_price(v):
     return None
 
 
-def fetch_sku_prices(manage_numbers, on_progress=None):
+def _get_variants(manage_number):
+    """RMS Item API 2.0 から variants dict {SKU管理番号: 変数dict} を取得する。"""
+    data = rms_api.get(f"/es/2.0/items/manage-numbers/{manage_number}")
+    item = data.get("item", data)
+    variants = item.get("variants") or {}
+    return variants if isinstance(variants, dict) else {}
+
+
+def match_variants(codes, parent, variants):
     """
-    商品管理番号ごとにRMSからSKU別販売価格を取得する。
-    返り値: ({(商品管理番号小文字, SKU管理番号): 価格}, errors={管理番号: メッセージ}, warnings=[str])
-    on_progress: f(done, total) 進捗コールバック（Streamlitのprogress用）。
+    1商品のvariantsから、対象NEコードごとに (SKU管理番号, システム連携用SKU番号, 価格) を探す。
+    照合順: システム連携用SKU番号一致 → SKU管理番号一致 → 単一SKUかつコード=親。
+    返り値: {NEコード小文字: {"parent","sku","renkei","price"}}
     """
-    prices, errors, warnings = {}, {}, []
+    parent = masters.norm_key(parent).lower()
+    norm_variants = []
+    for sku_no, v in variants.items():
+        if not isinstance(v, dict):
+            continue
+        renkei = masters.norm_key(v.get("merchantDefinedSkuId") or "")
+        if renkei == "nan":
+            renkei = ""
+        norm_variants.append((masters.norm_key(sku_no), renkei, _variant_price(v)))
+
+    out = {}
+    for code in codes:
+        key = masters.norm_key(code).lower()
+        hit = None
+        for sku_no, renkei, price in norm_variants:
+            if renkei and renkei.lower() == key:
+                hit = (sku_no, renkei, price)
+                break
+        if hit is None:
+            for sku_no, renkei, price in norm_variants:
+                if sku_no.lower() == key:
+                    hit = (sku_no, renkei, price)
+                    break
+        if hit is None and len(norm_variants) == 1 and key == parent:
+            hit = norm_variants[0]
+        if hit:
+            out[key] = {"parent": parent, "sku": hit[0], "renkei": hit[1], "price": hit[2]}
+    return out
+
+
+def fetch_for_codes(codes, sku_table, on_progress=None):
+    """
+    NE商品コード群の現在価格とSKU情報をまとめて取得する。
+    sku_table: 保存済みSKU対応表 {code小文字: (商品管理番号, SKU管理番号, 連携番号)}（商品管理番号の当たり付けに使用）
+    返り値: (info={code小文字: {parent, sku, renkei, price}}, errors={対象: メッセージ}, warnings=[str])
+    """
+    info, errors, warnings = {}, {}, []
     if not rms_api.is_configured():
         warnings.append("Secrets に RMS_SERVICE_SECRET / RMS_LICENSE_KEY が未設定のため、"
-                        "楽天価格は取得できません（NE売価×1.1で計算します）。")
-        return prices, errors, warnings
-    mns = [str(m).strip() for m in manage_numbers if str(m).strip()]
-    for i, mn in enumerate(dict.fromkeys(mns)):  # 順序保持で重複除去
-        try:
-            data = rms_api.get(f"/es/2.0/items/manage-numbers/{mn}")
-            item = data.get("item", data)
-            variants = item.get("variants") or {}
-            if isinstance(variants, dict):
-                for sku_no, v in variants.items():
-                    if isinstance(v, dict):
-                        p = _variant_price(v)
-                        if p is not None:
-                            prices[(mn.lower(), str(sku_no))] = p
-        except rms_api.RMSAuthError as e:
-            warnings.append(str(e))
-            break  # 認証切れは以降も失敗するので打ち切り
-        except rms_api.RMSError as e:
-            errors[mn] = str(e)
-        except Exception as e:  # noqa: BLE001
-            errors[mn] = f"取得失敗: {e}"
-        if on_progress:
-            on_progress(i + 1, len(set(mns)))
-    return prices, errors, warnings
+                        "楽天価格は取得できません。")
+        return info, errors, warnings
 
-
-def resolve_pairs(codes, sku_table):
-    """
-    NE商品コードのリスト → {NEコード小文字: (商品管理番号小文字, SKU管理番号)}。
-    SKU対応表にあればそれを、無ければ「枝番を落とした親＋コード自身がSKU」とみなす。
-    """
-    pairs = {}
+    # 親（商品管理番号）ごとに対象コードをまとめる
+    groups = {}
     for code in codes:
         key = masters.norm_key(code).lower()
         hit = sku_table.get(key)
-        if hit:
-            pairs[key] = (hit[0].lower(), str(hit[1]))
-        else:
-            pairs[key] = (masters.parent_code(key).lower(), masters.norm_key(code))
-    return pairs
+        parent = (hit[0] if hit else masters.parent_code(key)).lower()
+        groups.setdefault(parent, []).append(key)
+
+    total = len(groups)
+    done = 0
+    for parent, member_codes in groups.items():
+        try:
+            found = match_variants(member_codes, parent, _get_variants(parent))
+        except rms_api.RMSAuthError as e:
+            warnings.append(str(e))
+            break  # 認証切れは以降も失敗するので打ち切り
+        except rms_api.RMSError:
+            found = {}
+        except Exception as e:  # noqa: BLE001
+            errors[parent] = f"取得失敗: {e}"
+            found = {}
+        info.update(found)
+        # 見つからなかったコードは、コード自身を商品管理番号として再試行
+        for code in member_codes:
+            if code in info or code == parent:
+                continue
+            try:
+                info.update(match_variants([code], code, _get_variants(code)))
+            except rms_api.RMSAuthError as e:
+                warnings.append(str(e))
+                break
+            except Exception:  # noqa: BLE001
+                pass
+            if code not in info:
+                errors[code] = "楽天に該当商品が見つかりません（商品管理番号を推定できず）"
+        done += 1
+        if on_progress:
+            on_progress(done, total)
+    return info, errors, warnings
 
 
-def prices_by_code(codes, sku_table, sku_prices):
-    """fetch_sku_prices の結果を {NEコード小文字: 価格} に変換する。"""
-    pairs = resolve_pairs(codes, sku_table)
-    out = {}
-    for code, pair in pairs.items():
-        p = sku_prices.get(pair)
-        if p is not None:
-            out[code] = p
-    return out
+def to_sku_table(info):
+    """fetch_for_codes の結果 → SKU対応表形式 {code: (商品管理番号, SKU管理番号, 連携番号)}。"""
+    return {code: (d["parent"], d["sku"], d["renkei"]) for code, d in info.items()}
+
+
+def to_prices(info):
+    """fetch_for_codes の結果 → {code: 価格}（価格が取れたものだけ）。"""
+    return {code: d["price"] for code, d in info.items() if d.get("price")}
