@@ -77,8 +77,9 @@ cost_df = st.session_state["pricing_cost_df"]
 
 with st.expander("🚚 送料・資材マスタ（この画面だけで管理・行の追加・削除・編集）", expanded=False):
     st.caption(f"取得元: {st.session_state['pricing_cost_src']}。"
-               "表を直接編集すると**自動で保存されます**（ボタン不要）。"
-               "行の追加＝最下段の空行に入力、行の削除＝左端のチェックで行を選び右上のゴミ箱。")
+               "行の追加＝最下段の空行に入力、行の削除＝左端のチェックで行を選び右上のゴミ箱。"
+               "**編集したら「更新」を押して保存してください**"
+               "（保存前でも、この画面での計算には編集内容が反映されます）。")
     edited_cost = st.data_editor(
         cost_df, key="cost_editor", num_rows="dynamic",
         use_container_width=True, hide_index=True,
@@ -88,22 +89,22 @@ with st.expander("🚚 送料・資材マスタ（この画面だけで管理・
             "資材": st.column_config.NumberColumn("資材(円)"),
             "配送種別": st.column_config.SelectboxColumn("配送種別", options=["宅配便", "メール便"]),
         })
-    # 編集を検知したら即Driveへ保存（正本を常に最新に保つ）
     edited_norm = masters.normalize_cost_df(edited_cost)
-    if not edited_norm.equals(cost_df):
-        st.session_state["pricing_cost_df"] = edited_norm
+    changed = not edited_norm.equals(cost_df)
+    if changed:
+        st.info("未保存の変更があります。「更新」を押すと確定します。")
+    if st.button("💾 更新（Driveに保存）", key="cost_save", type="primary",
+                 disabled=not changed):
         try:
             masters.save_cost_master_drive(edited_norm, product_folder)
+            st.session_state["pricing_cost_df"] = edited_norm
             st.session_state["pricing_cost_src"] = "Drive保存版"
-            st.toast("送料・資材マスタを保存しました ✅")
+            st.success("送料・資材マスタを更新しました。")
+            st.rerun()
         except Exception as e:  # noqa: BLE001
-            st.warning(f"Drive保存に失敗しました（この画面の計算には反映済み）: {e}")
-    if st.button("🔄 Driveの保存版を読み直す", key="cost_reload"):
-        for k in ("pricing_cost_df", "pricing_cost_src"):
-            st.session_state.pop(k, None)
-        st.rerun()
+            st.error(f"Driveへの保存に失敗しました: {e}")
 
-# 計算にはこの画面での編集内容を即時反映
+# 計算にはこの画面での編集内容を即時反映（保存前でも有効）
 cost_table = masters.cost_lookup(edited_norm)
 
 
