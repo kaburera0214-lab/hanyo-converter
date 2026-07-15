@@ -151,25 +151,30 @@ def load_repo_master(repo_root):
 
 def build_lookup(ne_df):
     """
-    NE商品マスタ → 突合用のインデックスを作る。
+    NE商品マスタ → 突合用のインデックスを作る（10万行規模のためiterrowsは使わない）。
     返り値: (jan→商品コード dict, 商品コード(小文字)→{原価,項目1,商品名} dict)
     """
     cols = ne_df.columns
+    codes = ne_df["商品コード"].map(norm_key).tolist()
+    jans = ne_df["JANコード"].map(norm_key).tolist() if "JANコード" in cols else None
+    names = ne_df["商品名"].astype(str).tolist() if "商品名" in cols else None
+    costs = ne_df["原価"].tolist() if "原価" in cols else None
+    item1 = ne_df["項目1"].map(norm_key).tolist() if "項目1" in cols else None
+
     jan_map = {}
     info = {}
-    for _, r in ne_df.iterrows():
-        code = norm_key(r["商品コード"])
+    for i, code in enumerate(codes):
         if not code or code == "nan":
             continue
-        if "JANコード" in cols:
-            jan = norm_key(r["JANコード"])
+        if jans is not None:
+            jan = jans[i]
             if jan and jan != "nan" and jan not in jan_map:
                 jan_map[jan] = code
         info[code.lower()] = {
             "商品コード": code,
-            "商品名": str(r.get("商品名", "") or ""),
-            "原価": r.get("原価", ""),
-            "項目1": norm_key(r.get("項目1", "")) if "項目1" in cols else "",
+            "商品名": names[i] if names is not None else "",
+            "原価": costs[i] if costs is not None else "",
+            "項目1": item1[i] if item1 is not None else "",
         }
     return jan_map, info
 

@@ -58,7 +58,8 @@ def _init_cost_master():
     df, src = None, ""
     if product_folder:
         try:
-            df = masters.load_cost_master_drive(product_folder)
+            with st.spinner("送料・資材マスタをDriveから読み込み中…（初回のみ）"):
+                df = masters.load_cost_master_drive(product_folder)
             if df is not None:
                 src = "Drive保存版"
         except Exception as e:  # noqa: BLE001
@@ -115,10 +116,11 @@ if ne_df is None:
     candidates = []
     if product_folder:
         try:
-            f = drive_master.find_latest(product_folder, "master")
-            if f:
-                mdf, missing = masters.load_ne_master(drive_master.download_bytes(f["id"]))
-                candidates.append((mdf, missing, f"Drive保存版 {f['name']}（汎用と共通・{len(mdf):,}件）"))
+            with st.spinner("NE商品マスタをDriveから読み込み中…（初回のみ）"):
+                f = drive_master.find_latest(product_folder, "master")
+                if f:
+                    mdf, missing = masters.load_ne_master(drive_master.download_bytes(f["id"]))
+                    candidates.append((mdf, missing, f"Drive保存版 {f['name']}（汎用と共通・{len(mdf):,}件）"))
         except Exception as e:  # noqa: BLE001
             st.caption(f"（DriveのNE商品マスタ読込をスキップ: {e}）")
     try:
@@ -159,7 +161,7 @@ with st.expander("📚 NE商品マスタ（汎用マスタ変換と共通・毎�
     else:
         st.info("NE商品マスタが見つかりません。NEカスタムCSVをアップロードしてください。")
     if st.button("🔄 マスタを再取得（最新を読み直す）", key="pricing_ne_reload"):
-        for k in ("pricing_ne_df", "pricing_ne_meta", "pricing_ne_missing"):
+        for k in ("pricing_ne_df", "pricing_ne_meta", "pricing_ne_missing", "pricing_ne_lookup"):
             st.session_state.pop(k, None)
         st.rerun()
     new_master = st.file_uploader("NEカスタム（商品マスタ）CSVをアップロード／差し替え",
@@ -177,6 +179,7 @@ with st.expander("📚 NE商品マスタ（汎用マスタ変換と共通・毎�
             st.session_state["pricing_ne_df"] = mdf
             st.session_state["pricing_ne_meta"] = ne_meta
             st.session_state["pricing_ne_missing"] = missing
+            st.session_state.pop("pricing_ne_lookup", None)  # 索引を作り直す
             st.success(f"NE商品マスタを更新しました（{len(mdf):,}件）。")
             if product_folder:
                 try:
@@ -185,13 +188,17 @@ with st.expander("📚 NE商品マスタ（汎用マスタ変換と共通・毎�
                 except Exception as e:  # noqa: BLE001
                     st.warning(f"⚠️ Driveバックアップに失敗しました（今回のセッションでは利用可能）: {e}")
 
+# NE商品マスタの索引（10万行の走査は重いので、マスタ更新時だけ作ってセッションに保持）
 if ne_df is not None:
-    jan_map, code_info = masters.build_lookup(ne_df)
+    if "pricing_ne_lookup" not in st.session_state:
+        with st.spinner("商品マスタの索引を作成中…（マスタ更新時のみ）"):
+            st.session_state["pricing_ne_lookup"] = masters.build_lookup(ne_df)
+    jan_map, code_info = st.session_state["pricing_ne_lookup"]
 else:
     jan_map, code_info = {}, {}
 
 
-# ══ 楽天SKU対応表（📡取得時にRMS APIから自動構築・Drive保存） ═
+# ══ 楽天SKU対応表（画面には出さない・📡取得時にRMS APIから自動構築しDrive保存） ═
 
 if "pricing_sku_table" not in st.session_state:
     table = {}
@@ -205,15 +212,6 @@ if "pricing_sku_table" not in st.session_state:
     st.session_state["pricing_sku_table"] = table
 
 sku_table = st.session_state["pricing_sku_table"]
-
-with st.expander("🔴 楽天SKU対応表（自動取得・アップロード不要）", expanded=False):
-    st.caption("楽天の価格CSV（normal-item.csv）に必要な**商品管理番号・SKU管理番号（楽天側の採番）**は、"
-               "📡「楽天から現在価格を取得」を押したときに**RMS APIのレスポンスから自動で取得**し、"
-               "Driveに保存して次回以降も使い回します。手作業でのCSVアップロードは不要です。")
-    if sku_table:
-        st.success(f"SKU対応表 保存済み {len(sku_table):,}件（📡取得のたびに自動で増えます）")
-    else:
-        st.info("SKU対応表はまだ空です。各タブで📡「楽天から現在価格を取得」を押すと自動で作られます。")
 
 
 def _save_sku_table():
@@ -311,9 +309,9 @@ def download_buttons(result_df, key_prefix, include_unchanged):
     yah_records, yah_diff = ex.yahoo_rows(mall_rows, sku_table)
     if rak_missing:
         st.warning(f"🔴 楽天CSVから {len(rak_missing)}件 を除外しました"
-                   f"（SKU対応表に無い枝番付き商品）: {', '.join(rak_missing[:10])}"
+                   f"（楽天のSKU番号が未取得の枝番付き商品）: {', '.join(rak_missing[:10])}"
                    f"{' …' if len(rak_missing) > 10 else ''}　"
-                   "→ 上の「楽天SKU対応表」に最新のRMS商品一括DLをアップしてください。")
+                   "→ 📡「楽天から現在価格を取得」を押すとSKU番号も自動取得されます。")
     if yah_diff:
         st.caption(f"🟡 Yahooは親コード単位のため、SKUで価格が割れた {len(yah_diff)}件 は最高値を採用: "
                    f"{', '.join(yah_diff[:10])}{' …' if len(yah_diff) > 10 else ''}")
