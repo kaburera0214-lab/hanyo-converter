@@ -67,10 +67,10 @@ def test_tab1_end_to_end():
     assert r["現販売価格"] == 1760 and r["新販売価格"] == 2055
     assert r["適用ルール"] == "値上げ率価格"
 
-    # artc9999: 値下げ → 据え置き（現価格2200のまま）
+    # artc9999: 値下げ（1500→1200）でも高い方ルール。目標15%価格2017 > 値上げ率価格1584 → 2017
     r = by_code["artc9999"]
-    assert r["新販売価格"] == r["現販売価格"] == 2200
-    assert "据え置き" in r["適用ルール"]
+    assert r["現販売価格"] == 2200 and r["新販売価格"] == 2017  # 値下げ方向もあり得る
+    assert r["適用ルール"] == "目標利益率価格"
 
     # 出力CSV（実際のアップロード実績ファイルの形式）
     ok = [r for r in rows if r["新販売価格"]]
@@ -83,7 +83,7 @@ def test_tab1_end_to_end():
     assert "商品管理番号（商品URL）,商品番号,SKU管理番号,システム連携用SKU番号,販売価格,表示価格" in rak
     assert "miya0284,miya0284,,,," in rak            # 親行
     assert "miya0284,,miya0284,,8778,8778" in rak    # 単品SKU行
-    assert "artc9999" not in rak                     # 据え置きは含まない
+    assert "artc9999,,artc9999,,2017,2017" in rak    # 値下げ方向の変更も出力される
     yah_records, yah_diff = ex.yahoo_rows(mall, {})
     yah = ex.yahoo_csv(yah_records).decode("cp932")
     assert "code,price" in yah and "kwgc0414,2055" in yah and yah_diff == []
@@ -91,7 +91,7 @@ def test_tab1_end_to_end():
                      "NE原価": r["新下代"]} for r in ok]).decode("cp932")
     assert "syohin_code,baika_tnk,genka_tnk" in ne
     assert "miya0284,7980,5200" in ne
-    assert "artc9999,2000,1200" in ne  # 据え置きでも原価は更新（NE売価=2200÷1.1）
+    assert "artc9999,1834,1200" in ne  # NE売価=2017÷1.1
 
 
 def test_tab2_direct_end_to_end():
@@ -214,15 +214,14 @@ def test_match_variants():
     assert out3["abc0001-01"]["sku"] == "abc0001-01"
 
 
-def test_overrides_and_force():
-    """手修正・据え置き外し（サイズ変更由来の再設定）"""
+def test_overrides():
+    """手修正が最優先"""
     jan_map, code_info = _ne_master()
     cost_table = _cost_table()
     in_df = pd.DataFrame([{"商品コード": "artc9999", "新下代": "1200"}])
     matched, _ = pipeline.match_input(in_df, "商品コード", None, jan_map, code_info)
-    # force_reprice: 値下げでも目標利益率価格に再設定される
-    # （現価格1000は利益NG想定 → 80サイズの目標15%価格2017に引き上げ）
-    rows = pipeline.build_price_rows(matched, "新下代", cost_table, P, force_reprice=True,
+    # 薄利（現価格1000）→ 80サイズの目標15%価格2017に引き上げ（常にmaxルール）
+    rows = pipeline.build_price_rows(matched, "新下代", cost_table, P,
                                      cur_prices={"artc9999": 1000})
     assert rows[0]["新販売価格"] == 2017
     assert rows[0]["適用ルール"] == "目標利益率価格"

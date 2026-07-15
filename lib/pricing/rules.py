@@ -2,14 +2,12 @@
 """
 新販売価格の決定ルール（拡張ポイント）。
 
-運用ルール（ユーザー確定）:
-  ■下代が値下げ（新<旧） → 価格据え置き
-  ■下代が同額・値上げ → 「目標利益率価格」と「値上げ率価格」を比較して高い方を設定
-    （同額の場合は値上げ率価格=現価格なので、実質「目標利益率を下回っていれば引き上げ」）
+運用ルール（2026-07-14 ユーザー確定・シンプル設計）:
+  アップしたCSVの商品はすべて「目標利益率価格」と「値上げ率価格」の高い方に設定する。
+  据え置きルールは無し（下代が値下げなら価格も下がり得る。目標利益率は必ず確保される）。
     - 目標利益率価格: 利益率がちょうど目標値（既定15%）に着地する価格（calc.target_price）
     - 値上げ率価格: 送料込みベースM(現販売価格)×(新下代÷旧下代) を実際の販売価格に戻したもの
       例) 現891円・宅配便・下代363→365: (891+880)×365/363=1781 → 1781−880=901円
-    - 計算値が現販売価格を下回る場合は据え置き（値上げ判定で値下げしてしまう事故防止）
 
 各ルールは ctx を受けて (新価格, ルール名) か None（次のルールへ）を返す関数。
 DEFAULT_RULES の先頭から順に評価し、最初に価格を返したルールで確定する。
@@ -44,23 +42,11 @@ def rule_markup_percent(ctx, params):
     return None
 
 
-def rule_price_down_keep(ctx, params):
-    """下代が値下げ（新<旧）なら販売価格は据え置き。
-    同額はここを素通りして値上げ側のルールへ（目標利益率を下回っていれば引き上げるため）。"""
-    old = calc.to_number(ctx.get("旧下代"))
-    new = calc.to_number(ctx.get("新下代"))
-    if old and new is not None and new < old:
-        return int(ctx["現販売価格"]), "据え置き(下代値下げ)"
-    return None
-
-
-def rule_price_up_max(ctx, params):
-    """下代値上げ: max(目標利益率価格, 値上げ率価格)。ただし現販売価格は下回らない。
-    旧下代が不明なら目標利益率価格のみで決める。"""
+def rule_max_price(ctx, params):
+    """max(目標利益率価格, 値上げ率価格)。旧下代が不明なら目標利益率価格のみで決める。"""
     t_price = ctx["目標利益率価格"]
     old = calc.to_number(ctx.get("旧下代"))
     new = calc.to_number(ctx.get("新下代"))
-    cur = int(ctx["現販売価格"])
 
     candidates = []
     if t_price:
@@ -68,17 +54,15 @@ def rule_price_up_max(ctx, params):
     if old and new:
         candidates.append((_ratio_price(ctx, params, new / old), "値上げ率価格"))
     if not candidates:
-        return cur, "据え置き(目標価格を計算できず)"
+        return int(ctx["現販売価格"]), "据え置き(目標価格を計算できず)"
 
     price, name = max(candidates, key=lambda c: c[0])
-    if price <= cur:
-        return cur, "据え置き(計算値が現価格以下)"
     if not old:
         name += "(旧下代不明)"
     return price, name
 
 
-DEFAULT_RULES = [rule_fixed_price, rule_markup_percent, rule_price_down_keep, rule_price_up_max]
+DEFAULT_RULES = [rule_fixed_price, rule_markup_percent, rule_max_price]
 
 
 def decide_price(ctx, params, rules=None):

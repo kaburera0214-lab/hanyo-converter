@@ -316,8 +316,8 @@ def download_buttons(result_df, key_prefix, include_unchanged):
         st.caption(f"🟡 Yahooは親コード単位のため、SKUで価格が割れた {len(yah_diff)}件 は最高値を採用: "
                    f"{', '.join(yah_diff[:10])}{' …' if len(yah_diff) > 10 else ''}")
 
-    st.caption(f"モール向け: {len(mall_rows)}件（価格変更あり{'＋据え置き' if include_unchanged else 'のみ'}）"
-               f" ／ NE向け: {len(ne_rows)}件（原価更新のため据え置きも含む）")
+    st.caption(f"モール向け: {len(mall_rows)}件（価格変更あり{'＋変わらない行' if include_unchanged else 'のみ'}）"
+               f" ／ NE向け: {len(ne_rows)}件（原価更新のため価格が変わらない行も含む）")
     c1, c2, c3, c4 = st.columns(4)
     c1.download_button("🔴 楽天 normal-item.csv", ex.rakuten_csv(rak_records),
                        "normal-item.csv", "text/csv",
@@ -344,12 +344,14 @@ def result_section(rows, key_prefix):
         st.warning(f"⚠️ 警告あり {len(ng)}件（表の「警告」列を確認してください）")
     df_view = editable_result(df, key_prefix)
     up = df_view[df_view["新販売価格"].notna() & (df_view["新販売価格"] > df_view["現販売価格"])]
+    down = df_view[df_view["新販売価格"].notna() & (df_view["新販売価格"] < df_view["現販売価格"])]
     keep = df_view[df_view["新販売価格"] == df_view["現販売価格"]]
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("値上げ", f"{len(up)}件")
-    c2.metric("据え置き", f"{len(keep)}件")
-    c3.metric("計算不可・要確認", f"{len(df_view) - len(up) - len(keep)}件")
-    include_unchanged = st.checkbox("据え置き行もモールCSVに含める", value=False,
+    c2.metric("値下げ", f"{len(down)}件")
+    c3.metric("変わらず", f"{len(keep)}件")
+    c4.metric("計算不可・要確認", f"{len(df_view) - len(up) - len(down) - len(keep)}件")
+    include_unchanged = st.checkbox("価格が変わらない行もモールCSVに含める", value=False,
                                     key=f"{key_prefix}_inc_unchanged")
     download_buttons(df_view, key_prefix, include_unchanged)
 
@@ -360,8 +362,9 @@ tab1, tab2, tab3 = st.tabs(["📦 納品価格変更", "🚛 直送価格＆送�
 # ── タブ1: 納品価格変更（本流） ─────────────────────────────
 with tab1:
     st.markdown("##### 入力CSV: **JAN（またはNE商品コード）・新下代** ＋ 任意列（指定価格／値上げ率／項目1）")
-    st.caption("下代が値下げ→据え置き／同額・値上げ→「目標利益率価格」と「値上げ率価格（送料込みベース×新下代÷旧下代）」の高い方"
-               "（現価格は下回らない）。3980円未満はお客様負担の送料（宅配880円/メール350円）を差し引いた価格を設定します。"
+    st.caption("アップした商品はすべて「目標利益率価格」と「値上げ率価格（送料込みベース×新下代÷旧下代）」の**高い方**に設定します"
+               "（下代が値下げなら価格も下がり得ます。目標利益率は必ず確保）。"
+               "3980円未満はお客様負担の送料（宅配880円/メール350円）を差し引いた価格を設定します。"
                "旧下代はNE商品マスタの原価を使います。")
 
     prefill = st.session_state.get("pricing_tab1_prefill")
@@ -398,15 +401,13 @@ with tab1:
         else:
             st.caption(f"列の割り当て: JAN={c_jan or '－'} / 商品コード={c_code or '－'} / 新下代={c_cost}"
                        f" / 指定価格={c_fixed or '－'} / 値上げ率={c_pct or '－'} / 項目1上書き={c_size or '－'}")
-            force = st.checkbox("下代が値下げでも目標利益率価格に再設定する（サイズ変更由来など）",
-                                value=prefill is not None, key="t1_force")
             matched, unmatched = pipeline.match_input(in_df, c_code, c_jan, jan_map, code_info)
             show_unmatched(unmatched)
             if matched:
                 cur_prices = rakuten_price_controls(matched, "t1")
                 rows = pipeline.build_price_rows(
                     matched, c_cost, cost_table, params, mode="normal",
-                    c_fixed=c_fixed, c_pct=c_pct, c_size=c_size, force_reprice=force,
+                    c_fixed=c_fixed, c_pct=c_pct, c_size=c_size,
                     overrides=st.session_state.get("t1_result_overrides"),
                     cur_prices=cur_prices)
                 result_section(rows, "t1_result")

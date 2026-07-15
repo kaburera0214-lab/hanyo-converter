@@ -73,39 +73,33 @@ def test_target_price_lands_on_target_margin():
 
 
 def test_old_and_new_margin_same_formula():
-    """据え置き・下代同一なら旧利益率＝新利益率（同じ式・送料込みベース）"""
+    """価格・下代とも変わらなければ旧利益率＝新利益率（同じ式・送料込みベース）"""
     base, price, rule = _decide(1914, 783, 783, 675, 30.5, "宅配便")
-    assert price == 1914 and "据え置き" in rule
+    assert price == 1914
     _, new_margin = calc.simulate_price(price, 783, 675, 30.5, "宅配便", P)
     assert abs(base["旧利益率"] - new_margin) < 1e-9
     assert abs(new_margin - 0.3386) < 0.001    # はちまき1914円: M=2794で33.86%
 
 
-def test_rule_price_down_keeps_current():
-    """下代値下げ（新<旧）→据え置き"""
+def test_always_max_rule():
+    """常に max(目標利益率価格, 値上げ率価格)。据え置きルールは無し"""
+    # 値下げ（5200→4000）: 目標15%価格6995 > 値上げ率価格5500 → 6995（価格も下がる）
     _, price, rule = _decide(7150, 4000, 5200, 675, 30.5, "宅配便")
-    assert price == 7150 and "据え置き" in rule
-
-
-def test_rule_same_cost_ensures_target_margin():
-    """下代が同額: 薄利なら目標利益率価格へ引き上げ、利益が足りていれば据え置き"""
-    # 薄利（現440円・下代287のまま・60サイズ宅配 → 利益率-1.2%）→ 15%価格465円へ
-    _, price, rule = _decide(440, 287, 287, 675, 30.5, "宅配便")
-    assert price == 465 and rule == "目標利益率価格"
-    _, margin = calc.simulate_price(price, 287, 675, 30.5, "宅配便", P)
+    assert price == 6995 and rule == "目標利益率価格"
+    # 同額・薄利（現440円・下代287のまま → 利益率-1.2%）→ 15%価格465円へ
+    _, price2, rule2 = _decide(440, 287, 287, 675, 30.5, "宅配便")
+    assert price2 == 465 and rule2 == "目標利益率価格"
+    _, margin = calc.simulate_price(price2, 287, 675, 30.5, "宅配便", P)
     assert abs(margin - 0.15) < 0.01
-    # 利益が足りている同額商品（33.9%）は据え置き（計算値が現価格以下）
-    _, price2, rule2 = _decide(1914, 783, 783, 675, 30.5, "宅配便")
-    assert price2 == 1914 and "据え置き" in rule2
+    # 同額・利益が足りている商品は値上げ率価格=現価格が高い方 → 変わらず
+    _, price3, rule3 = _decide(1914, 783, 783, 675, 30.5, "宅配便")
+    assert price3 == 1914 and rule3 == "値上げ率価格"
 
 
-def test_rule_floor_at_current_price():
-    """計算値が現価格以下なら据え置き（値下げ事故防止。旧下代不明→目標価格のみの場合など）"""
+def test_rule_without_old_cost():
+    """旧下代不明なら目標利益率価格のみで決める"""
     _, price, rule = _decide(9000, 5200, None, 675, 30.5, "宅配便")
-    assert price == 9000 and "現価格以下" in rule  # 目標8778 < 現9000
-    # 旧下代があれば値上げ率価格が現価格を必ず上回るのでそちらが採用される
-    _, price2, rule2 = _decide(9000, 5200, 5100, 675, 30.5, "宅配便")
-    assert price2 == 9176 and rule2 == "値上げ率価格"  # 9000×5200/5100
+    assert price == 8778 and rule == "目標利益率価格(旧下代不明)"
 
 
 def test_direct_mode():

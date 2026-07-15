@@ -47,11 +47,10 @@ def match_input(df, c_code, c_jan, jan_map, code_info):
 
 def build_price_rows(matched, c_cost, cost_table, params, mode="normal",
                      c_fixed=None, c_pct=None, c_ship=None, c_size=None,
-                     force_reprice=False, overrides=None, cur_prices=None):
+                     overrides=None, cur_prices=None):
     """
     入力行×NEマスタ → 計算結果の行リスト。
     mode: "normal"=納品価格変更 / "direct"=直送（送料手入力・資材0・込み換算なし）
-    force_reprice: 据え置きルールを外し、下代が同じ/値下げでも再設定する（サイズ変更由来）
     overrides: {商品コード: 手修正価格}
     cur_prices: {商品コード(小文字): 楽天から取得した現在販売価格}。
                 販売価格は楽天でのみ管理しているため、これが唯一の現販売価格の源
@@ -60,9 +59,6 @@ def build_price_rows(matched, c_cost, cost_table, params, mode="normal",
     overrides = overrides or {}
     cur_prices = cur_prices or {}
     rows = []
-    rule_list = None
-    if force_reprice:
-        rule_list = [r for r in rules.DEFAULT_RULES if r is not rules.rule_price_down_keep]
     for r, info in matched:
         code = info["商品コード"]
         warn = []
@@ -116,7 +112,7 @@ def build_price_rows(matched, c_cost, cost_table, params, mode="normal",
                "配送種別": delivery, "mode": mode,
                "指定価格": r[c_fixed] if c_fixed else None,
                "値上げ率": r[c_pct] if c_pct else None}
-        new_price, rule_name = rules.decide_price(ctx, params, rule_list)
+        new_price, rule_name = rules.decide_price(ctx, params)
         if overrides.get(code):
             new_price, rule_name = int(overrides[code]), "手修正"
         profit, margin = calc.simulate_price(new_price, new_cost, shipping, material,
