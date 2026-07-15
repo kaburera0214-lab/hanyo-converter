@@ -248,6 +248,9 @@ def rakuten_price_controls(matched, key):
                 done / max(total, 1), text=f"楽天から取得中… {done}/{total}商品"))
         bar.empty()
         cache.update(rakuten_price.to_prices(info))
+        # 取得を試みたコードを記録（取れなかった商品＝楽天未登録の可能性→対象から除外する判定に使う）
+        st.session_state.setdefault("pricing_rk_attempted", set()).update(
+            str(c).lower() for c in codes)
         st.session_state["pricing_sku_table"].update(rakuten_price.to_sku_table(info))
         _save_sku_table()
         for w in warnings:
@@ -271,6 +274,30 @@ def show_unmatched(unmatched):
         st.dataframe(pd.DataFrame({"未マッチ": unmatched}),
                      use_container_width=True, hide_index=True)
         st.warning("NE商品マスタが古い可能性があります。上の「NE商品マスタ」から最新版に差し替えてください。")
+
+
+def exclude_not_on_rakuten(matched, cur_prices, in_df_price_col=None):
+    """📡取得を試みても楽天から価格が取れなかった商品＝楽天に未登録の可能性が高いので
+    価格変更の対象から除外する。除外した商品は別枠で一覧表示する。"""
+    attempted = st.session_state.get("pricing_rk_attempted") or set()
+    if not attempted:
+        return matched
+    target, excluded = [], []
+    for r, info in matched:
+        code = info["商品コード"].lower()
+        has_csv_price = (in_df_price_col is not None
+                         and calc.to_number(r[in_df_price_col]) is not None)
+        if code in attempted and code not in cur_prices and not has_csv_price:
+            excluded.append({"商品コード": info["商品コード"], "商品名": info.get("商品名", "")})
+        else:
+            target.append((r, info))
+    if excluded:
+        st.warning(f"🛑 楽天から現在価格を取得できなかった {len(excluded)}件 は"
+                   "**楽天に登録されていない可能性が高いため、価格変更の対象から除外**しました"
+                   "（CSVにも含まれません）。")
+        with st.expander(f"対象外にした商品を見る（{len(excluded)}件）", expanded=False):
+            st.dataframe(pd.DataFrame(excluded), use_container_width=True, hide_index=True)
+    return target
 
 
 def editable_result(df, key):
@@ -337,23 +364,36 @@ def download_buttons(result_df, key_prefix, include_unchanged):
 
 
 def result_section(rows, key_prefix):
-    """結果テーブル＋警告＋ダウンロード一式。"""
+    """結果テーブル＋警告フィルタ＋ダウンロード一式。"""
     df = pd.DataFrame(rows)
+    # 警告は見つけやすいように商品名の直後に置く
+    lead = ["商品コード", "商品名", "警告"]
+    df = df[lead + [c for c in df.columns if c not in lead]]
+
     ng = df[df["警告"].astype(str) != ""]
+    only_warn = False
     if len(ng):
-        st.warning(f"⚠️ 警告あり {len(ng)}件（表の「警告」列を確認してください）")
-    df_view = editable_result(df, key_prefix)
-    up = df_view[df_view["新販売価格"].notna() & (df_view["新販売価格"] > df_view["現販売価格"])]
-    down = df_view[df_view["新販売価格"].notna() & (df_view["新販売価格"] < df_view["現販売価格"])]
-    keep = df_view[df_view["新販売価格"] == df_view["現販売価格"]]
+        c1, c2 = st.columns([2, 3])
+        c1.warning(f"⚠️ 警告あり {len(ng)}件")
+        only_warn = c2.checkbox(f"⚠️ 警告のある行だけ表示（{len(ng)}件）",
+                                key=f"{key_prefix}_only_warn")
+    df_show = ng if only_warn else df
+    editable_result(df_show, key_prefix)
+    if only_warn:
+        st.caption("※表示を絞っているだけで、集計・CSVには全行が含まれます。")
+
+    # 集計・CSVは常に全行ベース（手修正はoverrides経由で全行に反映済み）
+    up = df[df["新販売価格"].notna() & (df["新販売価格"] > df["現販売価格"])]
+    down = df[df["新販売価格"].notna() & (df["新販売価格"] < df["現販売価格"])]
+    keep = df[df["新販売価格"] == df["現販売価格"]]
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("値上げ", f"{len(up)}件")
     c2.metric("値下げ", f"{len(down)}件")
     c3.metric("変わらず", f"{len(keep)}件")
-    c4.metric("計算不可・要確認", f"{len(df_view) - len(up) - len(down) - len(keep)}件")
+    c4.metric("計算不可・要確認", f"{len(df) - len(up) - len(down) - len(keep)}件")
     include_unchanged = st.checkbox("価格が変わらない行もモールCSVに含める", value=False,
                                     key=f"{key_prefix}_inc_unchanged")
-    download_buttons(df_view, key_prefix, include_unchanged)
+    download_buttons(df, key_prefix, include_unchanged)
 
 
 # ══ タブ ════════════════════════════════════════════════════
@@ -405,6 +445,8 @@ with tab1:
             show_unmatched(unmatched)
             if matched:
                 cur_prices = rakuten_price_controls(matched, "t1")
+                matched = exclude_not_on_rakuten(matched, cur_prices)
+            if matched:
                 rows = pipeline.build_price_rows(
                     matched, c_cost, cost_table, params, mode="normal",
                     c_fixed=c_fixed, c_pct=c_pct, c_size=c_size,
@@ -442,6 +484,8 @@ with tab2:
                 show_unmatched(unmatched)
                 if matched:
                     cur_prices = rakuten_price_controls(matched, "t2")
+                    matched = exclude_not_on_rakuten(matched, cur_prices)
+                if matched:
                     rows = pipeline.build_price_rows(
                         matched, c_cost, cost_table, params, mode="direct",
                         c_fixed=c_fixed, c_pct=c_pct, c_ship=c_ship,
@@ -477,10 +521,14 @@ with tab3:
                 matched, unmatched = pipeline.match_input(in_df3, c_code, c_jan, jan_map, code_info)
                 show_unmatched(unmatched)
                 cur_prices = rakuten_price_controls(matched, "t3") if matched else {}
+                if matched:
+                    matched = exclude_not_on_rakuten(matched, cur_prices, in_df_price_col=c_rprice)
                 rows3 = pipeline.size_change_rows(matched, c_size, c_rprice, cost_table, params,
                                                   cur_prices=cur_prices)
                 if rows3:
                     df3 = pd.DataFrame(rows3)
+                    lead3 = ["商品コード", "商品名", "警告"]
+                    df3 = df3[lead3 + [c for c in df3.columns if c not in lead3]]
                     st.dataframe(df3, use_container_width=True, hide_index=True,
                                  column_config={"新利益率": st.column_config.NumberColumn(format="percent")})
                     ng = df3[df3["利益チェック"] == "×"]
