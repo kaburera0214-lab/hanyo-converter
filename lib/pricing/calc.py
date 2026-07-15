@@ -6,9 +6,11 @@
 - 3980円（送料込みライン）未満の商品は、お客様が送料を別途支払う
   （宅配便は一律880円・メール便は一律350円）。したがって実際の入金は
   「販売価格＋加算分」＝**利益計算価格M**。3980円以上は送料無料なので M＝販売価格。
-- 利益額 = M −（送料実費＋資材＋下代)×(1+税) − 販売価格×手数料率×(1+税)
+- 利益額 = M −（送料実費＋資材＋下代＋**M×手数料率**)×(1+税)
+  …楽天の手数料は送料込みの決済総額Mに掛かる（2026-07-14ユーザー検算に合わせ修正）
   利益率 = 利益額 ÷ M   …旧・新とも同じ式で計算する（旧は旧下代・現販売価格）
 - 目標利益率価格: 利益率がちょうど目標値（既定15%）に着地する販売価格を逆算する。
+  M* = (送料+資材+新下代)×(1+税) ÷ ((1−目標) − 手数料率×(1+税)) → 販売価格に戻す
 - 値上げ率価格: M(現販売価格)×(新下代÷旧下代) を送料込みベースで求め、
   実際の販売価格に戻す（3980円未満になるなら加算分を引く）。
   例) 現891円・宅配便: (891+880)×365/363=1781 → 1781−880=901円
@@ -22,7 +24,7 @@ from decimal import Decimal, ROUND_HALF_UP
 # 計算パラメータ（サイドバーで一時変更可。恒久変更はここを修正）
 DEFAULT_PARAMS = {
     "tax_rate": 0.10,           # 消費税率
-    "fee_rate": 0.10,           # 楽天手数料率（販売価格に対して）
+    "fee_rate": 0.10,           # 楽天手数料率（送料込みの決済総額Mに対して）
     "target_margin": 0.15,      # 目標利益率（新価格はこの率にちょうど着地するよう逆算）
     "free_ship_line": 3980,     # この金額以上は送料無料（お客様の送料負担なし）
     "takuhai_add": 880,         # 3980円未満・宅配便でお客様が払う送料
@@ -75,30 +77,27 @@ def m_to_price(m_value, delivery, params, mode="normal"):
     return int(p) if p < params["free_ship_line"] else int(m_value)
 
 
-def profit(m, price, cost, shipping, material, params):
-    """利益額 = M −（送料実費＋資材＋下代)×(1+税) − 価格×手数料率×(1+税)。"""
+def profit(m, cost, shipping, material, params):
+    """利益額 = M −（送料実費＋資材＋下代＋M×手数料率)×(1+税)。
+    手数料は送料込みの決済総額Mに掛かる。"""
     tax = 1 + params["tax_rate"]
-    return m - (shipping + material + cost) * tax - price * params["fee_rate"] * tax
+    return m - (shipping + material + cost + m * params["fee_rate"]) * tax
 
 
 def target_price(new_cost, shipping, material, delivery, params, mode="normal"):
     """
     利益率がちょうど目標値になる販売価格Pを逆算する。
-      (1-t)・M(P) = (送料+資材+新下代)×(1+税) + P×手数料率×(1+税)
-    を M(P)=P+加算（P<3980） / M(P)=P（P≥3980, direct） の両ケースで解き、
-    整合する方を採用する。解けない（手数料率が高すぎる等）場合は None。
+      (1-t)・M = (送料+資材+新下代)×(1+税) + M×手数料率×(1+税)
+    を送料込みベースMについて解き、実際の販売価格に戻す。
+    解けない（手数料率が高すぎる等）場合は None。
     """
     t = params["target_margin"]
     denom = (1 - t) - params["fee_rate"] * (1 + params["tax_rate"])
     if denom <= 0:
         return None
     c = (shipping + material + new_cost) * (1 + params["tax_rate"])
-    if mode == "direct":
-        return max(excel_round(c / denom), 0)
-    p_under = (c - _add(delivery, params) * (1 - t)) / denom
-    if p_under < params["free_ship_line"]:
-        return max(excel_round(p_under), 0)
-    return excel_round(c / denom)
+    m_star = excel_round(c / denom)
+    return max(m_to_price(m_star, delivery, params, mode), 0)
 
 
 def compute_row(cur_price, new_cost, old_cost, shipping, material, delivery,
@@ -110,7 +109,7 @@ def compute_row(cur_price, new_cost, old_cost, shipping, material, delivery,
     """
     m_cur = profit_base_price(cur_price, delivery, params, mode)
     base_cost = old_cost if old_cost else new_cost
-    old_profit = profit(m_cur, cur_price, base_cost, shipping, material, params)
+    old_profit = profit(m_cur, base_cost, shipping, material, params)
     return {
         "利益計算価格": m_cur,
         "旧利益額": old_profit,
@@ -124,7 +123,7 @@ def simulate_price(new_price, new_cost, shipping, material, delivery, params, mo
     if not new_price:
         return None, None
     m = profit_base_price(new_price, delivery, params, mode)
-    p = profit(m, new_price, new_cost, shipping, material, params)
+    p = profit(m, new_cost, shipping, material, params)
     return p, (p / m) if m else None
 
 
@@ -147,7 +146,7 @@ def size_change_check(cur_price, cost, shipping_new, material_new,
     返り値: dict(利益チェック, 配送設定要修正, 新利益額, 新利益率)
     """
     m = profit_base_price(cur_price, delivery_old, params)
-    p = profit(m, cur_price, cost, shipping_new, material_new, params)
+    p = profit(m, cost, shipping_new, material_new, params)
     margin = (p / m) if m else None
     profit_ok = "〇" if (margin is not None and margin >= params["margin_warn"]) else "×"
     return {

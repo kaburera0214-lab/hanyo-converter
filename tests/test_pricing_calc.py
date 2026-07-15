@@ -50,11 +50,19 @@ def test_profit_base_and_m_to_price():
 def test_artc0486_user_example():
     """ユーザー提示の実例: 現891円・宅配60・下代363→365 → 新価格901円"""
     base, price, rule = _decide(891, 365, 363, 675, 30.5, "宅配便")
-    assert base["目標利益率価格"] == 580        # 15%にちょうど着地する価格
+    assert base["目標利益率価格"] == 711        # 15%にちょうど着地する価格（M*=1591−880）
     assert price == 901 and rule == "値上げ率価格"
     profit, margin = calc.simulate_price(price, 365, 675, 30.5, "宅配便", P)
-    assert round(profit) == 504 and abs(margin - 0.283) < 0.001
+    assert round(profit) == 408 and abs(margin - 0.2288) < 0.001
     assert calc.output_prices(price, 365, P)["NE売価"] == 819  # 901÷1.1
+
+
+def test_fee_on_total_payment():
+    """手数料は送料込みの決済総額Mに掛かる（ユーザー手計算 2026-07-14 と一致すること）:
+    販売価格(込)2794・原価783・送料675・資材75.83
+    → 総コスト=(783+279.4+675+75.83)×1.1=1994.553 → 利益799.447"""
+    p = calc.profit(2794, 783, 675, 75.83, P)
+    assert abs(p - 799.447) < 0.01
 
 
 def test_target_price_lands_on_target_margin():
@@ -78,7 +86,7 @@ def test_old_and_new_margin_same_formula():
     assert price == 1914
     _, new_margin = calc.simulate_price(price, 783, 675, 30.5, "宅配便", P)
     assert abs(base["旧利益率"] - new_margin) < 1e-9
-    assert abs(new_margin - 0.3386) < 0.001    # はちまき1914円: M=2794で33.86%
+    assert abs(new_margin - 0.3040) < 0.001    # はちまき1914円: M=2794で30.4%
 
 
 def test_always_max_rule():
@@ -86,9 +94,9 @@ def test_always_max_rule():
     # 値下げ（5200→4000）: 目標15%価格6995 > 値上げ率価格5500 → 6995（価格も下がる）
     _, price, rule = _decide(7150, 4000, 5200, 675, 30.5, "宅配便")
     assert price == 6995 and rule == "目標利益率価格"
-    # 同額・薄利（現440円・下代287のまま → 利益率-1.2%）→ 15%価格465円へ
+    # 同額・薄利（現440円・下代287のまま）→ 15%価格595円へ
     _, price2, rule2 = _decide(440, 287, 287, 675, 30.5, "宅配便")
-    assert price2 == 465 and rule2 == "目標利益率価格"
+    assert price2 == 595 and rule2 == "目標利益率価格"
     _, margin = calc.simulate_price(price2, 287, 675, 30.5, "宅配便", P)
     assert abs(margin - 0.15) < 0.01
     # 同額・利益が足りている商品は値上げ率価格=現価格が高い方 → 変わらず

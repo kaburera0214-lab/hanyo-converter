@@ -40,7 +40,8 @@ with st.sidebar:
                                     help="新価格はこの利益率にちょうど着地するよう逆算します"
                                          "（送料込みの入金ベース・楽天手数料込み）")
     params["target_margin"] = target_margin / 100.0
-    params["fee_rate"] = st.number_input("楽天手数料率(%)", 0.0, 30.0, 10.0, 0.5) / 100.0
+    params["fee_rate"] = st.number_input("楽天手数料率(%)", 0.0, 30.0, 10.0, 0.5,
+                                         help="送料込みの決済総額に掛かります") / 100.0
     params["free_ship_line"] = st.number_input("送料込みライン(円)", 0, 100000, 3980, 10,
                                                help="この金額以上は送料込み扱い（利益計算での加算なし）")
     params["takuhai_add"] = st.number_input("宅配便の込み換算加算(円)", 0, 10000, 880, 10)
