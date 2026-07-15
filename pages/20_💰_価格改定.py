@@ -360,8 +360,8 @@ tab1, tab2, tab3 = st.tabs(["📦 納品価格変更", "🚛 直送価格＆送�
 # ── タブ1: 納品価格変更（本流） ─────────────────────────────
 with tab1:
     st.markdown("##### 入力CSV: **JAN（またはNE商品コード）・新下代** ＋ 任意列（指定価格／値上げ率／項目1）")
-    st.caption("値下げ→据え置き、値上げ→「目標利益率価格」と「値上げ率価格（送料込みベース×新下代÷旧下代）」の高い方。"
-               "3980円未満はお客様負担の送料（宅配880円/メール350円）を差し引いた価格を設定します。"
+    st.caption("下代が値下げ→据え置き／同額・値上げ→「目標利益率価格」と「値上げ率価格（送料込みベース×新下代÷旧下代）」の高い方"
+               "（現価格は下回らない）。3980円未満はお客様負担の送料（宅配880円/メール350円）を差し引いた価格を設定します。"
                "旧下代はNE商品マスタの原価を使います。")
 
     prefill = st.session_state.get("pricing_tab1_prefill")
@@ -398,7 +398,7 @@ with tab1:
         else:
             st.caption(f"列の割り当て: JAN={c_jan or '－'} / 商品コード={c_code or '－'} / 新下代={c_cost}"
                        f" / 指定価格={c_fixed or '－'} / 値上げ率={c_pct or '－'} / 項目1上書き={c_size or '－'}")
-            force = st.checkbox("下代が同じ・値下げでも目標利益率価格に再設定する（サイズ変更由来など）",
+            force = st.checkbox("下代が値下げでも目標利益率価格に再設定する（サイズ変更由来など）",
                                 value=prefill is not None, key="t1_force")
             matched, unmatched = pipeline.match_input(in_df, c_code, c_jan, jan_map, code_info)
             show_unmatched(unmatched)

@@ -82,9 +82,21 @@ def test_old_and_new_margin_same_formula():
 
 
 def test_rule_price_down_keeps_current():
-    """下代値下げ→据え置き"""
+    """下代値下げ（新<旧）→据え置き"""
     _, price, rule = _decide(7150, 4000, 5200, 675, 30.5, "宅配便")
     assert price == 7150 and "据え置き" in rule
+
+
+def test_rule_same_cost_ensures_target_margin():
+    """下代が同額: 薄利なら目標利益率価格へ引き上げ、利益が足りていれば据え置き"""
+    # 薄利（現440円・下代287のまま・60サイズ宅配 → 利益率-1.2%）→ 15%価格465円へ
+    _, price, rule = _decide(440, 287, 287, 675, 30.5, "宅配便")
+    assert price == 465 and rule == "目標利益率価格"
+    _, margin = calc.simulate_price(price, 287, 675, 30.5, "宅配便", P)
+    assert abs(margin - 0.15) < 0.01
+    # 利益が足りている同額商品（33.9%）は据え置き（計算値が現価格以下）
+    _, price2, rule2 = _decide(1914, 783, 783, 675, 30.5, "宅配便")
+    assert price2 == 1914 and "据え置き" in rule2
 
 
 def test_rule_floor_at_current_price():
