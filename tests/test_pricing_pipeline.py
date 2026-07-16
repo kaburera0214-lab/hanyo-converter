@@ -62,9 +62,9 @@ def test_tab1_end_to_end():
     assert r["適用ルール"] == "目標利益率価格"
     assert r["新利益額"] == 1316 and abs(r["新利益率"] - 0.15) < 0.01
 
-    # kwgc0414: メール便・値上げ率価格 (1760+350)*1026/900=2405 → 2405-350=2055 > 目標1557
+    # kwgc0414: 値上げ率価格 1760×1026/900=2006（送料は掛けない）> 目標1609
     r = by_code["kwgc0414"]
-    assert r["現販売価格"] == 1760 and r["新販売価格"] == 2055
+    assert r["現販売価格"] == 1760 and r["新販売価格"] == 2006
     assert r["適用ルール"] == "値上げ率価格"
 
     # artc9999: 値下げ（1500→1200）でも高い方ルール。目標15%価格2148 > 値上げ率価格1584 → 2148
@@ -80,13 +80,14 @@ def test_tab1_end_to_end():
     rak_records, rak_missing = ex.rakuten_rows(mall, {})  # 対応表なし＝枝番なしは単品扱い
     assert rak_missing == []
     rak = ex.rakuten_csv(rak_records).decode("cp932")
-    assert "商品管理番号（商品URL）,商品番号,SKU管理番号,システム連携用SKU番号,販売価格,表示価格" in rak
-    assert "miya0284,miya0284,,,," in rak            # 親行
-    assert "miya0284,,miya0284,,8778,8778" in rak    # 単品SKU行
-    assert "artc9999,,artc9999,,2148,2148" in rak    # 値下げ方向の変更も出力される
+    assert ("商品管理番号（商品URL）,商品番号,SKU管理番号,システム連携用SKU番号,"
+            "販売価格,表示価格,二重価格文言管理番号") in rak
+    assert "miya0284,miya0284,,,,," in rak             # 親行（二重価格欄も空）
+    assert "miya0284,,miya0284,,8778,8778,1" in rak    # SKU行は二重価格文言管理番号=1固定
+    assert "artc9999,,artc9999,,2148,2148,1" in rak    # 値下げ方向の変更も出力される
     yah_records, yah_diff = ex.yahoo_rows(mall, {})
     yah = ex.yahoo_csv(yah_records).decode("cp932")
-    assert "code,price" in yah and "kwgc0414,2055" in yah and yah_diff == []
+    assert "code,price" in yah and "kwgc0414,2006" in yah and yah_diff == []
     ne = ex.ne_csv([{"商品コード": r["商品コード"], "NE売価": r["NE売価"],
                      "NE原価": r["新下代"]} for r in ok]).decode("cp932")
     assert "syohin_code,baika_tnk,genka_tnk" in ne

@@ -308,11 +308,12 @@ _DL_LABELS = {
 }
 
 
-def confirm_gate(files, key_prefix, tab_label):
+def confirm_gate(files, key_prefix, tab_label, extra_files=None):
     """✅確定 → Driveの「価格改定履歴」へ版数付き保存（YYYYMMDD_連番_タブ名）→ DLボタン表示。
 
     複数人運用での誤操作対策: 確定するまでCSVは出さない。確定した内容は
     Driveに証跡として残り、確定後に内容を修正した場合は再確定を求める。
+    extra_files: Driveには保存するがDLボタンは出さないファイル（入力CSVなどの証跡用）。
     """
     import hashlib
     cur_hash = hashlib.md5(b"".join(files.values())).hexdigest()
@@ -325,7 +326,8 @@ def confirm_gate(files, key_prefix, tab_label):
         run_name, url, err = "", "", ""
         try:
             with st.spinner("Driveにバックアップ中…"):
-                run_name, run_id = masters.save_run_to_drive(files, tab_label, product_folder)
+                run_name, run_id = masters.save_run_to_drive(
+                    {**files, **(extra_files or {})}, tab_label, product_folder)
             url = f"https://drive.google.com/drive/folders/{run_id}"
         except Exception as e:  # noqa: BLE001
             err = str(e)
@@ -354,15 +356,25 @@ def confirm_gate(files, key_prefix, tab_label):
                             key=f"{key_prefix}_dl_{name}", use_container_width=True)
 
 
-def confirm_and_download(result_df, key_prefix, tab_label, include_unchanged):
-    """価格変更タブ用: 出力CSVを組み立てて確定ゲートへ。"""
+def confirm_and_download(result_df, key_prefix, tab_label, include_unchanged, input_file=None):
+    """価格変更タブ用: 出力CSVを組み立てて確定ゲートへ。input_file=(名前, bytes)は証跡として一緒に保存。"""
     files, mall_n, ne_n = build_output_files(result_df, include_unchanged)
     st.caption(f"モール向け: {mall_n}件（価格変更あり{'＋変わらない行' if include_unchanged else 'のみ'}）"
                f" ／ NE向け: {ne_n}件（原価更新のため価格が変わらない行も含む）")
-    confirm_gate(files, key_prefix, tab_label)
+    extra = {f"input_{input_file[0]}": input_file[1]} if input_file else None
+    confirm_gate(files, key_prefix, tab_label, extra_files=extra)
 
 
-def result_section(rows, key_prefix, tab_label):
+def input_file_of(uploaded, prefill=None, prefill_name="サイズ変更引き継ぎ.csv"):
+    """バックアップ用の入力CSV（名前, bytes）。アップロードが無ければ引き継ぎ内容をCSV化。"""
+    if uploaded is not None:
+        return (uploaded.name, uploaded.getvalue())
+    if prefill is not None:
+        return (prefill_name, prefill.to_csv(index=False).encode("utf-8-sig"))
+    return None
+
+
+def result_section(rows, key_prefix, tab_label, input_file=None):
     """結果テーブル＋警告フィルタ＋確定・ダウンロード一式。"""
     df = pd.DataFrame(rows)
     # 警告は見つけやすいように商品名の直後に置く
@@ -392,7 +404,7 @@ def result_section(rows, key_prefix, tab_label):
     c4.metric("計算不可・要確認", f"{len(df) - len(up) - len(down) - len(keep)}件")
     include_unchanged = st.checkbox("価格が変わらない行もモールCSVに含める", value=False,
                                     key=f"{key_prefix}_inc_unchanged")
-    confirm_and_download(df, key_prefix, tab_label, include_unchanged)
+    confirm_and_download(df, key_prefix, tab_label, include_unchanged, input_file=input_file)
 
 
 # ══ タブ ════════════════════════════════════════════════════
@@ -401,9 +413,9 @@ tab1, tab2, tab3 = st.tabs(["📦 納品価格変更", "🚛 直送価格＆送�
 # ── タブ1: 納品価格変更（本流） ─────────────────────────────
 with tab1:
     st.markdown("##### 入力CSV: **JAN（またはNE商品コード）・新下代** ＋ 任意列（指定価格／値上げ率／項目1）")
-    st.caption("アップした商品はすべて「目標利益率価格」と「値上げ率価格（送料込みベース×新下代÷旧下代）」の**高い方**に設定します"
-               "（下代が値下げなら価格も下がり得ます。目標利益率は必ず確保）。"
-               "3980円未満はお客様負担の送料（宅配880円/メール350円）を差し引いた価格を設定します。"
+    st.caption("アップした商品はすべて「目標利益率価格」と「値上げ率価格（現販売価格×新下代÷旧下代・送料は含めない）」の"
+               "**高い方**に設定します（下代が値下げなら価格も下がり得ます。目標利益率は必ず確保）。"
+               "目標利益率価格の計算では、3980円未満はお客様負担の送料（宅配880円/メール350円）を考慮します。"
                "旧下代はNE商品マスタの原価を使います。")
 
     prefill = st.session_state.get("pricing_tab1_prefill")
@@ -452,7 +464,8 @@ with tab1:
                     c_fixed=c_fixed, c_pct=c_pct, c_size=c_size,
                     overrides=st.session_state.get("t1_result_overrides"),
                     cur_prices=cur_prices)
-                result_section(rows, "t1_result", "納品価格変更")
+                result_section(rows, "t1_result", "納品価格変更",
+                               input_file=input_file_of(up1, prefill))
 
 # ── タブ2: 直送価格＆送料変更 ───────────────────────────────
 with tab2:
@@ -492,7 +505,8 @@ with tab2:
                         c_fixed=c_fixed, c_pct=c_pct, c_ship=c_ship,
                         overrides=st.session_state.get("t2_result_overrides"),
                         cur_prices=cur_prices)
-                    result_section(rows, "t2_result", "直送価格送料変更")
+                    result_section(rows, "t2_result", "直送価格送料変更",
+                                   input_file=input_file_of(up2))
 
 # ── タブ3: 梱包サイズ変更 ───────────────────────────────────
 with tab3:
@@ -540,10 +554,12 @@ with tab3:
                     c2.metric("モール配送設定の修正が必要", f"{len(fix)}件")
                     item1_rows = [{"商品コード": r["商品コード"], "新項目1": r["新項目1"]}
                                   for _, r in df3.iterrows()]
+                    _in3 = input_file_of(up3)
                     confirm_gate({
                         "ne_item1_update.csv": ex.ne_item1_csv(item1_rows),
                         "size_change_check.csv": ex.detail_csv(df3),
-                    }, "t3_result", "梱包サイズ変更")
+                    }, "t3_result", "梱包サイズ変更",
+                        extra_files=({f"input_{_in3[0]}": _in3[1]} if _in3 else None))
                     if len(ng):
                         st.markdown("###### 利益NG品の価格再設定")
                         st.caption("下代は変わっていないため、「納品価格変更」タブへ引き継いで"

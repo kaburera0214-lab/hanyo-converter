@@ -19,8 +19,10 @@ from . import masters
 # 文字コード: 3システムともShift-JIS系での取込
 UPLOAD_ENCODING = "cp932"
 
+# 二重価格文言管理番号: 表示価格を設定する場合に必須。1=当店通常価格（固定）
 RAKUTEN_COLUMNS = ["商品管理番号（商品URL）", "商品番号", "SKU管理番号",
-                   "システム連携用SKU番号", "販売価格", "表示価格"]
+                   "システム連携用SKU番号", "販売価格", "表示価格",
+                   "二重価格文言管理番号"]
 YAHOO_COLUMNS = ["code", "price"]
 NE_COLUMNS = ["syohin_code", "baika_tnk", "genka_tnk"]
 
@@ -63,11 +65,12 @@ def rakuten_rows(rows, sku_table):
     for parent in order:
         records.append({"商品管理番号（商品URL）": parent, "商品番号": parent,
                         "SKU管理番号": "", "システム連携用SKU番号": "",
-                        "販売価格": "", "表示価格": ""})
+                        "販売価格": "", "表示価格": "", "二重価格文言管理番号": ""})
         for sku_no, renkei, price in groups[parent]:
             records.append({"商品管理番号（商品URL）": parent, "商品番号": "",
                             "SKU管理番号": sku_no, "システム連携用SKU番号": renkei,
-                            "販売価格": price, "表示価格": price})
+                            "販売価格": price, "表示価格": price,
+                            "二重価格文言管理番号": 1})
     return records, missing
 
 

@@ -48,13 +48,23 @@ def test_profit_base_and_m_to_price():
 
 
 def test_artc0486_user_example():
-    """ユーザー提示の実例: 現891円・宅配60・下代363→365 → 新価格901円"""
+    """実例: 現891円・宅配60・下代363→365。
+    値上げ率は送料を含まない現販売価格に掛ける（2026-07-16確定）→ 891×365/363=896円"""
     base, price, rule = _decide(891, 365, 363, 675, 30.5, "宅配便")
     assert base["目標利益率価格"] == 711        # 15%にちょうど着地する価格（M*=1591−880）
-    assert price == 901 and rule == "値上げ率価格"
+    assert price == 896 and rule == "値上げ率価格"
     profit, margin = calc.simulate_price(price, 365, 675, 30.5, "宅配便", P)
-    assert round(profit) == 408 and abs(margin - 0.2288) < 0.001
-    assert calc.output_prices(price, 365, P)["NE売価"] == 819  # 901÷1.1
+    assert round(profit) == 403 and abs(margin - 0.2270) < 0.001
+    assert calc.output_prices(price, 365, P)["NE売価"] == 815  # 896÷1.1
+
+
+def test_markup_percent_excludes_shipping():
+    """値上げ率%は送料を含まない価格に掛ける（ユーザー実例: 1100円×30%→1430円。
+    送料込みベースに掛けた1694円は誤り）"""
+    ctx = {"現販売価格": 1100, "利益計算価格": 1980, "値上げ率": "30",
+           "配送種別": "宅配便", "mode": "normal"}
+    price, name = rules.rule_markup_percent(ctx, P)
+    assert price == 1430 and name == "値上げ率30%"
 
 
 def test_fee_on_total_payment():
