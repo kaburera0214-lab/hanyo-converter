@@ -179,6 +179,39 @@ def build_lookup(ne_df):
     return jan_map, info
 
 
+# ── 確定した出力CSVの版数管理（Driveバックアップ） ─────────
+
+HISTORY_FOLDER_NAME = "価格改定履歴"
+
+
+def save_run_to_drive(files, label, folder_id):
+    """
+    確定した出力CSV一式を、Driveの「価格改定履歴/YYYYMMDD_連番_ラベル」フォルダへ保存する。
+    誰がいつどのCSVを作ったかの証跡（版数管理）。同日内は連番が自動で増える。
+    files: {ファイル名: bytes} / 返り値: (実行名, フォルダID)
+    """
+    import datetime
+    hist_id = drive_master.get_or_create_folder(HISTORY_FOLDER_NAME, folder_id)
+    today = datetime.datetime.now().strftime("%Y%m%d")
+    service = drive_master._service()
+    q = (f"'{hist_id}' in parents and name contains '{today}_' "
+         "and mimeType = 'application/vnd.google-apps.folder' and trashed = false")
+    res = service.files().list(q=q, fields="files(name)", pageSize=1000).execute()
+    vers = []
+    for f in res.get("files", []):
+        parts = f["name"].split("_")
+        if len(parts) >= 2 and parts[0] == today:
+            try:
+                vers.append(int(parts[1]))
+            except ValueError:
+                pass
+    run_name = f"{today}_{(max(vers) + 1 if vers else 1):03d}_{label}"
+    run_id = drive_master.get_or_create_folder(run_name, hist_id)
+    for name, data in files.items():
+        drive_master.upload_bytes(data, name, run_id, "text/csv")
+    return run_name, run_id
+
+
 # ── 楽天SKU対応表 ─────────────────────────────────────────
 
 def sku_table_to_df(table):

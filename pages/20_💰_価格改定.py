@@ -324,8 +324,8 @@ def editable_result(df, key):
     return edited
 
 
-def download_buttons(result_df, key_prefix, include_unchanged):
-    """楽天・Yahoo・NE・明細の4ダウンロードボタン。"""
+def build_output_files(result_df, include_unchanged):
+    """結果表 → 出力CSV一式（bytes）。返り値: (files dict, モール件数, NE件数)"""
     ok = result_df[result_df["新販売価格"].notna() & (result_df["新販売価格"] > 0)]
     changed = ok if include_unchanged else ok[ok["新販売価格"] != ok["現販売価格"]]
     mall_rows = [{"商品コード": r["商品コード"],
@@ -345,28 +345,82 @@ def download_buttons(result_df, key_prefix, include_unchanged):
         st.caption(f"🟡 Yahooは親コード単位のため、SKUで価格が割れた {len(yah_diff)}件 は最高値を採用: "
                    f"{', '.join(yah_diff[:10])}{' …' if len(yah_diff) > 10 else ''}")
 
-    st.caption(f"モール向け: {len(mall_rows)}件（価格変更あり{'＋変わらない行' if include_unchanged else 'のみ'}）"
-               f" ／ NE向け: {len(ne_rows)}件（原価更新のため価格が変わらない行も含む）")
-    c1, c2, c3, c4 = st.columns(4)
-    c1.download_button("🔴 楽天 normal-item.csv", ex.rakuten_csv(rak_records),
-                       "normal-item.csv", "text/csv",
-                       key=f"{key_prefix}_dl_rakuten", disabled=not rak_records,
-                       use_container_width=True)
-    c2.download_button("🟡 Yahoo data.csv", ex.yahoo_csv(yah_records),
-                       "yahoo_data.csv", "text/csv",
-                       key=f"{key_prefix}_dl_yahoo", disabled=not yah_records,
-                       use_container_width=True)
-    c3.download_button("🟢 NE商品マスタ更新CSV", ex.ne_csv(ne_rows),
-                       "ne_price_update.csv", "text/csv",
-                       key=f"{key_prefix}_dl_ne", disabled=not ne_rows,
-                       use_container_width=True)
-    c4.download_button("📄 計算明細CSV", ex.detail_csv(result_df),
-                       "price_detail.csv", "text/csv",
-                       key=f"{key_prefix}_dl_detail", use_container_width=True)
+    files = {
+        "normal-item.csv": ex.rakuten_csv(rak_records),
+        "yahoo_data.csv": ex.yahoo_csv(yah_records),
+        "ne_price_update.csv": ex.ne_csv(ne_rows),
+        "price_detail.csv": ex.detail_csv(result_df),
+    }
+    return files, len(mall_rows), len(ne_rows)
 
 
-def result_section(rows, key_prefix):
-    """結果テーブル＋警告フィルタ＋ダウンロード一式。"""
+# ダウンロードボタンの表示名（ファイル名→ラベル）
+_DL_LABELS = {
+    "normal-item.csv": "🔴 楽天 normal-item.csv",
+    "yahoo_data.csv": "🟡 Yahoo data.csv",
+    "ne_price_update.csv": "🟢 NE商品マスタ更新CSV",
+    "price_detail.csv": "📄 計算明細CSV",
+    "ne_item1_update.csv": "🟢 NE項目1更新CSV",
+    "size_change_check.csv": "📄 チェック結果CSV",
+}
+
+
+def confirm_gate(files, key_prefix, tab_label):
+    """✅確定 → Driveの「価格改定履歴」へ版数付き保存（YYYYMMDD_連番_タブ名）→ DLボタン表示。
+
+    複数人運用での誤操作対策: 確定するまでCSVは出さない。確定した内容は
+    Driveに証跡として残り、確定後に内容を修正した場合は再確定を求める。
+    """
+    import hashlib
+    cur_hash = hashlib.md5(b"".join(files.values())).hexdigest()
+
+    conf_key = key_prefix + "_confirmed"
+    conf = st.session_state.get(conf_key)
+    label = "✅ 確定してDriveに保存（CSVを表示）" if conf is None else "✅ 再確定してDriveに保存し直す"
+    if st.button(label, key=key_prefix + "_confirm", type="primary",
+                 disabled=(conf is not None and conf["hash"] == cur_hash)):
+        run_name, url, err = "", "", ""
+        try:
+            with st.spinner("Driveにバックアップ中…"):
+                run_name, run_id = masters.save_run_to_drive(files, tab_label, product_folder)
+            url = f"https://drive.google.com/drive/folders/{run_id}"
+        except Exception as e:  # noqa: BLE001
+            err = str(e)
+        st.session_state[conf_key] = {"hash": cur_hash, "files": files,
+                                      "run": run_name, "url": url, "err": err}
+        st.rerun()
+
+    if conf is None:
+        st.info("内容を確認したら「✅ 確定」を押してください。Driveにバックアップされた後、CSVがダウンロードできます。")
+        return
+
+    if conf["err"]:
+        st.error(f"⚠️ Driveへのバックアップに失敗しました（CSVは下からダウンロードできます）: {conf['err']}")
+    else:
+        st.success(f"確定済み: **{conf['run']}** としてDriveに保存しました。")
+        if conf["url"]:
+            st.link_button("📁 バックアップフォルダを開く", conf["url"])
+    if conf["hash"] != cur_hash:
+        st.warning("⚠️ 確定した後に内容が変わっています。下のCSVは**確定時点の内容**です。"
+                   "最新の内容にするには「✅ 再確定」を押してください。")
+
+    saved = conf["files"]
+    cols = st.columns(len(saved))
+    for col, (name, data) in zip(cols, saved.items()):
+        col.download_button(_DL_LABELS.get(name, name), data, name, "text/csv",
+                            key=f"{key_prefix}_dl_{name}", use_container_width=True)
+
+
+def confirm_and_download(result_df, key_prefix, tab_label, include_unchanged):
+    """価格変更タブ用: 出力CSVを組み立てて確定ゲートへ。"""
+    files, mall_n, ne_n = build_output_files(result_df, include_unchanged)
+    st.caption(f"モール向け: {mall_n}件（価格変更あり{'＋変わらない行' if include_unchanged else 'のみ'}）"
+               f" ／ NE向け: {ne_n}件（原価更新のため価格が変わらない行も含む）")
+    confirm_gate(files, key_prefix, tab_label)
+
+
+def result_section(rows, key_prefix, tab_label):
+    """結果テーブル＋警告フィルタ＋確定・ダウンロード一式。"""
     df = pd.DataFrame(rows)
     # 警告は見つけやすいように商品名の直後に置く
     lead = ["商品コード", "商品名", "警告"]
@@ -395,7 +449,7 @@ def result_section(rows, key_prefix):
     c4.metric("計算不可・要確認", f"{len(df) - len(up) - len(down) - len(keep)}件")
     include_unchanged = st.checkbox("価格が変わらない行もモールCSVに含める", value=False,
                                     key=f"{key_prefix}_inc_unchanged")
-    download_buttons(df, key_prefix, include_unchanged)
+    confirm_and_download(df, key_prefix, tab_label, include_unchanged)
 
 
 # ══ タブ ════════════════════════════════════════════════════
@@ -454,7 +508,7 @@ with tab1:
                     c_fixed=c_fixed, c_pct=c_pct, c_size=c_size,
                     overrides=st.session_state.get("t1_result_overrides"),
                     cur_prices=cur_prices)
-                result_section(rows, "t1_result")
+                result_section(rows, "t1_result", "納品価格変更")
 
 # ── タブ2: 直送価格＆送料変更 ───────────────────────────────
 with tab2:
@@ -493,7 +547,7 @@ with tab2:
                         c_fixed=c_fixed, c_pct=c_pct, c_ship=c_ship,
                         overrides=st.session_state.get("t2_result_overrides"),
                         cur_prices=cur_prices)
-                    result_section(rows, "t2_result")
+                    result_section(rows, "t2_result", "直送価格送料変更")
 
 # ── タブ3: 梱包サイズ変更 ───────────────────────────────────
 with tab3:
@@ -538,15 +592,12 @@ with tab3:
                     c1, c2 = st.columns(2)
                     c1.metric("利益NG（価格再設定を推奨）", f"{len(ng)}件")
                     c2.metric("モール配送設定の修正が必要", f"{len(fix)}件")
-                    d1, d2 = st.columns(2)
                     item1_rows = [{"商品コード": r["商品コード"], "新項目1": r["新項目1"]}
                                   for _, r in df3.iterrows()]
-                    d1.download_button("🟢 NE項目1更新CSV", ex.ne_item1_csv(item1_rows),
-                                       "ne_item1_update.csv", "text/csv",
-                                       key="t3_dl_ne", use_container_width=True)
-                    d2.download_button("📄 チェック結果CSV", ex.detail_csv(df3),
-                                       "size_change_check.csv", "text/csv",
-                                       key="t3_dl_detail", use_container_width=True)
+                    confirm_gate({
+                        "ne_item1_update.csv": ex.ne_item1_csv(item1_rows),
+                        "size_change_check.csv": ex.detail_csv(df3),
+                    }, "t3_result", "梱包サイズ変更")
                     if len(ng):
                         st.markdown("###### 利益NG品の価格再設定")
                         st.caption("下代は変わっていないため、「納品価格変更」タブへ引き継いで"
