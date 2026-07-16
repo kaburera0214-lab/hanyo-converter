@@ -11,6 +11,8 @@ import pandas as pd
 import requests
 import streamlit as st
 
+from lib import master_store
+
 MASTER_BACKUP_FOLDER_ID = "1pQJgn7tYX0KF4x70WY6mlOiruZWPInd-"
 
 def _get_drive_service():
@@ -1666,22 +1668,10 @@ def main():
 
     st.title("📦 汎用マスタCSV変換ツール")
 
-    # ── 商品マスタの読み込み ──────────────────────────────
-    if "master" not in st.session_state:
-        # ローカルは参照せず、常にGitHubから読み込む
-        master, err = load_master_from_github()
-        if err:
-            st.session_state["master"] = None
-            st.session_state["master_info"] = "未読み込み"
-        else:
-            st.session_state["master"] = master
-            updated = master_github_updated_at()
-            st.session_state["master_info"] = (
-                f"{len(master):,} 件（GitHub から読み込み"
-                + (f"・最終更新 {updated}" if updated else "") + "）")
-
-    if "master_supplier" not in st.session_state:
-        st.session_state["master_supplier"] = load_master_supplier_from_github()
+    # ── 商品マスタ ────────────────────────────────────────
+    # 2026-07-16設計変更: 起動時には読み込まない。変換の実行時に
+    # Driveの最新版（master_YYYYMMDD_NNN.csv・全機能共通）を自動取得する。
+    # GitHubのmaster.csvは更新・参照とも停止（lib/master_store.py参照）。
 
     # ── 個口数マスタの読み込み ────────────────────────────
     if "koguchi_master" not in st.session_state:
@@ -1740,57 +1730,19 @@ def main():
             use_container_width=True,
         )
 
-        # ── 商品マスタ（折りたたみ） ──────────────────────────
+        # ── 商品マスタ（折りたたみ・全機能共通ストア） ────────
         with st.expander("⚙️ 商品マスタ", expanded=False):
-            if st.session_state.get("master"):
-                st.success(st.session_state.get("master_info", "読み込み済み"))
+            _mf = master_store.latest_file()
+            if _mf:
+                st.success(f"Driveの最新版: {_mf['name']}"
+                           f"（更新 {str(_mf.get('modifiedTime', ''))[:10]}）")
             else:
-                st.error("マスタ未読み込み")
-            if st.button("🔄 GitHubから最新を再読み込み", key="btn_master_reload",
-                         help="別の人がマスタを更新した場合や、画面を長く開いている場合に押してください"):
-                load_master_from_github.clear()
-                load_master_supplier_from_github.clear()
-                master_github_updated_at.clear()
-                for _k in ("master", "master_info", "master_supplier"):
-                    st.session_state.pop(_k, None)
+                st.error("Driveに商品マスタ（master_*）がありません")
+            st.caption("変換の実行時に、この最新版を自動で読み込みます。"
+                       "ここでアップロードすると全ページ（価格改定・請求書発行など）にも即時反映されます。"
+                       "NEからのダウンロードは**全カラム**を推奨。")
+            if master_store.upload_widget("hanyo_master_up"):
                 st.rerun()
-            st.caption("マスタを更新する場合のみアップロード")
-            master_uploader_key = f"up_master_{st.session_state.get('master_upload_count', 0)}"
-            _mdf = st.session_state.pop("master_drive_flash", None)
-            if _mdf:
-                getattr(st, _mdf[0])(_mdf[1])
-            new_master = st.file_uploader("新しい商品マスタCSV（Shift-JIS）", type="csv", key=master_uploader_key)
-            if new_master:
-                if st.button("📥 商品マスタを更新する", key="btn_master_update", type="primary"):
-                    file_bytes = new_master.read()
-                    master, err = load_master_from_upload(file_bytes)
-                    if err:
-                        st.error(err)
-                    else:
-                        st.session_state["master"] = master
-                        st.session_state["master_info"] = f"{len(master):,} 件（今回アップロード）"
-                        # GitHub に保存（次回起動時に自動読み込みされる）
-                        with st.spinner("GitHubにマスタを保存中（初回は少し時間がかかります）..."):
-                            gh_ok, gh_err = save_master_to_github(file_bytes)
-                        if gh_ok:
-                            load_master_from_github.clear()  # キャッシュ更新
-                            load_master_supplier_from_github.clear()
-                            master_github_updated_at.clear()
-                            st.session_state.pop("master_supplier", None)
-                            st.success(f"更新しました：{len(master):,} 件（GitHub に保存済み ✅）")
-                        else:
-                            st.error(f"🛑 GitHubへの保存に失敗しました: {gh_err}\n\n"
-                                     f"この更新は**今開いている画面でしか有効ではなく、"
-                                     f"次回起動時には古いマスタに戻ります**。"
-                                     f"もう一度アップロードするか、管理者に連絡してください。")
-                        # Google Drive バックアップ（結果はrerun後も表示できるようsessionに保持）
-                        with st.spinner("Google Driveにバックアップ中..."):
-                            ok, result = backup_to_drive(file_bytes, "商品マスタ", "master")
-                        st.session_state["master_drive_flash"] = (
-                            ("info", f"📁 Drive保存: {result}") if ok
-                            else ("warning", f"Drive保存失敗: {result}"))
-                        st.session_state["master_upload_count"] = st.session_state.get("master_upload_count", 0) + 1
-                        st.rerun()
 
         # ── 個口数マスタ（折りたたみ） ────────────────────────
         with st.expander("📦 個口数マスタ", expanded=False):
@@ -1889,31 +1841,36 @@ def main():
             order_file = st.file_uploader("先方からの受注ファイル", type="csv", key="order_upload")
             st.divider()
     
-            master         = st.session_state.get("master")
             koguchi_master = st.session_state.get("koguchi_master", {})
-            can_convert    = order_file is not None and master is not None
-    
-            if not master:
-                st.error("商品マスタが読み込まれていません。サイドバーからアップロードしてください。")
-    
-            if st.button("🔄 変換する", type="primary", disabled=not can_convert, key="btn_convert"):
-                with st.spinner("変換中..."):
-                    _bytes, _orders, _rows, _nf = convert(order_file.read(), master, koguchi_master)
-                st.session_state["tab1_result"] = {
-                    "csv_bytes": _bytes, "n_orders": _orders,
-                    "n_rows": _rows, "not_found": _nf,
-                    "filename": f"hanyo_master_{datetime.now().strftime('%Y%m%d')}.csv",
-                }
-                append_conversion_log(
-                    "hanyo",
-                    orders=_orders,
-                    rows=_rows,
-                    error=f"不明JAN: {len(_nf)}件" if _nf else None,
-                    unknown_jan=len(_nf),
-                )
+
+            if st.button("🔄 変換する", type="primary", disabled=order_file is None, key="btn_convert"):
+                # 実行時にDriveの最新商品マスタを読み込む（全機能共通ストア）
+                with st.spinner("商品マスタの最新版を読み込み中..."):
+                    _mdf, _mmeta = master_store.load_master()
+                if _mdf is None:
+                    st.error(_mmeta)
+                else:
+                    master = master_store.jan_dict(_mdf)
+                    with st.spinner("変換中..."):
+                        _bytes, _orders, _rows, _nf = convert(order_file.read(), master, koguchi_master)
+                    st.session_state["tab1_result"] = {
+                        "csv_bytes": _bytes, "n_orders": _orders,
+                        "n_rows": _rows, "not_found": _nf,
+                        "master_meta": _mmeta,
+                        "filename": f"hanyo_master_{datetime.now().strftime('%Y%m%d')}.csv",
+                    }
+                    append_conversion_log(
+                        "hanyo",
+                        orders=_orders,
+                        rows=_rows,
+                        error=f"不明JAN: {len(_nf)}件" if _nf else None,
+                        unknown_jan=len(_nf),
+                    )
 
             res1 = st.session_state.get("tab1_result")
             if res1:
+                if res1.get("master_meta"):
+                    st.caption(f"使用マスタ: {res1['master_meta']}")
                 if res1["not_found"]:
                     st.error(f"🛑 商品マスタに存在しないJANコードがあります（{len(res1['not_found'])} 件）。"
                              "**変換結果は出力できません。**")
@@ -1959,29 +1916,35 @@ def main():
                     order3   = st.file_uploader("受注CSVをアップロード", type="csv", key="order3_upload")
                     st.divider()
     
-                    master3         = st.session_state.get("master")
                     koguchi_master3 = st.session_state.get("koguchi_master", {})
-                    if not master3:
-                        st.warning("商品マスタが未読み込みです。サイドバーからアップロードしてください。")
-    
+
                     if st.button("🔄 変換する", type="primary", disabled=order3 is None, key="btn_custom_convert"):
-                        with st.spinner("変換中..."):
-                            _b3, _o3, _r3, _nf3, _e3 = apply_custom_mapping(
-                                order3.read(), mappings[sel_name],
-                                master3 or {}, koguchi_master3, s_enc_map[enc_lbl],
-                                master_supplier=st.session_state.get("master_supplier", {}),
-                            )
-                        if _e3:
-                            st.error(_e3)
+                        # 実行時にDriveの最新商品マスタを読み込む（全機能共通ストア）
+                        with st.spinner("商品マスタの最新版を読み込み中..."):
+                            _mdf3, _mmeta3 = master_store.load_master()
+                        if _mdf3 is None:
+                            st.error(_mmeta3)
                         else:
-                            st.session_state["tab3_result"] = {
-                                "csv_bytes": _b3, "n_orders": _o3, "n_rows": _r3,
-                                "not_found": _nf3,
-                                "filename": f"hanyo_master_{datetime.now().strftime('%Y%m%d')}.csv",
-                            }
+                            with st.spinner("変換中..."):
+                                _b3, _o3, _r3, _nf3, _e3 = apply_custom_mapping(
+                                    order3.read(), mappings[sel_name],
+                                    master_store.jan_dict(_mdf3), koguchi_master3, s_enc_map[enc_lbl],
+                                    master_supplier=master_store.supplier_dict(_mdf3),
+                                )
+                            if _e3:
+                                st.error(_e3)
+                            else:
+                                st.session_state["tab3_result"] = {
+                                    "csv_bytes": _b3, "n_orders": _o3, "n_rows": _r3,
+                                    "not_found": _nf3,
+                                    "master_meta": _mmeta3,
+                                    "filename": f"hanyo_master_{datetime.now().strftime('%Y%m%d')}.csv",
+                                }
     
                     res3 = st.session_state.get("tab3_result")
                     if res3:
+                        if res3.get("master_meta"):
+                            st.caption(f"使用マスタ: {res3['master_meta']}")
                         if res3["not_found"]:
                             st.error(f"🛑 商品マスタに存在しないJANコードがあります（{len(res3['not_found'])} 件）。"
                                      "**変換結果は出力できません。**")

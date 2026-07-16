@@ -8,8 +8,6 @@
 突合〜ルール適用は lib/pricing/pipeline.py（Streamlit非依存・テスト共用）。
 出力形式は実際のアップロード実績ファイルに一致（lib/pricing/export.py）。
 """
-import os
-
 import pandas as pd
 import streamlit as st
 
@@ -22,13 +20,11 @@ st.title("💰 価格改定")
 st.caption("インプットCSV（JAN・新下代）→ 楽天・Yahoo・ネクストエンジンの価格更新CSVを作ります。"
            "アップロード（本番反映）は必ず内容を確認してから手動で行ってください。")
 
-from lib.invoice import csv_import, drive_master
+from lib import master_store
+from lib.invoice import csv_import
 from lib.pricing import calc, export as ex, masters, pipeline, rakuten_price
 
-_REPO_ROOT = os.path.join(os.path.dirname(__file__), "..")
-
-product_folder = st.secrets.get(
-    "PRODUCT_MASTER_FOLDER_ID", "1pQJgn7tYX0KF4x70WY6mlOiruZWPInd-")
+product_folder = master_store.folder_id()
 
 
 # ══ サイドバー: 計算パラメータ ══════════════════════════════
@@ -108,96 +104,43 @@ with st.expander("🚚 送料・資材マスタ（この画面だけで管理・
 cost_table = masters.cost_lookup(edited_norm)
 
 
-# ══ NE商品マスタ（汎用マスタ変換と共通） ════════════════════
+# ══ NE商品マスタ（全機能共通ストア・実行時に最新を自動取得） ═
 
-ne_df = st.session_state.get("pricing_ne_df")
-ne_meta = st.session_state.get("pricing_ne_meta", "")
-ne_missing = st.session_state.get("pricing_ne_missing", [])
-
-if ne_df is None:
-    candidates = []
-    if product_folder:
-        try:
-            with st.spinner("NE商品マスタをDriveから読み込み中…（初回のみ）"):
-                f = drive_master.find_latest(product_folder, "master")
-                if f:
-                    mdf, missing = masters.load_ne_master(drive_master.download_bytes(f["id"]))
-                    candidates.append((mdf, missing, f"Drive保存版 {f['name']}（汎用と共通・{len(mdf):,}件）"))
-        except Exception as e:  # noqa: BLE001
-            st.caption(f"（DriveのNE商品マスタ読込をスキップ: {e}）")
-    try:
-        mdf, missing = masters.load_repo_master(_REPO_ROOT)
-        if mdf is not None:
-            candidates.append((mdf, missing, f"共有master.csv（汎用と共通・{len(mdf):,}件）"))
-    except Exception as e:  # noqa: BLE001
-        st.caption(f"（共有master.csvの読込をスキップ: {e}）")
-    # 原価（旧下代）があるものを優先。無ければ先頭（Drive優先）を使う
-    chosen = next(((d, m, meta) for d, m, meta in candidates if "原価" not in m), None)
-    if chosen is None and candidates:
-        chosen = candidates[0]
-    if chosen:
-        ne_df, ne_missing, ne_meta = chosen
-        st.session_state["pricing_ne_df"] = ne_df
-        st.session_state["pricing_ne_meta"] = ne_meta
-        st.session_state["pricing_ne_missing"] = ne_missing
-
-with st.expander("📚 NE商品マスタ（汎用マスタ変換と共通・毎回アップ不要）", expanded=(ne_df is None)):
-    st.caption("汎用マスタ変換・請求書発行と同じ商品マスタを使います。"
-               "価格改定に必要な列は **商品コード・JANコード・原価（旧下代）・項目1** の4つだけ。"
-               "売価は使いません（現販売価格は必ず📡楽天から取得します）。"
-               "ここでアップロードするとDriveにバックアップされ（master_日付_版数.csv）、"
-               "他のページからも最新版として参照されます。")
-    if product_folder:
-        st.link_button("📁 商品マスタのDriveフォルダを開く",
-                       f"https://drive.google.com/drive/folders/{product_folder}",
-                       use_container_width=True)
-    if ne_df is not None:
-        st.success(f"NE商品マスタ利用中: {ne_meta}")
-        if ne_missing:
-            msgs = {"JANコード": "JANでの突合ができません",
-                    "原価": "値上げ/値下げの判定と原価更新ができません",
-                    "項目1": "送料・資材を引けません"}
-            st.warning("このマスタには次の列がありません: "
-                       + "／".join(f"{c}（{msgs.get(c, '')}）" for c in ne_missing)
-                       + "。次回のNEカスタム更新時に列を追加してください。")
+with st.expander("📚 NE商品マスタ（全機能共通・実行時に最新を自動取得）", expanded=False):
+    st.caption("汎用マスタ変換・請求書発行と同じ商品マスタ（Driveの最新版）を、"
+               "**計算の実行時に自動で読み込みます**（アップは不要）。"
+               "価格改定で使う列は **商品コード・JANコード・原価（旧下代）・項目1**。"
+               "売価は使いません（現販売価格は必ず📡楽天から取得します）。")
+    _f = master_store.latest_file()
+    if _f:
+        st.success(f"Driveの最新版: {_f['name']}（更新 {str(_f.get('modifiedTime', ''))[:10]}）")
     else:
-        st.info("NE商品マスタが見つかりません。NEカスタムCSVをアップロードしてください。")
-    if st.button("🔄 マスタを再取得（最新を読み直す）", key="pricing_ne_reload"):
-        for k in ("pricing_ne_df", "pricing_ne_meta", "pricing_ne_missing", "pricing_ne_lookup"):
-            st.session_state.pop(k, None)
+        st.info("Driveに商品マスタ（master_*）がありません。下からアップロードしてください。")
+    st.link_button("📁 商品マスタのDriveフォルダを開く",
+                   f"https://drive.google.com/drive/folders/{master_store.folder_id()}",
+                   use_container_width=True)
+    if master_store.upload_widget("pricing_master_up"):
         st.rerun()
-    new_master = st.file_uploader("NEカスタム（商品マスタ）CSVをアップロード／差し替え",
-                                  type=["csv"], key="pricing_ne_upload")
-    if new_master is not None:
-        data = new_master.getvalue()
-        try:
-            mdf, missing = masters.load_ne_master(data)
-        except Exception as e:  # noqa: BLE001
-            st.error(f"NE商品マスタCSVの読込に失敗: {e}")
-            mdf = None
-        if mdf is not None:
-            ne_df, ne_missing = mdf, missing
-            ne_meta = f"アップロード版（{len(mdf):,}件）"
-            st.session_state["pricing_ne_df"] = mdf
-            st.session_state["pricing_ne_meta"] = ne_meta
-            st.session_state["pricing_ne_missing"] = missing
-            st.session_state.pop("pricing_ne_lookup", None)  # 索引を作り直す
-            st.success(f"NE商品マスタを更新しました（{len(mdf):,}件）。")
-            if product_folder:
-                try:
-                    bn = drive_master.upload_versioned(data, "master", product_folder)
-                    st.caption(f"Driveにバックアップしました（{bn}・汎用/請求書と共通の最新版になります）。")
-                except Exception as e:  # noqa: BLE001
-                    st.warning(f"⚠️ Driveバックアップに失敗しました（今回のセッションでは利用可能）: {e}")
 
-# NE商品マスタの索引（10万行の走査は重いので、マスタ更新時だけ作ってセッションに保持）
-if ne_df is not None:
-    if "pricing_ne_lookup" not in st.session_state:
-        with st.spinner("商品マスタの索引を作成中…（マスタ更新時のみ）"):
-            st.session_state["pricing_ne_lookup"] = masters.build_lookup(ne_df)
-    jan_map, code_info = st.session_state["pricing_ne_lookup"]
-else:
-    jan_map, code_info = {}, {}
+
+def get_master_lookup():
+    """実行時にDriveの最新商品マスタを読み込み、突合用の索引を返す。
+    返り値: (jan_map, code_info)。読めない場合は (None, None) でエラー表示済み。"""
+    with st.spinner("商品マスタの最新版を確認中…"):
+        ne_df, meta = master_store.load_master()
+    if ne_df is None:
+        st.error(meta)
+        return None, None
+    missing = [c for c in ("JANコード", "原価", "項目1") if c not in ne_df.columns]
+    if missing:
+        msgs = {"JANコード": "JANでの突合ができません",
+                "原価": "値上げ/値下げの判定と原価更新ができません",
+                "項目1": "送料・資材を引けません"}
+        st.warning("マスタに次の列がありません: "
+                   + "／".join(f"{c}（{msgs.get(c, '')}）" for c in missing)
+                   + "。NEから全カラムでDLしてアップし直してください。")
+    st.caption(f"使用マスタ: {meta}")
+    return master_store.memo("pricing_lookup", lambda: masters.build_lookup(ne_df))
 
 
 # ══ 楽天SKU対応表（画面には出さない・📡取得時にRMS APIから自動構築しDrive保存） ═
@@ -481,9 +424,7 @@ with tab1:
         except Exception as e:  # noqa: BLE001
             st.error(f"CSVの読込に失敗: {e}")
 
-    if in_df is not None and ne_df is None:
-        st.error("先に上の「NE商品マスタ」からNEカスタムCSVをアップロードしてください。")
-    elif in_df is not None:
+    if in_df is not None:
         c_jan = pipeline.pick_col(in_df, "JANコード", "JAN", "jan")
         c_code = pipeline.pick_col(in_df, "商品コード")
         c_cost = pipeline.pick_col(in_df, "新下代", "下代", "仕入価格", "納品価格", "新仕入")
@@ -497,8 +438,11 @@ with tab1:
         else:
             st.caption(f"列の割り当て: JAN={c_jan or '－'} / 商品コード={c_code or '－'} / 新下代={c_cost}"
                        f" / 指定価格={c_fixed or '－'} / 値上げ率={c_pct or '－'} / 項目1上書き={c_size or '－'}")
-            matched, unmatched = pipeline.match_input(in_df, c_code, c_jan, jan_map, code_info)
-            show_unmatched(unmatched)
+            jan_map, code_info = get_master_lookup()
+            matched = []
+            if jan_map is not None:
+                matched, unmatched = pipeline.match_input(in_df, c_code, c_jan, jan_map, code_info)
+                show_unmatched(unmatched)
             if matched:
                 cur_prices = rakuten_price_controls(matched, "t1")
                 matched = exclude_not_on_rakuten(matched, cur_prices)
@@ -516,9 +460,7 @@ with tab2:
     st.caption("直送品: 資材0円・送料は入力値・送料込み換算なし（利益計算価格=現販売価格）。"
                "価格ルールは納品価格変更と同じです。")
     up2 = st.file_uploader("直送価格変更の入力CSV", type=["csv"], key="t2_upload")
-    if up2 is not None and ne_df is None:
-        st.error("先に上の「NE商品マスタ」からNEカスタムCSVをアップロードしてください。")
-    elif up2 is not None:
+    if up2 is not None:
         try:
             in_df2 = csv_import.read_csv_auto(up2.getvalue())
         except Exception as e:  # noqa: BLE001
@@ -536,8 +478,11 @@ with tab2:
             elif not c_cost or not c_ship:
                 st.error(f"新下代・新送料の列が必要です。実際の列: {list(in_df2.columns)}")
             else:
-                matched, unmatched = pipeline.match_input(in_df2, c_code, c_jan, jan_map, code_info)
-                show_unmatched(unmatched)
+                jan_map, code_info = get_master_lookup()
+                matched = []
+                if jan_map is not None:
+                    matched, unmatched = pipeline.match_input(in_df2, c_code, c_jan, jan_map, code_info)
+                    show_unmatched(unmatched)
                 if matched:
                     cur_prices = rakuten_price_controls(matched, "t2")
                     matched = exclude_not_on_rakuten(matched, cur_prices)
@@ -556,9 +501,7 @@ with tab3:
                "②配送設定修正（宅配便⇔メール便が変わるか）。"
                "現販売価格は📡「楽天から現在価格を取得」で取り込みます。")
     up3 = st.file_uploader("サイズ変更の入力CSV", type=["csv"], key="t3_upload")
-    if up3 is not None and ne_df is None:
-        st.error("先に上の「NE商品マスタ」からNEカスタムCSVをアップロードしてください。")
-    elif up3 is not None:
+    if up3 is not None:
         try:
             in_df3 = csv_import.read_csv_auto(up3.getvalue())
         except Exception as e:  # noqa: BLE001
@@ -572,10 +515,13 @@ with tab3:
             if not c_jan and not c_code:
                 st.error(f"JAN列（または商品コード列）が見つかりません。実際の列: {list(in_df3.columns)}")
             elif not c_size:
-                st.error(f"新項目1（新サイズ）の列が必要です。実際の列: {list(in_df3.columns)}")
+                st.error(f"新項目1（新サイズ）の列が見つかりません。実際の列: {list(in_df3.columns)}")
             else:
-                matched, unmatched = pipeline.match_input(in_df3, c_code, c_jan, jan_map, code_info)
-                show_unmatched(unmatched)
+                jan_map, code_info = get_master_lookup()
+                matched = []
+                if jan_map is not None:
+                    matched, unmatched = pipeline.match_input(in_df3, c_code, c_jan, jan_map, code_info)
+                    show_unmatched(unmatched)
                 cur_prices = rakuten_price_controls(matched, "t3") if matched else {}
                 if matched:
                     matched = exclude_not_on_rakuten(matched, cur_prices, in_df_price_col=c_rprice)

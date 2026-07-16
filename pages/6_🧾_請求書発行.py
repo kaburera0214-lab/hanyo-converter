@@ -65,8 +65,7 @@ else:
 col_reload, _ = st.columns([1, 5])
 with col_reload:
     if st.button("🔄 マスタ再読込", key="invoice_reload"):
-        for k in ("invoice_db_ids", "invoice_clients_cache",
-                  "invoice_prod_df", "invoice_prod_meta"):
+        for k in ("invoice_db_ids", "invoice_clients_cache", "_master_store"):
             st.session_state.pop(k, None)
         st.rerun()
 
@@ -530,61 +529,33 @@ st.caption("出荷作業料はPCS（商品点数）×サイズ別単価で算出
            "②はクライアント別。商品マスタはNE共通で、Driveに保存して毎回のアップは不要です。")
 
 drive_folder = st.secrets.get("INVOICE_GDRIVE_FOLDER_ID", "")
-# 商品マスタのバックアップ先（汎用マスタ変換と同じフォルダ・命名 master_YYYYMMDD_NNN.csv）
-product_folder = st.secrets.get(
-    "PRODUCT_MASTER_FOLDER_ID", "1pQJgn7tYX0KF4x70WY6mlOiruZWPInd-")
+# 商品マスタは全機能共通ストア（Driveの master_YYYYMMDD_NNN.csv 最新版・実行時に自動取得）
+from lib import master_store  # noqa: E402
+product_folder = master_store.folder_id()
 
-# ③商品マスタ：session_state → 共有master.csv → Drive の順で取得
-prod_df = st.session_state.get("invoice_prod_df")
-prod_meta = st.session_state.get("invoice_prod_meta", "")
+# ③商品マスタ：Driveの最新版を取得（同じ版ならセッション内で再利用）
+prod_df, prod_meta = None, ""
+_mdf, _mmeta = master_store.load_master()
+if _mdf is None:
+    st.caption(f"（商品マスタの読込をスキップ: {_mmeta}）")
+elif "項目1" not in _mdf.columns:
+    st.caption(f"（最新マスタ {_mmeta} に項目1列が無いため出荷作業料の算出に使えません）")
+else:
+    prod_df, prod_meta = _mdf, _mmeta
 
-# 1) 汎用マスタ変換と共有の master.csv（項目1列があれば優先利用）
-if prod_df is None:
-    try:
-        import os
-        mpath = os.path.join(os.path.dirname(__file__), "..", "master.csv")
-        if os.path.exists(mpath):
-            mdf = ne_calc._norm_columns(
-                csv_import.read_csv_auto(open(mpath, "rb").read()))
-            if "商品コード" in mdf.columns and "項目1" in mdf.columns:
-                prod_df = mdf
-                prod_meta = f"共有master.csv（汎用と共通・{len(mdf):,}件）"
-                st.session_state["invoice_prod_df"] = prod_df
-                st.session_state["invoice_prod_meta"] = prod_meta
-    except Exception as e:
-        st.caption(f"（共有master.csvの読込をスキップ: {e}）")
-
-# 2) Drive保存版（master.csvに項目1が無い場合のフォールバック・最新版を取得）
-if prod_df is None and product_folder:
-    try:
-        f = drive_master.find_latest(product_folder, "master")
-        if f:
-            prod_df = ne_calc.load_product_master(drive_master.download_bytes(f["id"]))
-            prod_meta = f"Drive保存版 {f['name']}（{len(prod_df):,}件）"
-            st.session_state["invoice_prod_df"] = prod_df
-            st.session_state["invoice_prod_meta"] = prod_meta
-    except Exception as e:
-        st.caption(f"（Driveの③読込をスキップ: {e}）")
-
-with st.expander("商品マスタの管理（毎回アップ不要・Drive保存）",
+with st.expander("商品マスタの管理（全機能共通・実行時に最新を自動取得）",
                  expanded=(prod_df is None)):
-    st.caption("商品マスタは汎用マスタ変換の master.csv と共有できます。"
-               "master.csv に「項目1（サイズ）」列を含めて汎用側で更新すれば、"
-               "請求書側も自動で最新になります（更新点が1つに）。"
-               "項目1列が無い間は、下のDriveアップロード版を使います。")
-    if product_folder:
-        st.link_button(
-            "📁 商品マスタのDriveフォルダを開く",
-            f"https://drive.google.com/drive/folders/{product_folder}",
-            use_container_width=True)
+    st.caption("商品マスタは汎用マスタ変換・価格改定と共通です（Driveの最新版を自動で読み込み）。"
+               "ここでアップロードすると全ページに即時反映されます。NEからのDLは**全カラム**推奨。"
+               "③に必要な列は 商品コード・項目1（サイズ）。")
+    st.link_button(
+        "📁 商品マスタのDriveフォルダを開く",
+        f"https://drive.google.com/drive/folders/{product_folder}",
+        use_container_width=True)
     if prod_df is not None:
         st.success(f"③商品マスタ利用中: {prod_meta}")
     else:
-        st.info("③商品マスタが未保存です。初回のみ最新の③をアップロードしてください。")
-    if st.button("🔄 商品マスタを再取得（最新を読み直す）", key="invoice_prod_reload"):
-        for k in ("invoice_prod_df", "invoice_prod_meta"):
-            st.session_state.pop(k, None)
-        st.rerun()
+        st.info("利用できる商品マスタがありません。最新の③（項目1列入り）をアップロードしてください。")
     # 特定商品の項目1が今のマスタに反映されているか確認
     if prod_df is not None:
         chk = st.text_input("商品コードで項目1を確認", key="invoice_prod_check",
@@ -601,33 +572,8 @@ with st.expander("商品マスタの管理（毎回アップ不要・Drive保存
                     st.warning("この商品の項目1（サイズ）は**空**です。③で項目1を設定して更新してください。")
                 else:
                     st.success(f"この商品の項目1（サイズ）= 「{val}」（マスタに反映済み）")
-    if not product_folder:
-        st.warning("商品マスタのDrive保存先（PRODUCT_MASTER_FOLDER_ID）が未設定のため、"
-                   "今回のセッションのみ利用になります。")
-    new_prod = st.file_uploader("商品マスタ(NEカスタム)をアップロード／更新",
-                                type=["csv"], key="invoice_prod_upload")
-    if new_prod is not None:
-        data = new_prod.getvalue()
-        pdf = None
-        try:
-            pdf = ne_calc.load_product_master(data)  # 検証（商品コード/項目1必須）
-        except Exception as e:
-            st.error(f"商品マスタCSVの読込に失敗: {e}")
-        if pdf is not None:
-            # まずマスタ更新を必ず反映（Drive保存の成否に関係なく）
-            prod_df = pdf
-            prod_meta = f"アップロード版（{len(pdf):,}件）"
-            st.session_state["invoice_prod_df"] = pdf
-            st.session_state["invoice_prod_meta"] = prod_meta
-            st.success(f"商品マスタを更新しました（{len(pdf):,}件）。出荷作業料の算出に反映されます。")
-            # Driveバックアップ（汎用と同じフォルダ・版数付き命名）はベストエフォート
-            if product_folder:
-                try:
-                    _bn = drive_master.upload_versioned(data, "master", product_folder)
-                    st.caption(f"Driveにバックアップしました（{_bn}）。")
-                except Exception as e:
-                    st.warning(f"⚠️ Driveバックアップに失敗しました（マスタ更新は反映済み）: {e}。"
-                               "Driveが繰り返し失敗する場合は GOOGLE_REFRESH_TOKEN の再取得が必要かもしれません。")
+    if master_store.upload_widget("invoice_prod_upload"):
+        st.rerun()
 
 order_files = st.file_uploader(
     "②[NE]受注明細一覧 CSV（複数選択OK）",
