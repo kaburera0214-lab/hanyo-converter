@@ -309,6 +309,17 @@ def load_master_supplier_from_file():
 MASTER_GITHUB_PATH = "master.csv"
 
 
+def _decode_csv_bytes(b):
+    """CSVバイト列を文字コード自動判定でデコード（UTF-8/Shift-JIS両対応）。
+    アップロード経路によってはmaster.csvがShift-JISで保存されるため必須。"""
+    for enc in ("utf-8-sig", "utf-8", "cp932"):
+        try:
+            return b.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return b.decode("cp932", errors="replace")
+
+
 @st.cache_data(show_spinner="GitHubから商品マスタを読み込み中...", ttl=3600)
 def load_master_from_github():
     """ローカルファイルがない場合のフォールバック：GitHubからmaster.csvを読み込む"""
@@ -328,7 +339,7 @@ def load_master_from_github():
         if not r.ok:
             return None, f"GitHub読み込み失敗: {r.status_code}"
         master = {}
-        for row in csv.DictReader(io.StringIO(r.content.decode("utf-8"))):
+        for row in csv.DictReader(io.StringIO(_decode_csv_bytes(r.content))):
             jan = row.get("JANコード", "").strip()
             if jan:
                 master[jan] = {
@@ -375,7 +386,7 @@ def load_master_supplier_from_github():
         if not r.ok:
             return {}
         supplier = {}
-        for row in csv.DictReader(io.StringIO(r.content.decode("utf-8"))):
+        for row in csv.DictReader(io.StringIO(_decode_csv_bytes(r.content))):
             sup_code = row.get("先方コード", "").strip()
             if sup_code:
                 supplier[sup_code] = {
