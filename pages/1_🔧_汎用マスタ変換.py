@@ -340,6 +340,27 @@ def load_master_from_github():
         return None, str(e)
 
 
+@st.cache_data(ttl=3600)
+def master_github_updated_at():
+    """GitHub上のmaster.csvの最終更新日（マスタの鮮度確認用）。取れなければ空文字。"""
+    token = st.secrets.get("GITHUB_TOKEN", "")
+    repo  = st.secrets.get("GITHUB_REPO", "")
+    if not token or not repo:
+        return ""
+    try:
+        r = requests.get(
+            f"https://api.github.com/repos/{repo}/commits",
+            params={"path": MASTER_GITHUB_PATH, "per_page": 1},
+            headers={"Authorization": f"token {token}"},
+            timeout=15,
+        )
+        if r.ok and r.json():
+            return r.json()[0]["commit"]["committer"]["date"][:10]
+    except Exception:
+        pass
+    return ""
+
+
 @st.cache_data(show_spinner="GitHubから商品マスタ（先方コード）を読み込み中...", ttl=3600)
 def load_master_supplier_from_github():
     """先方コード→商品コード のマッピング辞書をGitHubから返す"""
@@ -1643,7 +1664,10 @@ def main():
             st.session_state["master_info"] = "未読み込み"
         else:
             st.session_state["master"] = master
-            st.session_state["master_info"] = f"{len(master):,} 件（GitHub から読み込み済み）"
+            updated = master_github_updated_at()
+            st.session_state["master_info"] = (
+                f"{len(master):,} 件（GitHub から読み込み"
+                + (f"・最終更新 {updated}" if updated else "") + "）")
 
     if "master_supplier" not in st.session_state:
         st.session_state["master_supplier"] = load_master_supplier_from_github()
@@ -1711,6 +1735,14 @@ def main():
                 st.success(st.session_state.get("master_info", "読み込み済み"))
             else:
                 st.error("マスタ未読み込み")
+            if st.button("🔄 GitHubから最新を再読み込み", key="btn_master_reload",
+                         help="別の人がマスタを更新した場合や、画面を長く開いている場合に押してください"):
+                load_master_from_github.clear()
+                load_master_supplier_from_github.clear()
+                master_github_updated_at.clear()
+                for _k in ("master", "master_info", "master_supplier"):
+                    st.session_state.pop(_k, None)
+                st.rerun()
             st.caption("マスタを更新する場合のみアップロード")
             master_uploader_key = f"up_master_{st.session_state.get('master_upload_count', 0)}"
             _mdf = st.session_state.pop("master_drive_flash", None)
@@ -1731,10 +1763,15 @@ def main():
                             gh_ok, gh_err = save_master_to_github(file_bytes)
                         if gh_ok:
                             load_master_from_github.clear()  # キャッシュ更新
+                            load_master_supplier_from_github.clear()
+                            master_github_updated_at.clear()
+                            st.session_state.pop("master_supplier", None)
                             st.success(f"更新しました：{len(master):,} 件（GitHub に保存済み ✅）")
                         else:
-                            st.warning(f"GitHub 保存失敗（次回起動後に消える可能性あり）: {gh_err}")
-                            st.success(f"更新しました：{len(master):,} 件")
+                            st.error(f"🛑 GitHubへの保存に失敗しました: {gh_err}\n\n"
+                                     f"この更新は**今開いている画面でしか有効ではなく、"
+                                     f"次回起動時には古いマスタに戻ります**。"
+                                     f"もう一度アップロードするか、管理者に連絡してください。")
                         # Google Drive バックアップ（結果はrerun後も表示できるようsessionに保持）
                         with st.spinner("Google Driveにバックアップ中..."):
                             ok, result = backup_to_drive(file_bytes, "商品マスタ", "master")
@@ -1867,24 +1904,26 @@ def main():
             res1 = st.session_state.get("tab1_result")
             if res1:
                 if res1["not_found"]:
-                    st.error(f"⚠️ 商品マスタに存在しないJANコードがあります（{len(res1['not_found'])} 件）")
+                    st.error(f"🛑 商品マスタに存在しないJANコードがあります（{len(res1['not_found'])} 件）。"
+                             "**変換結果は出力できません。**")
                     for jan, orders in res1["not_found"].items():
                         st.markdown(f"- **JAN: `{jan}`** → 注文番号: {', '.join(orders)}")
-                    st.warning("上記の商品は入力値のまま出力されています。商品マスタを最新版に更新してください。")
-                    st.divider()
-                st.success(f"変換完了：{res1['n_orders']} 件の注文 / {res1['n_rows']} 行")
-                st.download_button(
-                    label="⬇️ 変換済みCSVをダウンロード",
-                    data=res1["csv_bytes"],
-                    file_name=res1["filename"],
-                    mime="text/csv",
-                    key="dl_hanyo",
-                )
-                st.link_button(
-                    "📋 ネクストエンジンに登録する →",
-                    "https://main.next-engine.com/Usercsv",
-                    use_container_width=True,
-                )
+                    st.warning("サイドバーの「⚙️ 商品マスタ」から最新マスタに更新（または再読み込み）して、"
+                               "もう一度「変換する」を押してください。")
+                else:
+                    st.success(f"変換完了：{res1['n_orders']} 件の注文 / {res1['n_rows']} 行")
+                    st.download_button(
+                        label="⬇️ 変換済みCSVをダウンロード",
+                        data=res1["csv_bytes"],
+                        file_name=res1["filename"],
+                        mime="text/csv",
+                        key="dl_hanyo",
+                    )
+                    st.link_button(
+                        "📋 ネクストエンジンに登録する →",
+                        "https://main.next-engine.com/Usercsv",
+                        use_container_width=True,
+                    )
     
 
         with _t1_custom:
@@ -1933,25 +1972,27 @@ def main():
                     res3 = st.session_state.get("tab3_result")
                     if res3:
                         if res3["not_found"]:
-                            st.error(f"⚠️ 商品が見つかりません（{len(res3['not_found'])} 件）")
+                            st.error(f"🛑 商品マスタに存在しないJANコードがあります（{len(res3['not_found'])} 件）。"
+                                     "**変換結果は出力できません。**")
                             for jan, oids in res3["not_found"].items():
                                 st.markdown(f"- **JAN: `{jan}`** → 注文番号: {', '.join(oids)}")
-                            st.warning("上記のJANコードは商品マスタに存在しません。商品マスタを最新版に更新してください。")
-                            st.divider()
-                        st.success(f"変換完了：{res3['n_orders']} 件の注文 / {res3['n_rows']} 行")
-                        st.download_button(
-                            label="⬇️ 変換済みCSVをダウンロード",
-                            data=res3["csv_bytes"],
-                            file_name=res3["filename"],
-                            mime="text/csv",
-                            key="dl_custom",
-                        )
-                        st.link_button("📋 ネクストエンジンに登録する →",
-                                       "https://main.next-engine.com/Usercsv",
-                                       use_container_width=True)
-                        st.link_button("📂 受注CSVフォルダ（Google Drive）",
-                                       "https://drive.google.com/drive/u/2/folders/1Xil5jgZvxk3A-3s-W-7eYrcMu4R8qvQX",
-                                       use_container_width=True)
+                            st.warning("サイドバーの「⚙️ 商品マスタ」から最新マスタに更新（または再読み込み）して、"
+                                       "もう一度「変換する」を押してください。")
+                        else:
+                            st.success(f"変換完了：{res3['n_orders']} 件の注文 / {res3['n_rows']} 行")
+                            st.download_button(
+                                label="⬇️ 変換済みCSVをダウンロード",
+                                data=res3["csv_bytes"],
+                                file_name=res3["filename"],
+                                mime="text/csv",
+                                key="dl_custom",
+                            )
+                            st.link_button("📋 ネクストエンジンに登録する →",
+                                           "https://main.next-engine.com/Usercsv",
+                                           use_container_width=True)
+                            st.link_button("📂 受注CSVフォルダ（Google Drive）",
+                                           "https://drive.google.com/drive/u/2/folders/1Xil5jgZvxk3A-3s-W-7eYrcMu4R8qvQX",
+                                           use_container_width=True)
     
             # ── テンプレートを編集 ────────────────────────────
             with edit_tab:
