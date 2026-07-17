@@ -329,6 +329,7 @@ def confirm_gate(files, key_prefix, tab_label, extra_files=None):
     label = "✅ 確定してDriveに保存（CSVを表示）" if conf is None else "✅ 再確定してDriveに保存し直す"
     if st.button(label, key=key_prefix + "_confirm", type="primary",
                  disabled=(conf is not None and conf["hash"] == cur_hash)):
+        import datetime
         run_name, url, err = "", "", ""
         try:
             with st.spinner("Driveにバックアップ中…"):
@@ -337,8 +338,16 @@ def confirm_gate(files, key_prefix, tab_label, extra_files=None):
             url = f"https://drive.google.com/drive/folders/{run_id}"
         except Exception as e:  # noqa: BLE001
             err = str(e)
+        # DLファイル名のユニーク化用サフィックス（版数と一致させる。Drive失敗時は時刻）
+        # ※ブラウザの重複リネーム「 (7)」はRMSのファイル名規則（半角英数と-_のみ）で
+        #   弾かれるため、最初からユニークな名前で配布する
+        if run_name:
+            suffix = "_".join(run_name.split("_")[:2])          # 例: 20260717_001
+        else:
+            suffix = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         st.session_state[conf_key] = {"hash": cur_hash, "files": files,
-                                      "run": run_name, "url": url, "err": err}
+                                      "run": run_name, "url": url, "err": err,
+                                      "suffix": suffix}
         st.rerun()
 
     if conf is None:
@@ -356,9 +365,12 @@ def confirm_gate(files, key_prefix, tab_label, extra_files=None):
                    "最新の内容にするには「✅ 再確定」を押してください。")
 
     saved = conf["files"]
+    suffix = conf.get("suffix", "")
     cols = st.columns(len(saved))
     for col, (name, data) in zip(cols, saved.items()):
-        col.download_button(_DL_LABELS.get(name, name), data, name, "text/csv",
+        stem, _, ext = name.rpartition(".")
+        dl_name = f"{stem}_{suffix}.{ext}" if suffix else name
+        col.download_button(_DL_LABELS.get(name, name), data, dl_name, "text/csv",
                             key=f"{key_prefix}_dl_{name}", use_container_width=True)
 
 
