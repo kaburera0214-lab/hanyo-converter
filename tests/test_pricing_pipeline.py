@@ -225,6 +225,15 @@ def test_rakuten_price_required():
     assert "未取得" in rows2[0]["警告"]
 
 
+def test_parent_code_strips_all_numeric_suffixes():
+    """実障害の再現（2026-07-17 gais0020-01-06）: 枝番が2段でも全部除去して親を推定"""
+    assert masters.parent_code("gais0020-01-06") == "gais0020"
+    assert masters.parent_code("kei0001-01") == "kei0001"
+    assert masters.parent_code("marg0037-01-03") == "marg0037"
+    assert masters.parent_code("kei0018") == "kei0018"          # 枝番なしはそのまま
+    assert masters.parent_code("wauyuu-v3-1478") == "wauyuu-v3"  # 数字でない区切りは残す
+
+
 def test_match_variants():
     """variantsとNEコードの照合（連携番号一致→SKU番号一致→単一SKU）"""
     from lib.pricing import rakuten_price
