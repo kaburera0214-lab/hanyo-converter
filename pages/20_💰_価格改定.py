@@ -17,8 +17,12 @@ from lib.auth import require_role
 require_role("pricing")  # 認証ゲート（AUTH_ENABLED=false なら素通り）
 
 st.title("💰 価格改定")
+import datetime as _dt
+import os as _os
+_build = _dt.datetime.fromtimestamp(_os.path.getmtime(__file__)).strftime("%Y-%m-%d %H:%M")
 st.caption("インプットCSV（JAN・新下代）→ 楽天・Yahoo・ネクストエンジンの価格更新CSVを作ります。"
-           "アップロード（本番反映）は必ず内容を確認してから手動で行ってください。")
+           "アップロード（本番反映）は必ず内容を確認してから手動で行ってください。"
+           f"　（app更新: {_build}）")
 
 from lib import master_store
 from lib.invoice import csv_import
@@ -239,7 +243,8 @@ def exclude_not_on_rakuten(matched, cur_prices, in_df_price_col=None):
     if excluded:
         st.warning(f"🛑 楽天から現在価格を取得できなかった {len(excluded)}件 は"
                    "**楽天に登録されていない可能性が高いため、価格変更の対象から除外**しました"
-                   "（CSVにも含まれません）。")
+                   "（CSVにも含まれません）。誤判定と思われる場合は📡「楽天から現在価格を取得」を"
+                   "もう一度押すと再判定されます。")
         with st.expander(f"対象外にした商品を見る（{len(excluded)}件）", expanded=False):
             st.dataframe(pd.DataFrame(excluded), use_container_width=True, hide_index=True)
     return target
