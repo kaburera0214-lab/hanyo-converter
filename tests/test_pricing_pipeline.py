@@ -106,6 +106,20 @@ def test_tab2_direct_end_to_end():
     assert rows[0]["新販売価格"] == 9216
 
 
+def test_tab_separated_input_and_code_in_jan_column():
+    """実障害の再現（2026-07-17 0717.csv）: タブ区切り入力＋JAN列に商品コードが入っていても通る"""
+    from lib.invoice import csv_import
+    tsv = "JAN\t新下代\t送料\nartc9999\t1200\t2000\n".encode("cp932")
+    df = csv_import.read_csv_auto(tsv)
+    assert list(df.columns) == ["JAN", "新下代", "送料"]  # タブ区切りを自動判定
+    assert df.iloc[0]["JAN"] == "artc9999"
+
+    jan_map, code_info = _ne_master()
+    matched, unmatched = pipeline.match_input(df, None, "JAN", jan_map, code_info)
+    assert unmatched == []                                # 商品コードでも突合できる
+    assert matched[0][1]["商品コード"] == "artc9999"
+
+
 def test_free_shipping_flag_for_direct():
     """直送タブの楽天・YahooCSVには送料無料フラグ列が付く（納品タブには付かない）"""
     mall = [{"商品コード": "kei0018", "楽天販売価格": 5000, "Yahoo販売価格": 5000}]

@@ -35,6 +35,7 @@ def load_concat(uploaded_files, loader):
 def read_csv_auto(file_bytes):
     """
     bytesからDataFrameを読む。UTF-8(BOM可)→CP932の順で文字コードを試す。
+    タブ区切り（Excelからのコピー等）も自動判定する。
     全セルは文字列として読み込む（数値変換は呼び出し側で行う）。
     """
     last_err = None
@@ -42,8 +43,14 @@ def read_csv_auto(file_bytes):
         # まず標準(C)パーサ、ダメなら寛容なPythonパーサで再試行（行のばらつき対策）
         for kwargs in ({}, {"engine": "python", "on_bad_lines": "skip"}):
             try:
-                return pd.read_csv(
+                df = pd.read_csv(
                     io.BytesIO(file_bytes), dtype=str, encoding=enc, **kwargs).fillna("")
+                # 1列しかなくヘッダにタブが含まれる＝タブ区切りだった → 読み直す
+                if df.shape[1] == 1 and "\t" in str(df.columns[0]):
+                    df = pd.read_csv(
+                        io.BytesIO(file_bytes), dtype=str, encoding=enc,
+                        sep="\t", **kwargs).fillna("")
+                return df
             except Exception as e:  # noqa: BLE001
                 last_err = e
     raise ValueError(f"CSVを読み込めませんでした（文字コード/形式不明）: {last_err}")

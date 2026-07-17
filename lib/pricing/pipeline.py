@@ -24,13 +24,16 @@ def pick_col(df, *cands):
 
 
 def match_input(df, c_code, c_jan, jan_map, code_info):
-    """入力CSVの各行を商品コードに解決する。(matched=[(入力行, info)], unmatched=[識別子])"""
+    """入力CSVの各行を商品コードに解決する。(matched=[(入力行, info)], unmatched=[識別子])
+    JAN列に商品コードが入っていても救済する（JAN→ダメなら商品コードとして照合）。"""
     matched, unmatched = [], []
     for _, r in df.iterrows():
         code = masters.norm_key(r[c_code]) if c_code else ""
         if (not code or code == "nan") and c_jan:
             jan = masters.norm_key(r[c_jan])
             code = jan_map.get(jan, "")
+            if not code and jan.lower() in code_info:
+                code = code_info[jan.lower()]["商品コード"]  # JAN列の値が商品コードだった場合
             if not code:
                 unmatched.append(f"JAN {jan}")
                 continue
