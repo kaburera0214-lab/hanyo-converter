@@ -126,7 +126,7 @@ def test_free_shipping_flag_for_direct():
     records, _ = ex.rakuten_rows(mall, {})
     rak = ex.rakuten_csv(records, free_shipping=True).decode("cp932")
     assert rak.splitlines()[0].endswith("二重価格文言管理番号,送料")
-    assert "kei0018,kei0018,,,,,,0" in rak            # 商品行に送料=0（送料込み）
+    assert "kei0018,kei0018,,,,,,1" in rak            # 商品行に送料=1（送料無料。0は送料別）
     assert "kei0018,,kei0018,,5000,5000,1," in rak    # SKU行はフラグ空欄
     rak2 = ex.rakuten_csv(records).decode("cp932")
     assert "送料" not in rak2.splitlines()[0].replace("送料込", "")  # 納品タブは列なし

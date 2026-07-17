@@ -27,8 +27,8 @@ YAHOO_COLUMNS = ["code", "price"]
 NE_COLUMNS = ["syohin_code", "baika_tnk", "genka_tnk"]
 
 # 直送タブ用の送料無料フラグ（販売価格が送料込みのため）。列名・値はモール仕様に合わせて調整
-RAKUTEN_FREE_SHIP_COLUMN = "送料"          # 楽天: 0=送料込み（送料無料）/ 1=送料別（商品行に設定）
-RAKUTEN_FREE_SHIP_VALUE = 0
+RAKUTEN_FREE_SHIP_COLUMN = "送料"          # 楽天: 0=送料別 / 1=送料無料（商品行に設定）
+RAKUTEN_FREE_SHIP_VALUE = 1                # 2026-07-17 楽天仕様書でユーザー確認済み
 YAHOO_FREE_SHIP_COLUMN = "postage-set"     # Yahoo: 送料設定番号（送料無料の設定番号に要調整）
 YAHOO_FREE_SHIP_VALUE = 1
 
