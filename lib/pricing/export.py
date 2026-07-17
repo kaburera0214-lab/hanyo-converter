@@ -26,6 +26,12 @@ RAKUTEN_COLUMNS = ["商品管理番号（商品URL）", "商品番号", "SKU管�
 YAHOO_COLUMNS = ["code", "price"]
 NE_COLUMNS = ["syohin_code", "baika_tnk", "genka_tnk"]
 
+# 直送タブ用の送料無料フラグ（販売価格が送料込みのため）。列名・値はモール仕様に合わせて調整
+RAKUTEN_FREE_SHIP_COLUMN = "送料"          # 楽天: 0=送料込み（送料無料）/ 1=送料別（商品行に設定）
+RAKUTEN_FREE_SHIP_VALUE = 0
+YAHOO_FREE_SHIP_COLUMN = "postage-set"     # Yahoo: 送料設定番号（送料無料の設定番号に要調整）
+YAHOO_FREE_SHIP_VALUE = 1
+
 
 def _to_csv_bytes(df, encoding=UPLOAD_ENCODING):
     buf = io.StringIO()
@@ -74,9 +80,16 @@ def rakuten_rows(rows, sku_table):
     return records, missing
 
 
-def rakuten_csv(records):
-    """rakuten_rows()の結果 → normal-item.csv のbytes。"""
-    return _to_csv_bytes(pd.DataFrame(records, columns=RAKUTEN_COLUMNS))
+def rakuten_csv(records, free_shipping=False):
+    """rakuten_rows()の結果 → normal-item.csv のbytes。
+    free_shipping=True（直送品・送料込み価格）なら送料無料フラグ列を追加（商品行に0）。"""
+    columns = list(RAKUTEN_COLUMNS)
+    if free_shipping:
+        columns.append(RAKUTEN_FREE_SHIP_COLUMN)
+        records = [{**r, RAKUTEN_FREE_SHIP_COLUMN:
+                    (RAKUTEN_FREE_SHIP_VALUE if r.get("商品番号") else "")}
+                   for r in records]
+    return _to_csv_bytes(pd.DataFrame(records, columns=columns))
 
 
 def yahoo_rows(rows, sku_table):
@@ -101,9 +114,14 @@ def yahoo_rows(rows, sku_table):
     return records, diff
 
 
-def yahoo_csv(records):
-    """yahoo_rows()の結果 → data.csv のbytes。"""
-    return _to_csv_bytes(pd.DataFrame(records, columns=YAHOO_COLUMNS))
+def yahoo_csv(records, free_shipping=False):
+    """yahoo_rows()の結果 → data.csv のbytes。
+    free_shipping=True（直送品・送料込み価格）なら送料無料フラグ列を追加。"""
+    columns = list(YAHOO_COLUMNS)
+    if free_shipping:
+        columns.append(YAHOO_FREE_SHIP_COLUMN)
+        records = [{**r, YAHOO_FREE_SHIP_COLUMN: YAHOO_FREE_SHIP_VALUE} for r in records]
+    return _to_csv_bytes(pd.DataFrame(records, columns=columns))
 
 
 def ne_csv(rows):

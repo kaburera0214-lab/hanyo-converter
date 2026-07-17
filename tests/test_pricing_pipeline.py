@@ -106,6 +106,25 @@ def test_tab2_direct_end_to_end():
     assert rows[0]["新販売価格"] == 9216
 
 
+def test_free_shipping_flag_for_direct():
+    """直送タブの楽天・YahooCSVには送料無料フラグ列が付く（納品タブには付かない）"""
+    mall = [{"商品コード": "kei0018", "楽天販売価格": 5000, "Yahoo販売価格": 5000}]
+    records, _ = ex.rakuten_rows(mall, {})
+    rak = ex.rakuten_csv(records, free_shipping=True).decode("cp932")
+    assert rak.splitlines()[0].endswith("二重価格文言管理番号,送料")
+    assert "kei0018,kei0018,,,,,,0" in rak            # 商品行に送料=0（送料込み）
+    assert "kei0018,,kei0018,,5000,5000,1," in rak    # SKU行はフラグ空欄
+    rak2 = ex.rakuten_csv(records).decode("cp932")
+    assert "送料" not in rak2.splitlines()[0].replace("送料込", "")  # 納品タブは列なし
+
+    yah_records, _ = ex.yahoo_rows(mall, {})
+    yah = ex.yahoo_csv(yah_records, free_shipping=True).decode("cp932")
+    assert yah.splitlines()[0] == "code,price,postage-set"
+    assert "kei0018,5000,1" in yah
+    yah2 = ex.yahoo_csv(yah_records).decode("cp932")
+    assert yah2.splitlines()[0] == "code,price"
+
+
 def test_tab3_size_change_end_to_end():
     jan_map, code_info = _ne_master()
     cost_table = _cost_table()

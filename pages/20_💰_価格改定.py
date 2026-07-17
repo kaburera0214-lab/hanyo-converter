@@ -267,8 +267,9 @@ def editable_result(df, key):
     return edited
 
 
-def build_output_files(result_df, include_unchanged):
-    """結果表 → 出力CSV一式（bytes）。返り値: (files dict, モール件数, NE件数)"""
+def build_output_files(result_df, include_unchanged, free_shipping=False):
+    """結果表 → 出力CSV一式（bytes）。返り値: (files dict, モール件数, NE件数)
+    free_shipping=True（直送品・送料込み価格）ならモールCSVに送料無料フラグ列を追加。"""
     ok = result_df[result_df["新販売価格"].notna() & (result_df["新販売価格"] > 0)]
     changed = ok if include_unchanged else ok[ok["新販売価格"] != ok["現販売価格"]]
     mall_rows = [{"商品コード": r["商品コード"],
@@ -289,8 +290,8 @@ def build_output_files(result_df, include_unchanged):
                    f"{', '.join(yah_diff[:10])}{' …' if len(yah_diff) > 10 else ''}")
 
     files = {
-        "normal-item.csv": ex.rakuten_csv(rak_records),
-        "yahoo_data.csv": ex.yahoo_csv(yah_records),
+        "normal-item.csv": ex.rakuten_csv(rak_records, free_shipping=free_shipping),
+        "yahoo_data.csv": ex.yahoo_csv(yah_records, free_shipping=free_shipping),
         "ne_price_update.csv": ex.ne_csv(ne_rows),
         "price_detail.csv": ex.detail_csv(result_df),
     }
@@ -356,9 +357,10 @@ def confirm_gate(files, key_prefix, tab_label, extra_files=None):
                             key=f"{key_prefix}_dl_{name}", use_container_width=True)
 
 
-def confirm_and_download(result_df, key_prefix, tab_label, include_unchanged, input_file=None):
+def confirm_and_download(result_df, key_prefix, tab_label, include_unchanged,
+                         input_file=None, free_shipping=False):
     """価格変更タブ用: 出力CSVを組み立てて確定ゲートへ。input_file=(名前, bytes)は証跡として一緒に保存。"""
-    files, mall_n, ne_n = build_output_files(result_df, include_unchanged)
+    files, mall_n, ne_n = build_output_files(result_df, include_unchanged, free_shipping)
     st.caption(f"モール向け: {mall_n}件（価格変更あり{'＋変わらない行' if include_unchanged else 'のみ'}）"
                f" ／ NE向け: {ne_n}件（原価更新のため価格が変わらない行も含む）")
     extra = {f"input_{input_file[0]}": input_file[1]} if input_file else None
@@ -374,7 +376,7 @@ def input_file_of(uploaded, prefill=None, prefill_name="サイズ変更引き継
     return None
 
 
-def result_section(rows, key_prefix, tab_label, input_file=None):
+def result_section(rows, key_prefix, tab_label, input_file=None, free_shipping=False):
     """結果テーブル＋警告フィルタ＋確定・ダウンロード一式。"""
     df = pd.DataFrame(rows)
     # 警告は見つけやすいように商品名の直後に置く
@@ -404,7 +406,8 @@ def result_section(rows, key_prefix, tab_label, input_file=None):
     c4.metric("計算不可・要確認", f"{len(df) - len(up) - len(down) - len(keep)}件")
     include_unchanged = st.checkbox("価格が変わらない行もモールCSVに含める", value=False,
                                     key=f"{key_prefix}_inc_unchanged")
-    confirm_and_download(df, key_prefix, tab_label, include_unchanged, input_file=input_file)
+    confirm_and_download(df, key_prefix, tab_label, include_unchanged,
+                         input_file=input_file, free_shipping=free_shipping)
 
 
 # ══ タブ ════════════════════════════════════════════════════
@@ -469,9 +472,10 @@ with tab1:
 
 # ── タブ2: 直送価格＆送料変更 ───────────────────────────────
 with tab2:
-    st.markdown("##### 入力CSV: **JAN（またはNE商品コード）・新下代・新送料**")
-    st.caption("直送品: 資材0円・送料は入力値・送料込み換算なし（利益計算価格=現販売価格）。"
-               "価格ルールは納品価格変更と同じです。")
+    st.markdown("##### 入力CSV: **JAN（またはNE商品コード）・新下代・送料**")
+    st.caption("直送品は**送料込みの販売価格**を設定します（3980円未満でも送料込み）。"
+               "送料は入力CSVの値を使い、資材は不要（送料・資材マスタは参照しません）。"
+               "楽天・YahooのCSVには**送料無料フラグ**が付きます。価格ルールは納品価格変更と同じです。")
     up2 = st.file_uploader("直送価格変更の入力CSV", type=["csv"], key="t2_upload")
     if up2 is not None:
         try:
@@ -483,13 +487,13 @@ with tab2:
             c_jan = pipeline.pick_col(in_df2, "JANコード", "JAN", "jan")
             c_code = pipeline.pick_col(in_df2, "商品コード")
             c_cost = pipeline.pick_col(in_df2, "新下代", "下代", "仕入価格")
-            c_ship = pipeline.pick_col(in_df2, "新送料", "送料")
+            c_ship = pipeline.pick_col(in_df2, "送料", "新送料")
             c_fixed = pipeline.pick_col(in_df2, "指定価格")
             c_pct = pipeline.pick_col(in_df2, "値上げ率")
             if not c_jan and not c_code:
                 st.error(f"JAN列（または商品コード列）が見つかりません。実際の列: {list(in_df2.columns)}")
             elif not c_cost or not c_ship:
-                st.error(f"新下代・新送料の列が必要です。実際の列: {list(in_df2.columns)}")
+                st.error(f"新下代・送料の列が必要です。実際の列: {list(in_df2.columns)}")
             else:
                 jan_map, code_info = get_master_lookup()
                 matched = []
@@ -501,12 +505,12 @@ with tab2:
                     matched = exclude_not_on_rakuten(matched, cur_prices)
                 if matched:
                     rows = pipeline.build_price_rows(
-                        matched, c_cost, cost_table, params, mode="direct",
+                        matched, c_cost, {}, params, mode="direct",  # 送料・資材マスタは参照しない
                         c_fixed=c_fixed, c_pct=c_pct, c_ship=c_ship,
                         overrides=st.session_state.get("t2_result_overrides"),
                         cur_prices=cur_prices)
                     result_section(rows, "t2_result", "直送価格送料変更",
-                                   input_file=input_file_of(up2))
+                                   input_file=input_file_of(up2), free_shipping=True)
 
 # ── タブ3: 梱包サイズ変更 ───────────────────────────────────
 with tab3:
