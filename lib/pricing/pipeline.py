@@ -134,8 +134,14 @@ def build_price_rows(matched, c_cost, cost_table, params, mode="normal",
 
 
 def size_change_rows(matched, c_size, c_rprice, cost_table, params, cur_prices=None):
-    """梱包サイズ変更のチェック行リストを作る。
-    現販売価格はCSVの楽天販売価格列＞楽天から取得した価格（cur_prices）の順。NE売価は使わない。"""
+    """
+    梱包サイズ変更のチェック＋必要な対応の判定（2026-07-17ユーザー確定フロー）:
+      1. サイズアップかダウンか（新旧サイズの送料+資材の比較で判定）
+      2. 便種変更（メール便⇔宅配便）があれば「モール配送設定の修正」対象
+      3. サイズアップは利益チェック（警告ライン基準・新サイズのコストと新便種で判定）
+      4. 利益NGなら納品価格変更と同じ計算で販売価格を再設定（新販売価格・NE売価を埋める）
+    現販売価格はCSVの楽天販売価格列＞楽天から取得した価格（cur_prices）の順。
+    """
     cur_prices = cur_prices or {}
     rows = []
     for r, info in matched:
@@ -148,20 +154,48 @@ def size_change_rows(matched, c_size, c_rprice, cost_table, params, cur_prices=N
             cur_price = cur_prices.get(code.lower(), 0)
         old = cost_table.get(old_size)
         new = cost_table.get(new_size)
-        row = {"商品コード": code, "商品名": info.get("商品名", ""),
-               "旧項目1": old_size, "新項目1": new_size, "現販売価格": cur_price}
-        if new is None or new[0] is None or not cur_price:
-            why = (f"新サイズ「{new_size}」が送料マスタに無い" if new is None or new[0] is None
-                   else "現販売価格が未取得 → 📡「楽天から現在価格を取得」を押してください")
-            row.update({"利益チェック": "-", "配送設定": "-", "新利益率": None, "警告": why})
-        else:
-            chk = calc.size_change_check(
-                cur_price, cost,
-                shipping_new=new[0], material_new=(new[1] or 0.0),
-                delivery_old=(old[2] if old else "宅配便"), delivery_new=new[2],
-                params=params)
-            row.update({"利益チェック": chk["利益チェック"],
-                        "配送設定": chk["配送設定要修正"],
-                        "新利益率": chk["新利益率"], "警告": ""})
+
+        row = {"商品コード": code, "商品名": info.get("商品名", ""), "警告": "",
+               "旧項目1": old_size, "新項目1": new_size, "区分": "",
+               "現販売価格": cur_price,
+               "旧便種": old[2] if old else "", "新便種": new[2] if new else "",
+               "配送設定": "", "利益チェック": "", "新利益率": None,
+               "新販売価格": None, "NE売価": None}
+        warn = []
+        if new is None or new[0] is None:
+            warn.append(f"新サイズ「{new_size}」が送料マスタに無い")
+        if old is None or old[0] is None:
+            warn.append(f"旧サイズ「{old_size or '(空)'}」が送料マスタに無い（区分を判定できない）")
+
+        if not warn:
+            old_total = old[0] + (old[1] or 0)
+            new_total = new[0] + (new[1] or 0)
+            row["区分"] = ("サイズアップ" if new_total > old_total
+                           else "サイズダウン" if new_total < old_total else "同等")
+            row["配送設定"] = (f"要修正（{old[2]}→{new[2]}）" if old[2] != new[2] else "不要")
+
+            if row["区分"] == "サイズアップ":
+                if not cur_price:
+                    row["利益チェック"] = "-"
+                    warn.append("現販売価格が未取得 → 📡「楽天から現在価格を取得」を押してください")
+                else:
+                    # 新サイズのコスト・新便種（修正後の状態）で現価格の利益率を判定
+                    _, margin = calc.simulate_price(cur_price, cost, new[0], new[1] or 0.0,
+                                                    new[2], params)
+                    ok = margin is not None and margin >= params["margin_warn"]
+                    row["利益チェック"] = "〇" if ok else "×"
+                    row["新利益率"] = margin
+                    if not ok:
+                        # 納品価格変更と同じ再設定（下代は不変→値上げ率価格=現価格。目標利益率価格が上回る）
+                        t = calc.target_price(cost, new[0], new[1] or 0.0, new[2], params)
+                        new_price = max(t or 0, int(cur_price))
+                        row["新販売価格"] = new_price
+                        row["NE売価"] = calc.excel_round(new_price / (1 + params["tax_rate"]))
+                        _, row["新利益率"] = calc.simulate_price(new_price, cost, new[0],
+                                                                 new[1] or 0.0, new[2], params)
+            else:
+                row["利益チェック"] = "-"
+
+        row["警告"] = "／".join(warn)
         rows.append(row)
     return rows

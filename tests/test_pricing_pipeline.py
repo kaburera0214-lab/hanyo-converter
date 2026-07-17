@@ -140,30 +140,50 @@ def test_free_shipping_flag_for_direct():
 
 
 def test_tab3_size_change_end_to_end():
+    """2026-07-17確定フロー: アップ/ダウン分岐→便種変更→利益チェック→NGは価格再設定"""
     jan_map, code_info = _ne_master()
     cost_table = _cost_table()
     in_df = pd.DataFrame([
-        {"JAN": "4900000000144", "新項目1": "60", "楽天販売価格": "880"},   # メール便→宅配便
-        {"JAN": "4900000000414", "新項目1": "nekop", "楽天販売価格": ""},   # メール便同士
+        {"JAN": "4900000000144", "新項目1": "60", "楽天販売価格": "500"},   # アップ＋便種変更＋利益NG
+        {"JAN": "4900000000414", "新項目1": "60", "楽天販売価格": ""},      # アップ＋便種変更・利益OK
+        {"JAN": "4900000009999", "新項目1": "60", "楽天販売価格": ""},      # ダウン（80→60・宅配同士）
     ])
     matched, _ = pipeline.match_input(in_df, None, "JAN", jan_map, code_info)
     rows = pipeline.size_change_rows(matched, "新項目1", "楽天販売価格", cost_table, P,
                                      cur_prices=RK_PRICES)
     by_code = {r["商品コード"]: r for r in rows}
 
-    r = by_code["slvb0144"]  # 880円のまま60サイズ宅配便になると利益NG・配送設定要修正
-    assert r["現販売価格"] == 880             # CSVの楽天販売価格列を優先
-    assert r["配送設定"] == "要修正"
+    # slvb0144: yuup3(292円)→60(705.5円)=サイズアップ・メール便→宅配便で配送設定要修正
+    # 現価格500円では利益NG → 目標15%価格882円に再設定（NE売価802円）
+    r = by_code["slvb0144"]
+    assert r["区分"] == "サイズアップ"
+    assert r["配送設定"] == "要修正（メール便→宅配便）"
     assert r["利益チェック"] == "×"
+    assert r["新販売価格"] == 882 and r["NE売価"] == 802
+    assert abs(r["新利益率"] - 0.15) < 0.01
 
-    r = by_code["kwgc0414"]  # yuup3→nekop（メール便同士・送料下がる）
-    assert r["現販売価格"] == 1760            # CSVに無ければ楽天取得価格
+    # kwgc0414: yuup3→60=サイズアップ・便種変更あり・現価格1760円なら利益率25%で合格→価格そのまま
+    r = by_code["kwgc0414"]
+    assert r["区分"] == "サイズアップ"
+    assert r["配送設定"] == "要修正（メール便→宅配便）"
+    assert r["利益チェック"] == "〇" and r["新販売価格"] is None
+
+    # artc9999: 80(837円)→60(705.5円)=サイズダウン・宅配同士→修正不要・利益チェック無し
+    r = by_code["artc9999"]
+    assert r["区分"] == "サイズダウン"
     assert r["配送設定"] == "不要"
-    assert r["利益チェック"] == "〇"
+    assert r["利益チェック"] == "-" and r["新販売価格"] is None
 
+    # 出力CSV: NE項目1更新・配送設定修正（楽天リスト/Yahoo NT・NM）
     item1 = ex.ne_item1_csv([{"商品コード": r["商品コード"], "新項目1": r["新項目1"]}
                              for r in rows]).decode("cp932")
-    assert "slvb0144,60" in item1 and "kwgc0414,nekop" in item1
+    assert "slvb0144,60" in item1 and "kwgc0414,60" in item1
+    dv = [{"商品管理番号": "slvb0144", "商品コード": "slvb0144",
+           "旧便種": "メール便", "新便種": "宅配便"}]
+    rak = ex.rakuten_delivery_csv(dv).decode("cp932")
+    assert "slvb0144,宅配便のみ,メール便→宅配便,slvb0144" in rak
+    yah = ex.yahoo_delivery_csv(dv).decode("cp932")
+    assert "code,配送グループ管理番号" in yah and "slvb0144,NT" in yah
 
 
 def test_rakuten_sku_master_and_export():

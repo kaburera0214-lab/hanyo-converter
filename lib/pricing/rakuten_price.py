@@ -131,6 +131,11 @@ def fetch_for_codes(codes, sku_table, on_progress=None):
     return info, errors, warnings
 
 
+def probe_item(manage_number):
+    """商品1件の生レスポンスを返す（配送方法セット等のフィールド特定・API自動化の調査用）。"""
+    return rms_api.get(f"/es/2.0/items/manage-numbers/{manage_number}")
+
+
 def to_sku_table(info):
     """fetch_for_codes の結果 → SKU対応表形式 {code: (商品管理番号, SKU管理番号, 連携番号)}。"""
     return {code: (d["parent"], d["sku"], d["renkei"]) for code, d in info.items()}

@@ -311,6 +311,8 @@ _DL_LABELS = {
     "price_detail.csv": "📄 計算明細CSV",
     "ne_item1_update.csv": "🟢 NE項目1更新CSV",
     "size_change_check.csv": "📄 チェック結果CSV",
+    "rakuten_delivery_update.csv": "🔴 楽天 配送方法セット修正リスト",
+    "yahoo_delivery_update.csv": "🟡 Yahoo 配送グループ更新CSV",
 }
 
 
@@ -366,12 +368,15 @@ def confirm_gate(files, key_prefix, tab_label, extra_files=None):
 
     saved = conf["files"]
     suffix = conf.get("suffix", "")
-    cols = st.columns(len(saved))
-    for col, (name, data) in zip(cols, saved.items()):
-        stem, _, ext = name.rpartition(".")
-        dl_name = f"{stem}_{suffix}.{ext}" if suffix else name
-        col.download_button(_DL_LABELS.get(name, name), data, dl_name, "text/csv",
-                            key=f"{key_prefix}_dl_{name}", use_container_width=True)
+    items = list(saved.items())
+    for i in range(0, len(items), 4):
+        chunk = items[i:i + 4]
+        cols = st.columns(4)
+        for col, (name, data) in zip(cols, chunk):
+            stem, _, ext = name.rpartition(".")
+            dl_name = f"{stem}_{suffix}.{ext}" if suffix else name
+            col.download_button(_DL_LABELS.get(name, name), data, dl_name, "text/csv",
+                                key=f"{key_prefix}_dl_{name}", use_container_width=True)
 
 
 def confirm_and_download(result_df, key_prefix, tab_label, include_unchanged,
@@ -438,19 +443,9 @@ with tab1:
                "目標利益率価格の計算では、3980円未満はお客様負担の送料（宅配880円/メール350円）を考慮します。"
                "旧下代はNE商品マスタの原価を使います。")
 
-    prefill = st.session_state.get("pricing_tab1_prefill")
-    if prefill is not None:
-        st.info(f"📐 梱包サイズ変更タブから {len(prefill)}件 を引き継いでいます（利益NG品の価格再設定）。")
-        if st.button("引き継ぎを解除してCSVアップロードに戻す", key="t1_clear_prefill"):
-            st.session_state.pop("pricing_tab1_prefill", None)
-            st.rerun()
-
-    up1 = st.file_uploader("価格変更の入力CSV", type=["csv"], key="t1_upload",
-                           disabled=prefill is not None)
+    up1 = st.file_uploader("価格変更の入力CSV", type=["csv"], key="t1_upload")
     in_df = None
-    if prefill is not None:
-        in_df = prefill
-    elif up1 is not None:
+    if up1 is not None:
         try:
             in_df = csv_import.read_csv_auto(up1.getvalue())
         except Exception as e:  # noqa: BLE001
@@ -485,7 +480,7 @@ with tab1:
                     overrides=st.session_state.get("t1_result_overrides"),
                     cur_prices=cur_prices)
                 result_section(rows, "t1_result", "納品価格変更",
-                               input_file=input_file_of(up1, prefill))
+                               input_file=input_file_of(up1))
 
 # ── タブ2: 直送価格＆送料変更 ───────────────────────────────
 with tab2:
@@ -532,8 +527,9 @@ with tab2:
 # ── タブ3: 梱包サイズ変更 ───────────────────────────────────
 with tab3:
     st.markdown("##### 入力CSV: **JAN（またはNE商品コード）・新項目1（新サイズ）**")
-    st.caption("①利益チェック（新サイズの送料・資材で、現在の楽天価格のままだと利益率が警告ライン以上か） "
-               "②配送設定修正（宅配便⇔メール便が変わるか）。"
+    st.caption("入荷時にサイズが暫定登録と違った場合の対応。"
+               "**サイズダウン**→便種変更（メール便⇔宅配便）があればモール配送設定の修正。"
+               "**サイズアップ**→利益チェック（警告ライン基準）→NGなら納品価格変更と同じ計算で価格を再設定。"
                "現販売価格は📡「楽天から現在価格を取得」で取り込みます。")
     up3 = st.file_uploader("サイズ変更の入力CSV", type=["csv"], key="t3_upload")
     if up3 is not None:
@@ -564,32 +560,77 @@ with tab3:
                                                   cur_prices=cur_prices)
                 if rows3:
                     df3 = pd.DataFrame(rows3)
-                    lead3 = ["商品コード", "商品名", "警告"]
+                    lead3 = ["商品コード", "商品名", "警告", "区分", "配送設定", "利益チェック"]
                     df3 = df3[lead3 + [c for c in df3.columns if c not in lead3]]
                     st.dataframe(df3, use_container_width=True, hide_index=True,
                                  column_config={"新利益率": st.column_config.NumberColumn(format="percent")})
+
                     ng = df3[df3["利益チェック"] == "×"]
-                    fix = df3[df3["配送設定"] == "要修正"]
-                    c1, c2 = st.columns(2)
-                    c1.metric("利益NG（価格再設定を推奨）", f"{len(ng)}件")
-                    c2.metric("モール配送設定の修正が必要", f"{len(fix)}件")
-                    item1_rows = [{"商品コード": r["商品コード"], "新項目1": r["新項目1"]}
-                                  for _, r in df3.iterrows()]
-                    _in3 = input_file_of(up3)
-                    confirm_gate({
-                        "ne_item1_update.csv": ex.ne_item1_csv(item1_rows),
-                        "size_change_check.csv": ex.detail_csv(df3),
-                    }, "t3_result", "梱包サイズ変更",
-                        extra_files=({f"input_{_in3[0]}": _in3[1]} if _in3 else None))
+                    fix = df3[df3["配送設定"].astype(str).str.startswith("要修正")]
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("サイズアップ", f"{len(df3[df3['区分'] == 'サイズアップ'])}件")
+                    c2.metric("サイズダウン", f"{len(df3[df3['区分'] == 'サイズダウン'])}件")
+                    c3.metric("配送設定の修正", f"{len(fix)}件")
+                    c4.metric("利益NG→価格再設定", f"{len(ng)}件")
+
+                    # 出力CSVを組み立て
+                    files3 = {}
+                    # ①NE項目1更新（全行）
+                    files3["ne_item1_update.csv"] = ex.ne_item1_csv(
+                        [{"商品コード": r["商品コード"], "新項目1": r["新項目1"]}
+                         for _, r in df3.iterrows()])
+                    # ②モール配送設定の修正（便種が変わった商品・親コード単位）
+                    if len(fix):
+                        seen, dv_rows = set(), []
+                        for _, r in fix.iterrows():
+                            code = str(r["商品コード"]).lower()
+                            hit = sku_table.get(code)
+                            parent = (hit[0] if hit else masters.parent_code(code))
+                            if parent not in seen:
+                                seen.add(parent)
+                                dv_rows.append({"商品管理番号": parent, "商品コード": r["商品コード"],
+                                                "旧便種": r["旧便種"], "新便種": r["新便種"]})
+                        files3["rakuten_delivery_update.csv"] = ex.rakuten_delivery_csv(dv_rows)
+                        files3["yahoo_delivery_update.csv"] = ex.yahoo_delivery_csv(dv_rows)
+                    # ③利益NG品の価格再設定CSV（納品価格変更と同じ3ファイル）
                     if len(ng):
-                        st.markdown("###### 利益NG品の価格再設定")
-                        st.caption("下代は変わっていないため、「納品価格変更」タブへ引き継いで"
-                                   "目標利益率価格に再設定します（新サイズの送料・資材で計算）。")
-                        if st.button(f"📦 利益NG {len(ng)}件を「納品価格変更」タブへ送る", key="t3_to_t1"):
-                            pre = pd.DataFrame([{
-                                "商品コード": r["商品コード"],
-                                "新下代": code_info.get(str(r["商品コード"]).lower(), {}).get("原価", ""),
-                                "項目1": r["新項目1"],
-                            } for _, r in ng.iterrows()])
-                            st.session_state["pricing_tab1_prefill"] = pre
-                            st.success("引き継ぎました。「📦 納品価格変更」タブを開いてください。")
+                        st.caption(f"💡 利益NG {len(ng)}件は新サイズのコストで目標利益率価格に再設定します"
+                                   "（表の「新販売価格」列）。下の価格CSVに含まれます。")
+                        price_df = pd.DataFrame([{
+                            "商品コード": r["商品コード"], "現販売価格": r["現販売価格"],
+                            "新販売価格": r["新販売価格"], "NE売価": r["NE売価"],
+                            "新下代": code_info.get(str(r["商品コード"]).lower(), {}).get("原価", ""),
+                        } for _, r in ng.iterrows()])
+                        pfiles, _, _ = build_output_files(price_df, include_unchanged=False)
+                        files3["normal-item.csv"] = pfiles["normal-item.csv"]
+                        files3["yahoo_data.csv"] = pfiles["yahoo_data.csv"]
+                        files3["ne_price_update.csv"] = pfiles["ne_price_update.csv"]
+                    # ④チェック明細（全行・証跡）
+                    files3["size_change_check.csv"] = ex.detail_csv(df3)
+
+                    _in3 = input_file_of(up3)
+                    confirm_gate(files3, "t3_result", "梱包サイズ変更",
+                                 extra_files=({f"input_{_in3[0]}": _in3[1]} if _in3 else None))
+
+    with st.expander("🔧 楽天API調査（配送方法セット自動化の準備）", expanded=False):
+        st.caption("楽天の配送方法セットをAPIで自動変更するための下調べです。"
+                   "商品管理番号を1つ入れて実行すると、その商品の配送関連フィールドを表示します。"
+                   "結果を確認できたら配送設定のAPI自動修正を実装します。")
+        probe_mn = st.text_input("商品管理番号（例: gais0020）", key="t3_probe_mn")
+        if st.button("🔍 調査する", key="t3_probe_btn",
+                     disabled=not (probe_mn.strip() and rakuten_price.is_configured())):
+            try:
+                st.session_state["t3_probe_result"] = rakuten_price.probe_item(probe_mn.strip())
+            except Exception as e:  # noqa: BLE001
+                st.session_state.pop("t3_probe_result", None)
+                st.error(f"取得失敗: {e}")
+        _probe = st.session_state.get("t3_probe_result")
+        if _probe:
+            item = _probe.get("item", _probe)
+            st.write("商品フィールド一覧:", sorted(item.keys()))
+            shipping_like = {k: v for k, v in item.items()
+                             if any(s in k.lower() for s in ("ship", "delivery", "postage"))}
+            st.write("配送関連フィールド:")
+            st.json(shipping_like or {"(該当なし)": "全体表示で確認してください"})
+            if st.checkbox("レスポンス全体を表示（variantsは除く）", key="t3_probe_full"):
+                st.json({k: v for k, v in item.items() if k != "variants"})

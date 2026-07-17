@@ -137,21 +137,5 @@ def output_prices(new_price, new_cost, params):
     }
 
 
-def size_change_check(cur_price, cost, shipping_new, material_new,
-                      delivery_old, delivery_new, params):
-    """
-    梱包サイズ変更のチェック。
-      利益チェック: 新サイズの送料・資材で（現価格のまま）利益率が margin_warn 以上か
-      配送設定修正: 新旧で配送種別（宅配便/メール便）が変わるなら要修正
-    返り値: dict(利益チェック, 配送設定要修正, 新利益額, 新利益率)
-    """
-    m = profit_base_price(cur_price, delivery_old, params)
-    p = profit(m, cost, shipping_new, material_new, params)
-    margin = (p / m) if m else None
-    profit_ok = "〇" if (margin is not None and margin >= params["margin_warn"]) else "×"
-    return {
-        "利益チェック": profit_ok,
-        "配送設定要修正": "要修正" if delivery_old != delivery_new else "不要",
-        "新利益額": p,
-        "新利益率": margin,
-    }
+# 梱包サイズ変更の判定ロジックは pipeline.size_change_rows に集約
+# （サイズアップ/ダウン分岐・便種変更・利益チェック・NG時の価格再設定）

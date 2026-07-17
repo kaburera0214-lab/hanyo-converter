@@ -135,6 +135,33 @@ def ne_csv(rows):
     return _to_csv_bytes(df)
 
 
+# 梱包サイズ変更: 便種が変わったときのモール配送設定の修正（2026-07-17ユーザー確定）
+RAKUTEN_DELIVERY_SET_NAME = {"宅配便": "宅配便のみ", "メール便": "メール便"}  # 楽天の配送方法セット名
+YAHOO_DELIVERY_COLUMN = "配送グループ管理番号"   # Yahoo側の項目名（実物に合わせて調整可）
+YAHOO_DELIVERY_VALUE = {"宅配便": "NT", "メール便": "NM"}
+
+
+def rakuten_delivery_csv(rows):
+    """[{商品管理番号, 商品コード, 旧便種, 新便種}] → 楽天の配送方法セット修正リスト。
+    現状はRMS画面で手直しするための作業リスト（API自動化はフィールド特定後に対応予定）。"""
+    df = pd.DataFrame([{
+        "商品管理番号": r["商品管理番号"],
+        "新しい配送方法セット": RAKUTEN_DELIVERY_SET_NAME.get(r["新便種"], r["新便種"]),
+        "変更内容": f"{r['旧便種']}→{r['新便種']}",
+        "対象商品コード": r["商品コード"],
+    } for r in rows], columns=["商品管理番号", "新しい配送方法セット", "変更内容", "対象商品コード"])
+    return _to_csv_bytes(df)
+
+
+def yahoo_delivery_csv(rows):
+    """[{商品管理番号, 新便種}] → Yahooの配送グループ管理番号 更新CSV（宅配便=NT／メール便=NM）。"""
+    df = pd.DataFrame([{
+        "code": str(r["商品管理番号"]).lower(),
+        YAHOO_DELIVERY_COLUMN: YAHOO_DELIVERY_VALUE.get(r["新便種"], r["新便種"]),
+    } for r in rows], columns=["code", YAHOO_DELIVERY_COLUMN])
+    return _to_csv_bytes(df)
+
+
 def ne_item1_csv(rows):
     """梱包サイズ変更用: [{商品コード, 新項目1}] → NE項目1更新CSVのbytes。"""
     df = pd.DataFrame([{

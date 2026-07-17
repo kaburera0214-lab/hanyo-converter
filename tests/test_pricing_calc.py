@@ -129,22 +129,6 @@ def test_direct_mode():
     assert abs(margin - 0.15) < 0.01
 
 
-def test_size_change_check():
-    """サイズ変更チェック: メール便→宅配便は配送設定要修正、利益率で〇×"""
-    chk = calc.size_change_check(
-        cur_price=880, cost=446,
-        shipping_new=269, material_new=23,
-        delivery_old="メール便", delivery_new="メール便", params=P)
-    assert chk["配送設定要修正"] == "不要"
-    assert chk["利益チェック"] == "〇"
-    chk2 = calc.size_change_check(
-        cur_price=880, cost=446,
-        shipping_new=675, material_new=30.5,
-        delivery_old="メール便", delivery_new="宅配便", params=P)
-    assert chk2["配送設定要修正"] == "要修正"
-    assert chk2["利益チェック"] == "×"      # 送料が上がって利益率10%未満
-
-
 if __name__ == "__main__":
     fails = 0
     for name, fn in sorted(globals().items()):
