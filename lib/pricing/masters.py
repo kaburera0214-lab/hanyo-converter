@@ -212,6 +212,31 @@ def save_run_to_drive(files, label, folder_id):
     return run_name, run_id
 
 
+# ── 価格改定モジュールの設定（Drive保存の小さなJSON） ──────
+
+SETTINGS_NAME = "pricing_settings.json"
+
+
+def load_settings(folder_id):
+    """設定JSON（楽天の配送方法セット管理番号など）をDriveから読む。無ければ空dict。"""
+    import json
+    try:
+        f = drive_master.find_file(SETTINGS_NAME, folder_id)
+        if f:
+            return json.loads(drive_master.download_bytes(f["id"]).decode("utf-8"))
+    except Exception:  # noqa: BLE001
+        pass
+    return {}
+
+
+def save_settings(settings, folder_id):
+    """設定JSONをDriveへ保存（上書き）。"""
+    import json
+    data = json.dumps(settings, ensure_ascii=False, indent=2).encode("utf-8")
+    return drive_master.upload_or_replace(data, SETTINGS_NAME, folder_id,
+                                          mimetype="application/json")
+
+
 # ── 楽天SKU対応表 ─────────────────────────────────────────
 
 def sku_table_to_df(table):

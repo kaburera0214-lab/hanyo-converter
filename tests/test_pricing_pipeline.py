@@ -245,6 +245,16 @@ def test_rakuten_price_required():
     assert "未取得" in rows2[0]["警告"]
 
 
+def test_shipping_group_patch_body():
+    """配送方法セット変更のPATCHボディは全SKUのshippingMethodGroupだけを含む"""
+    from lib.pricing import rakuten_price
+    body = rakuten_price.shipping_group_patch_body(["gais0020-01-01", "gais0020-01-02"], 5)
+    assert body == {"variants": {
+        "gais0020-01-01": {"shipping": {"shippingMethodGroup": "5"}},
+        "gais0020-01-02": {"shipping": {"shippingMethodGroup": "5"}},
+    }}
+
+
 def test_parent_code_strips_all_numeric_suffixes():
     """実障害の再現（2026-07-17 gais0020-01-06）: 枝番が2段でも全部除去して親を推定"""
     assert masters.parent_code("gais0020-01-06") == "gais0020"

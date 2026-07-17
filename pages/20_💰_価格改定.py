@@ -580,8 +580,9 @@ with tab3:
                         [{"商品コード": r["商品コード"], "新項目1": r["新項目1"]}
                          for _, r in df3.iterrows()])
                     # ②モール配送設定の修正（便種が変わった商品・親コード単位）
+                    dv_rows = []
                     if len(fix):
-                        seen, dv_rows = set(), []
+                        seen = set()
                         for _, r in fix.iterrows():
                             code = str(r["商品コード"]).lower()
                             hit = sku_table.get(code)
@@ -611,6 +612,71 @@ with tab3:
                     _in3 = input_file_of(up3)
                     confirm_gate(files3, "t3_result", "梱包サイズ変更",
                                  extra_files=({f"input_{_in3[0]}": _in3[1]} if _in3 else None))
+
+                    # ── 楽天の配送方法セットをAPIで自動修正 ──
+                    if dv_rows:
+                        with st.expander(f"🚀 楽天の配送方法セットをAPIで自動修正（対象 {len(dv_rows)}商品）",
+                                         expanded=True):
+                            st.caption("各商品の全SKUの配送方法セット（shippingMethodGroup）を"
+                                       "APIで書き換えます（他の項目は触りません）。"
+                                       "Yahooは下の更新CSVで対応してください。")
+                            if "pricing_settings" not in st.session_state:
+                                st.session_state["pricing_settings"] = masters.load_settings(product_folder)
+                            _set = st.session_state["pricing_settings"]
+                            s1, s2, s3 = st.columns([1, 1, 1])
+                            g_tak = s1.text_input("「宅配便のみ」の管理番号",
+                                                  value=str(_set.get("rakuten_group_takuhai", "")),
+                                                  key="t3_grp_tak")
+                            g_mail = s2.text_input("「メール便」の管理番号",
+                                                   value=str(_set.get("rakuten_group_mail", "")),
+                                                   key="t3_grp_mail")
+                            if s3.button("💾 番号を保存", key="t3_grp_save",
+                                         disabled=not (g_tak.strip() and g_mail.strip())):
+                                _set["rakuten_group_takuhai"] = g_tak.strip()
+                                _set["rakuten_group_mail"] = g_mail.strip()
+                                try:
+                                    masters.save_settings(_set, product_folder)
+                                    st.success("保存しました（次回から自動入力されます）。")
+                                except Exception as e:  # noqa: BLE001
+                                    st.warning(f"Drive保存に失敗（この画面では有効）: {e}")
+                            st.caption("番号はRMS「店舗設定→配送方法セット」の一覧で確認できます。"
+                                       "調査ツールで既存商品を見て確かめるのも確実です"
+                                       "（例: gais0020のメール便SKUはshippingMethodGroup=\"2\"）。")
+
+                            if g_tak.strip() and g_mail.strip():
+                                group_of = {"宅配便": g_tak.strip(), "メール便": g_mail.strip()}
+                                plan = [{"商品管理番号": d["商品管理番号"],
+                                         "変更": f"{d['旧便種']}→{d['新便種']}",
+                                         "設定する管理番号": group_of.get(d["新便種"], "")}
+                                        for d in dv_rows]
+                                st.dataframe(pd.DataFrame(plan),
+                                             use_container_width=True, hide_index=True)
+                                agree = st.checkbox("上記の内容で楽天の本番データを変更することを確認しました",
+                                                    key="t3_api_agree")
+                                if st.button(f"🚀 {len(dv_rows)}商品の配送方法セットを変更する",
+                                             key="t3_api_run", type="primary",
+                                             disabled=not (agree and rakuten_price.is_configured())):
+                                    ok_list, ng_list = [], []
+                                    bar = st.progress(0.0, text="変更中…")
+                                    for i, d in enumerate(dv_rows):
+                                        gid = group_of.get(d["新便種"])
+                                        try:
+                                            rakuten_price.set_shipping_method_group(
+                                                d["商品管理番号"], gid)
+                                            ok_list.append(d["商品管理番号"])
+                                        except Exception as e:  # noqa: BLE001
+                                            ng_list.append(f"{d['商品管理番号']}: {e}")
+                                        bar.progress((i + 1) / len(dv_rows),
+                                                     text=f"変更中… {i + 1}/{len(dv_rows)}")
+                                    bar.empty()
+                                    if ok_list:
+                                        st.success(f"✅ {len(ok_list)}商品を変更しました: "
+                                                   + ", ".join(ok_list[:10])
+                                                   + (" …" if len(ok_list) > 10 else ""))
+                                    if ng_list:
+                                        st.error("変更できなかった商品:\n" + "\n".join(ng_list[:10]))
+                                if not rakuten_price.is_configured():
+                                    st.caption("⚠️ RMSキー未設定のため実行できません。")
 
     with st.expander("🔧 楽天API調査（配送方法セット自動化の準備）", expanded=False):
         st.caption("楽天の配送方法セットをAPIで自動変更するための下調べです。"

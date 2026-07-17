@@ -136,6 +136,22 @@ def probe_item(manage_number):
     return rms_api.get(f"/es/2.0/items/manage-numbers/{manage_number}")
 
 
+def shipping_group_patch_body(variant_keys, group_id):
+    """全SKUの shipping.shippingMethodGroup（配送方法セット管理番号）だけを更新するPATCHボディ。
+    2026-07-17のAPI調査で、配送方法セットはSKU単位のこのフィールドにあることを確認済み。"""
+    return {"variants": {sku: {"shipping": {"shippingMethodGroup": str(group_id)}}
+                         for sku in variant_keys}}
+
+
+def set_shipping_method_group(manage_number, group_id):
+    """商品の全SKUの配送方法セットを group_id に変更する（指定項目のみのPATCH更新）。"""
+    variants = _get_variants(manage_number)
+    if not variants:
+        raise rms_api.RMSError(f"{manage_number}: SKU情報を取得できませんでした")
+    body = shipping_group_patch_body(list(variants.keys()), group_id)
+    return rms_api.patch(f"/es/2.0/items/manage-numbers/{manage_number}", body)
+
+
 def to_sku_table(info):
     """fetch_for_codes の結果 → SKU対応表形式 {code: (商品管理番号, SKU管理番号, 連携番号)}。"""
     return {code: (d["parent"], d["sku"], d["renkei"]) for code, d in info.items()}
