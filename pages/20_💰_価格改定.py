@@ -628,9 +628,29 @@ with tab3:
         if _probe:
             item = _probe.get("item", _probe)
             st.write("商品フィールド一覧:", sorted(item.keys()))
-            shipping_like = {k: v for k, v in item.items()
-                             if any(s in k.lower() for s in ("ship", "delivery", "postage"))}
-            st.write("配送関連フィールド:")
-            st.json(shipping_like or {"(該当なし)": "全体表示で確認してください"})
+
+            # 全階層からship/delivery/postageを含むキーを探す（SKU=variants内も対象）
+            def _find_keys(obj, path=""):
+                hits = {}
+                if isinstance(obj, dict):
+                    for k, v in obj.items():
+                        p = f"{path}.{k}" if path else str(k)
+                        if any(s in str(k).lower() for s in ("ship", "delivery", "postage")):
+                            hits[p] = v
+                        hits.update(_find_keys(v, p))
+                elif isinstance(obj, list):
+                    for i, v in enumerate(obj[:3]):
+                        hits.update(_find_keys(v, f"{path}[{i}]"))
+                return hits
+
+            hits = _find_keys(item)
+            st.write("配送関連フィールド（全階層を検索）:")
+            st.json(hits or {"(該当なし)": "SKUの生データと全体表示で確認してください"})
+
+            variants = item.get("variants") or {}
+            if isinstance(variants, dict) and variants:
+                first_key = next(iter(variants))
+                st.write(f"SKU 1件分の生データ（SKU管理番号: {first_key}）:")
+                st.json(variants[first_key])
             if st.checkbox("レスポンス全体を表示（variantsは除く）", key="t3_probe_full"):
                 st.json({k: v for k, v in item.items() if k != "variants"})
