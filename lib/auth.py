@@ -37,6 +37,7 @@ ROLE_LABELS = {
     "event": "イベントLP作成",
     "pricing": "価格改定",
     "receiving": "入荷登録",
+    "autopage": "商品ページ自動更新",
 }
 
 _USER_KEY = "auth_user"

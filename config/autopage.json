@@ -1,0 +1,44 @@
+{
+  "enabled": false,
+  "dry_run": true,
+  "allowlist": ["edin0033"],
+  "shop_code": "",
+  "shop_id": "318802",
+  "byte_limit": 10240,
+  "byte_reserve": 250,
+  "rate_sleep": 0.7,
+  "layout_top": ["breadcrumb"],
+  "layout_bottom": ["score", "copurchase", "similar", "update_date"],
+  "systems": {
+    "breadcrumb": {
+      "enabled": true,
+      "link": "category",
+      "category_position": "last",
+      "font_size": "medium",
+      "exception_keywords": ["カテゴリ", "ブランド", "メーカー", "アイテム", "全商品", "その他", "特集"]
+    },
+    "score": {
+      "enabled": true,
+      "min_average": 4.0,
+      "min_count": 3
+    },
+    "copurchase": {
+      "enabled": false,
+      "max_items": 2,
+      "band_title": "＼よく一緒に購入されています／"
+    },
+    "similar": {
+      "enabled": false,
+      "max_items": 10,
+      "band_title": "＼こちらもおすすめ／"
+    },
+    "update_date": {
+      "enabled": false,
+      "align": "right"
+    }
+  },
+  "item_name": {"show": true, "strip_brackets": true},
+  "hidden_items": {"name_contains": [], "manage_number_contains": []},
+  "review_refresh_days": 7,
+  "category_refresh_days": 7
+}

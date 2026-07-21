@@ -1,0 +1,71 @@
+name: autopage-daily
+
+on:
+  schedule:
+    - cron: "0 19 * * *"  # JST 4:00
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "実行モード"
+        type: choice
+        options: [config, dry-run, apply, remove-all]
+        default: config
+      items:
+        description: "対象商品（カンマ区切り、空=config.allowlist）"
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: autopage
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install requests
+
+      - name: Run autopage batch
+        env:
+          RMS_SERVICE_SECRET: ${{ secrets.RMS_SERVICE_SECRET }}
+          RMS_LICENSE_KEY: ${{ secrets.RMS_LICENSE_KEY }}
+          RAKUTEN_APP_ID: ${{ secrets.RAKUTEN_APP_ID }}
+          GOLD_SHOP_URL: ${{ secrets.GOLD_SHOP_URL }}
+        run: |
+          MODE="${{ github.event.inputs.mode || 'config' }}"
+          ITEMS="${{ github.event.inputs.items || '' }}"
+          FLAGS=""
+          case "$MODE" in
+            dry-run)    FLAGS="--dry-run" ;;
+            apply)      FLAGS="--apply" ;;
+            remove-all) FLAGS="--remove-all" ;;
+          esac
+          if [ -n "$ITEMS" ]; then FLAGS="$FLAGS --items $ITEMS"; fi
+          python batch/autopage_update.py $FLAGS
+
+      - name: Commit state
+        if: always()
+        run: |
+          git config user.name "autopage-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add data/autopage
+          if git diff --cached --quiet; then
+            echo "no changes"
+            exit 0
+          fi
+          git commit -m "autopage: update state [skip ci]"
+          # Streamlit Cloudアプリ自身もmainへpushするため、rebaseリトライで競合回避
+          for i in 1 2 3; do
+            git push && exit 0
+            git pull --rebase
+          done
+          exit 1

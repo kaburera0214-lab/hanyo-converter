@@ -27,16 +27,28 @@ class RMSAuthError(RMSError):
     """認証失敗(ライセンスキー期限切れ/無効の可能性)。"""
 
 
+def _get_secret(name):
+    """Streamlit Secrets → 環境変数の順で探す。
+    GitHub Actions等のstreamlitが無い環境でも動かすためのフォールバック。"""
+    try:
+        import streamlit as st
+        v = str(st.secrets.get(name, "")).strip()
+        if v:
+            return v
+    except Exception:
+        pass
+    import os
+    return str(os.environ.get(name, "")).strip()
+
+
 def is_configured():
-    import streamlit as st
-    return bool(st.secrets.get("RMS_SERVICE_SECRET", "")) and \
-        bool(st.secrets.get("RMS_LICENSE_KEY", ""))
+    return bool(_get_secret("RMS_SERVICE_SECRET")) and \
+        bool(_get_secret("RMS_LICENSE_KEY"))
 
 
 def _headers():
-    import streamlit as st
-    secret = str(st.secrets.get("RMS_SERVICE_SECRET", "")).strip()
-    license_key = str(st.secrets.get("RMS_LICENSE_KEY", "")).strip()
+    secret = _get_secret("RMS_SERVICE_SECRET")
+    license_key = _get_secret("RMS_LICENSE_KEY")
     if not secret or not license_key:
         raise RMSNotConfigured(
             "Secrets に RMS_SERVICE_SECRET / RMS_LICENSE_KEY が未設定です。")
