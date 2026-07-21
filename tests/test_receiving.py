@@ -47,6 +47,11 @@ def test_location_code_and_split():
     # ロケーション側にハイフンがあっても最初の「-」でだけ分割する
     mats2, locs2 = rp.split_location_values(["100A-TA-10B"])
     assert mats2 == ["100A"] and locs2 == ["TA-10B"]
+    # 件数集計（誤登録の点検用・split_location_valuesと同じ分割規則）
+    mc, lc = rp.split_location_counts(
+        ["100A-TA10B", "100A-TA11C", "60B-KA01", "100A-TA10B", "", "半端な値"])
+    assert mc == {"100A": 3, "60B": 1}
+    assert lc == {"TA10B": 2, "TA11C": 1, "KA01": 1}
 
 
 def test_build_plan():

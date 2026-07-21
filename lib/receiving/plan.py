@@ -18,20 +18,29 @@ def location_code(material_no, location):
     return f"{str(material_no).strip()}-{str(location).strip()}"
 
 
-def split_location_values(values):
-    """NEマスタ「ロケーションコード」列の既存値から、プルダウン選択肢を抽出する。
+def split_location_counts(values):
+    """NEマスタ「ロケーションコード」列の既存値を集計する（誤登録の点検用）。
     最初の「-」で分割: 100A-TA10B → 資材ナンバー=100A / ロケーション=TA10B。
-    返り値: (資材ナンバー一覧, ロケーション一覧)（それぞれソート済み・重複なし）"""
-    mats, locs = set(), set()
+    返り値: (資材ナンバー→件数dict, ロケーション→件数dict)。件数が極端に少ない値は
+    誤登録の可能性が高い、という見方でユーザーが点検する。"""
+    mats, locs = {}, {}
     for v in values:
         s = masters.norm_key(v)
         if not s or s == "nan" or "-" not in s:
             continue
         m, _, loc = s.partition("-")
         if m:
-            mats.add(m)
+            mats[m] = mats.get(m, 0) + 1
         if loc:
-            locs.add(loc)
+            locs[loc] = locs.get(loc, 0) + 1
+    return mats, locs
+
+
+def split_location_values(values):
+    """NEマスタ「ロケーションコード」列の既存値から、プルダウン選択肢を抽出する。
+    分割規則は split_location_counts と同じ。
+    返り値: (資材ナンバー一覧, ロケーション一覧)（それぞれソート済み・重複なし）"""
+    mats, locs = split_location_counts(values)
     return sorted(mats), sorted(locs)
 
 

@@ -226,90 +226,175 @@ def _save_sku_table():
 
 # ══ 入力フォーム（JANスキャン → 自動補完 → プルダウン選択） ═══
 
-st.markdown("### ① 入荷商品の入力")
-st.caption("JAN欄にスキャン（Enterで確定）すると商品コード・商品名・現在の登録内容が自動表示されます。"
-           "資材ナンバー・ロケーション・配送サイズは**プルダウンから選択**してください（手入力不可）。")
-
-if "recv_df" not in st.session_state:
-    st.session_state["recv_df"] = pd.DataFrame(
-        [{c: ("" if c in ("JANコード", "商品コード", "商品名", "現サイズ", "現ロケーション")
-              else None) for c in _FORM_COLUMNS} for _ in range(FORM_ROWS)])
-    st.session_state["recv_nonce"] = 0
-
-_nonce = st.session_state["recv_nonce"]
-edited = st.data_editor(
-    st.session_state["recv_df"], key=f"recv_editor_{_nonce}",
-    num_rows="dynamic", hide_index=True, use_container_width=True,
-    column_config={
-        "JANコード": st.column_config.TextColumn("JAN（スキャン）", width="medium"),
-        "商品コード": st.column_config.TextColumn("商品コード", disabled=True),
-        "商品名": st.column_config.TextColumn("商品名", disabled=True, width="large"),
-        "現サイズ": st.column_config.TextColumn("現サイズ", disabled=True, width="small"),
-        "現ロケーション": st.column_config.TextColumn("現ロケーション", disabled=True),
-        "資材ナンバー": st.column_config.SelectboxColumn("資材ナンバー", options=material_opts),
-        "ロケーション": st.column_config.SelectboxColumn("ロケーション", options=location_opts),
-        "配送サイズ": st.column_config.SelectboxColumn("配送サイズ（項目1）", options=size_opts),
-    })
-
 def _cell(value):
     """セル値を文字列に正規化（NaN/None → 空文字）。"""
     s = masters.norm_key(value)
     return "" if s in ("nan", "None") else s
 
 
-# JANが変わった行だけマスタから補完する（変化があれば nonce+1 で再描画）
-_changed = False
-for i in edited.index:
-    jan = _cell(edited.at[i, "JANコード"])
-    cur_code = _cell(edited.at[i, "商品コード"])
-    code = jan_map.get(jan, "") if jan else ""
-    if not code and jan and jan.lower() in code_info:
+def _resolve_code(jan):
+    """JAN（または商品コード）→ 商品コード。見つからなければ空文字。"""
+    if not jan:
+        return ""
+    code = jan_map.get(jan, "")
+    if not code and jan.lower() in code_info:
         code = code_info[jan.lower()]["商品コード"]   # JAN欄に商品コードを入れても通す
-    if jan and code and code != cur_code:
-        info = code_info[code.lower()]
-        old_size = masters.norm_key(info.get("項目1", ""))
-        edited.loc[i, ["商品コード", "商品名", "現サイズ", "現ロケーション"]] = (
-            info["商品コード"], info.get("商品名", ""),
-            "" if old_size == "nan" else old_size,
-            loc_map.get(code.lower(), ""))
-        _changed = True
-    elif (not jan or not code) and cur_code:   # JANを消した/変えた → 補完をクリア
-        edited.loc[i, ["商品コード", "商品名", "現サイズ", "現ロケーション"]] = ("", "", "", "")
-        _changed = True
-st.session_state["recv_df"] = edited
-if _changed:
-    st.session_state["recv_nonce"] = _nonce + 1
-    st.rerun()
+    return code
 
-# 入力チェック（JAN未解決・選択漏れ・重複）
-_jan_s = edited["JANコード"].map(_cell)
-_code_s = edited["商品コード"].map(_cell)
-_active = edited[(_jan_s != "") | (_code_s != "")]
+
+st.markdown("### ① 入荷商品の入力")
+
+with st.expander("📄 プルダウン選択肢の点検（誤登録さがし・一覧ダウンロード）", expanded=False):
+    st.caption("選択肢はNE商品マスタの「ロケーションコード」既存値から自動生成しています。"
+               "**件数が極端に少ない値は誤登録の可能性大**。NE側のロケーションコードを直して"
+               "マスタを取り直すと、選択肢からも消えます。")
+    if st.button("📄 一覧を作成", key="recv_opts_report"):
+        if "ロケーションコード" in ne_df.columns:
+            mat_counts, loc_counts = rp.split_location_counts(
+                ne_df["ロケーションコード"].astype(str).tolist())
+        else:
+            mat_counts, loc_counts = {}, {}
+        lines = ["入荷登録 プルダウン選択肢一覧（点検用）",
+                 f"生成: {_dt.datetime.now().strftime('%Y-%m-%d %H:%M')} / 使用マスタ: {master_meta}",
+                 "",
+                 f"■資材ナンバー（{len(mat_counts)}種類・件数の多い順）"]
+        lines += [f"{v}\t{n}件" for v, n in sorted(mat_counts.items(), key=lambda x: -x[1])]
+        lines += ["", f"■ロケーション（{len(loc_counts)}種類・件数の多い順）"]
+        lines += [f"{v}\t{n}件" for v, n in sorted(loc_counts.items(), key=lambda x: -x[1])]
+        lines += ["", f"■配送サイズ（送料・資材マスタのキー {len(size_opts)}種類）",
+                  "、".join(size_opts)]
+        st.session_state["recv_opts_txt"] = "\r\n".join(lines).encode("utf-8-sig")
+    if st.session_state.get("recv_opts_txt") is not None:
+        st.download_button("⬇️ pulldown_options.txt をダウンロード",
+                           st.session_state["recv_opts_txt"],
+                           "pulldown_options.txt", "text/plain", key="recv_opts_dl")
+
+tab_one, tab_bulk = st.tabs(["📱 1商品ずつ", "📋 複数商品まとめて"])
+
+# ── 1商品ずつ（スキャン→3つのプルダウン。全体が1画面に収まる） ──
+single_rows = []
+with tab_one:
+    st.caption("JANをスキャン（Enterで確定）→ **▼のプルダウンを3つ選ぶ** → 下の「🧮 チェック」へ。")
+    jan1 = _cell(st.text_input("JAN（スキャン→Enter）", key="recv1_jan"))
+    code1 = _resolve_code(jan1)
+    if jan1 and not code1:
+        st.error(f"⚠️ マスタに無いJANです: {jan1}")
+    if code1:
+        info1 = code_info[code1.lower()]
+        old_size1 = _cell(info1.get("項目1", ""))
+        i1, i2 = st.columns(2)
+        i1.markdown(f"**{info1['商品コード']}**　{info1.get('商品名', '')}")
+        i2.markdown(f"現サイズ: **{old_size1 or '（未設定）'}**　／　"
+                    f"現ロケーション: **{loc_map.get(code1.lower(), '') or '（未設定）'}**")
+        s1, s2, s3 = st.columns(3)
+        mat1 = s1.selectbox("📂 資材ナンバー", material_opts, index=None,
+                            placeholder="▼ タップして選択", key="recv1_mat")
+        loc1 = s2.selectbox("📍 ロケーション", location_opts, index=None,
+                            placeholder="▼ タップして選択", key="recv1_loc")
+        size1 = s3.selectbox("📦 配送サイズ（項目1）", size_opts, index=None,
+                             placeholder="▼ タップして選択", key="recv1_size")
+        if mat1 and loc1 and size1:
+            single_rows = [{"商品コード": code1, "資材ナンバー": mat1,
+                            "ロケーション": loc1, "配送サイズ": size1}]
+            st.success(f"ロケーションコード: **{rp.location_code(mat1, loc1)}** ／ "
+                       f"サイズ: **{size1}** → 下の「🧮 チェック」へ")
+        else:
+            st.info("▼のプルダウンを3つとも選択してください。")
+
+# ── 複数商品まとめて（表形式・横スクロール無しで全列表示） ──
+bulk_rows = []
 _errors = []
-_bad_jan = _active[_active["商品コード"].map(_cell) == ""]
-if len(_bad_jan):
-    _errors.append("マスタに無いJAN: " + "、".join(
-        str(j) for j in _bad_jan["JANコード"].tolist()[:10]))
-_incomplete = _active[(_active["商品コード"].map(_cell) != "")
-                      & (_active[["資材ナンバー", "ロケーション", "配送サイズ"]]
-                         .isna().any(axis=1))]
-if len(_incomplete):
-    _errors.append("資材ナンバー／ロケーション／配送サイズが未選択: " + "、".join(
-        _incomplete["商品コード"].tolist()[:10]))
-_codes = [c for c in _active["商品コード"].map(_cell).tolist() if c]
-_dups = sorted({c for c in _codes if _codes.count(c) > 1})
-if _dups:
-    _errors.append("同じ商品が複数行にあります: " + "、".join(_dups[:10]))
-for e in _errors:
-    st.error("⚠️ " + e)
+with tab_bulk:
+    st.caption("JAN列にスキャン（Enterで確定）すると商品情報が自動表示されます。"
+               "**▼が付いた列**はセルをクリックするとプルダウンが開きます（手入力不可）。")
 
-_input_rows = [
-    {"商品コード": _cell(r["商品コード"]), "資材ナンバー": r["資材ナンバー"],
-     "ロケーション": r["ロケーション"], "配送サイズ": r["配送サイズ"]}
-    for _, r in _active.iterrows()
-    if _cell(r["商品コード"]) and not pd.isna(r["資材ナンバー"])
-    and not pd.isna(r["ロケーション"]) and not pd.isna(r["配送サイズ"])
-] if not _errors else []
+    if "recv_df" not in st.session_state:
+        st.session_state["recv_df"] = pd.DataFrame(
+            [{c: ("" if c in ("JANコード", "商品コード", "商品名", "現サイズ", "現ロケーション")
+                  else None) for c in _FORM_COLUMNS} for _ in range(FORM_ROWS)])
+        st.session_state["recv_nonce"] = 0
+
+    _nonce = st.session_state["recv_nonce"]
+    # 列名は全列が横スクロール無しで収まるよう短縮（表のヘッダは改行表示ができないため）
+    edited = st.data_editor(
+        st.session_state["recv_df"], key=f"recv_editor_{_nonce}",
+        num_rows="dynamic", hide_index=True, use_container_width=True,
+        column_config={
+            "JANコード": st.column_config.TextColumn("JAN", width="medium",
+                                                     help="ハンディでスキャン→Enter"),
+            "商品コード": st.column_config.TextColumn("商品CD", disabled=True, width="small"),
+            "商品名": st.column_config.TextColumn("商品名", disabled=True, width="medium"),
+            "現サイズ": st.column_config.TextColumn("現サイズ", disabled=True, width="small"),
+            "現ロケーション": st.column_config.TextColumn("現ロケ", disabled=True, width="small"),
+            "資材ナンバー": st.column_config.SelectboxColumn("▼資材", options=material_opts,
+                                                        width="small",
+                                                        help="プルダウンから選択"),
+            "ロケーション": st.column_config.SelectboxColumn("▼ロケ", options=location_opts,
+                                                       width="small",
+                                                       help="プルダウンから選択"),
+            "配送サイズ": st.column_config.SelectboxColumn("▼サイズ", options=size_opts,
+                                                      width="small",
+                                                      help="プルダウンから選択（項目1）"),
+        })
+
+    # JANが変わった行だけマスタから補完する（変化があれば nonce+1 で再描画）
+    _changed = False
+    for i in edited.index:
+        jan = _cell(edited.at[i, "JANコード"])
+        cur_code = _cell(edited.at[i, "商品コード"])
+        code = _resolve_code(jan)
+        if jan and code and code != cur_code:
+            info = code_info[code.lower()]
+            old_size = masters.norm_key(info.get("項目1", ""))
+            edited.loc[i, ["商品コード", "商品名", "現サイズ", "現ロケーション"]] = (
+                info["商品コード"], info.get("商品名", ""),
+                "" if old_size == "nan" else old_size,
+                loc_map.get(code.lower(), ""))
+            _changed = True
+        elif (not jan or not code) and cur_code:   # JANを消した/変えた → 補完をクリア
+            edited.loc[i, ["商品コード", "商品名", "現サイズ", "現ロケーション"]] = ("", "", "", "")
+            _changed = True
+    st.session_state["recv_df"] = edited
+    if _changed:
+        st.session_state["recv_nonce"] = _nonce + 1
+        st.rerun()
+
+    # 入力チェック（JAN未解決・選択漏れ・重複）
+    _jan_s = edited["JANコード"].map(_cell)
+    _code_s = edited["商品コード"].map(_cell)
+    _active = edited[(_jan_s != "") | (_code_s != "")]
+    _bad_jan = _active[_active["商品コード"].map(_cell) == ""]
+    if len(_bad_jan):
+        _errors.append("マスタに無いJAN: " + "、".join(
+            str(j) for j in _bad_jan["JANコード"].tolist()[:10]))
+    _incomplete = _active[(_active["商品コード"].map(_cell) != "")
+                          & (_active[["資材ナンバー", "ロケーション", "配送サイズ"]]
+                             .isna().any(axis=1))]
+    if len(_incomplete):
+        _errors.append("▼資材／▼ロケ／▼サイズが未選択: " + "、".join(
+            _incomplete["商品コード"].tolist()[:10]))
+    _codes = [c for c in _active["商品コード"].map(_cell).tolist() if c]
+    _dups = sorted({c for c in _codes if _codes.count(c) > 1})
+    if _dups:
+        _errors.append("同じ商品が複数行にあります: " + "、".join(_dups[:10]))
+    for e in _errors:
+        st.error("⚠️ " + e)
+
+    bulk_rows = [
+        {"商品コード": _cell(r["商品コード"]), "資材ナンバー": r["資材ナンバー"],
+         "ロケーション": r["ロケーション"], "配送サイズ": r["配送サイズ"]}
+        for _, r in _active.iterrows()
+        if _cell(r["商品コード"]) and not pd.isna(r["資材ナンバー"])
+        and not pd.isna(r["ロケーション"]) and not pd.isna(r["配送サイズ"])
+    ] if not _errors else []
+
+# 両タブの入力をまとめる（通常はどちらか一方だけ使う）
+_both = [r["商品コード"] for r in single_rows + bulk_rows]
+_dups_both = sorted({c for c in _both if _both.count(c) > 1})
+if _dups_both:
+    st.error("⚠️ 「1商品ずつ」と「まとめて」の両方に同じ商品があります: " + "、".join(_dups_both))
+    _errors.append("タブ間の重複")
+_input_rows = (single_rows + bulk_rows) if not _errors else []
 
 
 # ══ ② チェック（実行プランの作成・プレビュー） ═══════════════
@@ -494,7 +579,8 @@ if res:
                                 "text/csv", key=f"recv_dl_{name}", use_container_width=True)
 
     if st.button("🧹 フォームをクリアして次の入荷へ", key="recv_clear"):
-        for k in ("recv_df", "recv_plan", "recv_result", "recv_failed", "recv_agree"):
+        for k in ("recv_df", "recv_plan", "recv_result", "recv_failed", "recv_agree",
+                  "recv1_jan", "recv1_mat", "recv1_loc", "recv1_size"):
             st.session_state.pop(k, None)
         st.session_state["recv_nonce"] = st.session_state.get("recv_nonce", 0) + 1
         st.rerun()
