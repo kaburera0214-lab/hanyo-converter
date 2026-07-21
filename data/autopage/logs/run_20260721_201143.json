@@ -1,0 +1,19 @@
+{
+  "mode": "dry_run",
+  "targets": 1,
+  "patched": 0,
+  "would_patch": 0,
+  "unchanged": 0,
+  "errors": 1,
+  "results": [
+    {
+      "manage_number": "edin0033",
+      "action": "none",
+      "included": [],
+      "dropped": [],
+      "error": "商品取得失敗: Secrets に RMS_SERVICE_SECRET / RMS_LICENSE_KEY が未設定です。",
+      "bytes_before": 0,
+      "bytes_after": 0
+    }
+  ]
+}
