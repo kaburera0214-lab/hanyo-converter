@@ -37,10 +37,90 @@ def patch_sp_description(manage_number, sp_text):
 
 
 # ---- カテゴリ（パンくず用） ----
+# 実測済み（2026-07-21 edin0033）: item-mappings は {"categoryIds": ["149","1029"], ...} と
+# IDのみ返す。名前・階層はカテゴリツリーAPIから解決する。
 def get_item_category_raw(manage_number):
     """商品→カテゴリのマッピング生JSONを返す（診断用にも使う）。"""
     return rms_api.get(
         f"/es/2.0/categories/item-mappings/manage-numbers/{manage_number}")
+
+
+def get_item_category_ids(manage_number):
+    """商品に設定されたカテゴリID一覧（RMS表示先カテゴリの順序どおり）。"""
+    raw = get_item_category_raw(manage_number)
+    ids = raw.get("categoryIds")
+    if isinstance(ids, list):
+        return [str(i) for i in ids if str(i).strip()]
+    # 形状が違う場合のフォールバック（再帰的にcategoryIdを拾う）
+    found = []
+    _walk_category_entries(raw, found)
+    return [str(c["id"]) for c in found if c.get("id") is not None]
+
+
+_TREE_CACHE = {"map": None}
+
+
+def _walk_tree(node, ancestors, out):
+    """カテゴリツリーを再帰的に辿り {categoryId: [{id,name}...]（ルート→当該）} を作る。
+    形状のブレ（category入れ子/children名）に耐える防御的実装。"""
+    if isinstance(node, list):
+        for v in node:
+            _walk_tree(v, ancestors, out)
+        return
+    if not isinstance(node, dict):
+        return
+    inner = node.get("category") if isinstance(node.get("category"), dict) else None
+    src = inner or node
+    cid = src.get("categoryId", src.get("id"))
+    title = (src.get("title") or src.get("name") or src.get("categoryName") or "")
+    if cid is not None and str(title).strip():
+        path = ancestors + [{"id": str(cid), "name": str(title).strip()}]
+        out[str(cid)] = path
+        children = (node.get("children") or node.get("childNodes")
+                    or node.get("categories") or [])
+        _walk_tree(children, path, out)
+    else:
+        for v in node.values():
+            _walk_tree(v, ancestors, out)
+
+
+def _find_tree_ids(node, found):
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if k == "categoryTreeId" and v is not None:
+                found.append(str(v))
+            else:
+                _find_tree_ids(v, found)
+    elif isinstance(node, list):
+        for v in node:
+            _find_tree_ids(v, found)
+
+
+def get_category_path_map(force=False):
+    """全ショップカテゴリの {categoryId: 階層パス} を返す（プロセス内キャッシュ）。"""
+    if _TREE_CACHE["map"] is not None and not force:
+        return _TREE_CACHE["map"]
+    out = {}
+    data = rms_api.get("/es/2.0/categories/category-trees")
+    _walk_tree(data, [], out)
+    if not out:
+        # 一覧にノードが無い場合はツリーIDを拾って個別ツリーを取得
+        tree_ids = []
+        _find_tree_ids(data, tree_ids)
+        for tid in dict.fromkeys(tree_ids):
+            detail = rms_api.get(f"/es/2.0/categories/category-trees/{tid}")
+            _walk_tree(detail, [], out)
+    _TREE_CACHE["map"] = out
+    return out
+
+
+def resolve_item_breadcrumb(manage_number, position="last"):
+    """商品のパンくず階層 [{id,name}...]（ルート→リーフ）を返す。解決不能なら[]。"""
+    ids = get_item_category_ids(manage_number)
+    if not ids:
+        return []
+    cid = ids[0] if position == "first" else ids[-1]
+    return get_category_path_map().get(str(cid), [])
 
 
 def _walk_category_entries(node, found):
@@ -110,6 +190,12 @@ def diagnostics(manage_number):
         ("shop_categories", lambda: rms_api.get("/es/2.0/categories/shop-categories")),
         ("category_sets", lambda: rms_api.get("/es/2.0/categories/category-sets")),
         ("categories_root", lambda: rms_api.get("/es/2.0/categories")),
+        ("breadcrumb_resolved", lambda: {
+            "category_ids": get_item_category_ids(manage_number),
+            "path_last": resolve_item_breadcrumb(manage_number, "last"),
+            "path_first": resolve_item_breadcrumb(manage_number, "first"),
+            "tree_map_size": len(get_category_path_map()),
+        }),
     ]:
         try:
             results[label] = {"ok": True, "data": fn()}

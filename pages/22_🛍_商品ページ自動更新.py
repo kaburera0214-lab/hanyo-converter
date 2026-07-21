@@ -236,9 +236,10 @@ with tab_diag:
             if r["ok"]:
                 with st.expander(f"{label} レスポンス"):
                     st.json(r["data"])
-                if label == "category_mapping":
-                    cats = rms_items.parse_item_categories(r["data"])
-                    st.caption(f"パース結果（パンくず候補）: {cats or '取得できず'}")
+                if label == "breadcrumb_resolved":
+                    path = (r["data"] or {}).get("path_last") or []
+                    disp = " > ".join(c["name"] for c in path)
+                    st.caption(f"パンくず解決結果: {disp or '取得できず'}")
             else:
                 st.error(r["error"])
     st.divider()

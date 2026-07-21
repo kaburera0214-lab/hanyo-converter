@@ -43,15 +43,15 @@ def build_blocks(cfg, item, state):
             html = None
             try:
                 if name == "breadcrumb":
-                    cats = state.get_categories(
+                    # キャッシュには位置設定適用済みの階層パスを保存する
+                    # （category_position変更後は最大refresh_days日で追従）
+                    path = state.get_categories(
                         mn, max_age_days=cfg.get("category_refresh_days", 7))
-                    if cats is None:
-                        raw = rms_items.get_item_category_raw(mn)
-                        cats = rms_items.parse_item_categories(raw)
-                        state.set_categories(mn, cats)
+                    if path is None:
+                        path = rms_items.resolve_item_breadcrumb(
+                            mn, systems[name].get("category_position", "last"))
+                        state.set_categories(mn, path)
                         time.sleep(float(cfg.get("rate_sleep", 0.7)))
-                    path = rms_items.select_breadcrumb_path(
-                        cats, systems[name].get("category_position", "last"))
                     html = blocks.breadcrumb(systems[name], shop,
                                              cfg.get("shop_id", ""), path)
                 elif name == "score":
