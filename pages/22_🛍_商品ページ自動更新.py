@@ -228,9 +228,14 @@ with tab_diag:
     st.caption("カテゴリAPI等のレスポンス形状を確認するための機能です。初回セットアップ時とエラー調査時に使います。")
     dmn = st.text_input("診断に使う商品管理番号", key="ap_diag_mn",
                         placeholder="例: edin0033")
+    extra = st.text_area(
+        "追加で試すGETパス（1行1件、任意）", key="ap_diag_extra", height=80,
+        placeholder="例: /es/2.0/categories/shop-categories/149/children")
     if st.button("診断実行", disabled=not dmn.strip()):
         with st.spinner("実行中..."):
-            res = rms_items.diagnostics(dmn.strip())
+            res = rms_items.diagnostics(
+                dmn.strip(),
+                extra_paths=[x for x in extra.splitlines() if x.strip()])
         for label, r in res.items():
             st.markdown(f"**{label}** — {'✅ OK' if r['ok'] else '❌ エラー'}")
             if r["ok"]:

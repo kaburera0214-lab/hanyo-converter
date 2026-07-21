@@ -97,21 +97,29 @@ def _find_tree_ids(node, found):
 
 
 def get_category_path_map(force=False):
-    """全ショップカテゴリの {categoryId: 階層パス} を返す（プロセス内キャッシュ）。"""
+    """全ショップカテゴリの {categoryId: 階層パス} を返す（プロセス内キャッシュ）。
+    ツリーAPIが利用できない場合は空dictを返す（呼び出し側が個別取得にフォールバック）。"""
     if _TREE_CACHE["map"] is not None and not force:
         return _TREE_CACHE["map"]
     out = {}
-    data = rms_api.get("/es/2.0/categories/category-trees")
-    _walk_tree(data, [], out)
-    if not out:
-        # 一覧にノードが無い場合はツリーIDを拾って個別ツリーを取得
-        tree_ids = []
-        _find_tree_ids(data, tree_ids)
-        for tid in dict.fromkeys(tree_ids):
-            detail = rms_api.get(f"/es/2.0/categories/category-trees/{tid}")
-            _walk_tree(detail, [], out)
+    try:
+        data = rms_api.get("/es/2.0/categories/category-trees")
+        _walk_tree(data, [], out)
+        if not out:
+            tree_ids = []
+            _find_tree_ids(data, tree_ids)
+            for tid in dict.fromkeys(tree_ids):
+                detail = rms_api.get(f"/es/2.0/categories/category-trees/{tid}")
+                _walk_tree(detail, [], out)
+    except rms_api.RMSError:
+        pass  # ID無しツリー一覧は404（実測）。個別取得フォールバックに任せる
     _TREE_CACHE["map"] = out
     return out
+
+
+def get_shop_category(category_id):
+    """ショップカテゴリ単体を取得（GET shop-categories/{id}）。"""
+    return rms_api.get(f"/es/2.0/categories/shop-categories/{category_id}")
 
 
 def resolve_item_breadcrumb(manage_number, position="last"):
@@ -120,7 +128,28 @@ def resolve_item_breadcrumb(manage_number, position="last"):
     if not ids:
         return []
     cid = ids[0] if position == "first" else ids[-1]
-    return get_category_path_map().get(str(cid), [])
+    path = get_category_path_map().get(str(cid), [])
+    if path:
+        return path
+    # フォールバック: カテゴリ単体取得から名前（あればbreadcrumb階層）を拾う
+    try:
+        raw = get_shop_category(cid)
+    except rms_api.RMSError:
+        return []
+    found = []
+    _walk_category_entries(raw, found)
+    seen, out = set(), []
+    for c in found:
+        name = c["name"].strip()
+        if not name:
+            continue
+        key = (str(c["id"]), name)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"id": c["id"], "name": name})
+    # 末尾要素のIDが当該カテゴリでない場合でも、階層らしき並びをそのまま使う
+    return out
 
 
 def _walk_category_entries(node, found):
@@ -175,28 +204,39 @@ def select_breadcrumb_path(categories, position="last"):
     return [categories[-1]]
 
 
-def diagnostics(manage_number):
+def diagnostics(manage_number, extra_paths=None):
     """疎通診断。各エンドポイントの生レスポンス（or エラー）を返す。
 
-    category_* はショップカテゴリ名の解決先を特定するためのプローブ。
-    形状確定後、正式な実装は get_shop_categories() に一本化する。
+    実測結果（2026-07-21）:
+    - item-mappings → {"categoryIds": [...]} でIDのみ
+    - GET categories/shop-categories → 405（ID指定が必要）
+    - GET categories/category-trees（ID無し） → 404
+    extra_paths で任意のGETパスを試せる（形状特定の反復をデプロイ無しで行うため）。
     """
-    results = {}
-    for label, fn in [
-        ("item_get", lambda: rms_api.get(
-            f"/es/2.0/items/manage-numbers/{manage_number}")),
+    probes = [
         ("category_mapping", lambda: get_item_category_raw(manage_number)),
-        ("category_trees", lambda: rms_api.get("/es/2.0/categories/category-trees")),
-        ("shop_categories", lambda: rms_api.get("/es/2.0/categories/shop-categories")),
-        ("category_sets", lambda: rms_api.get("/es/2.0/categories/category-sets")),
-        ("categories_root", lambda: rms_api.get("/es/2.0/categories")),
+        ("shop_category_149", lambda: rms_api.get(
+            "/es/2.0/categories/shop-categories/149")),
+        ("shop_category_1029", lambda: rms_api.get(
+            "/es/2.0/categories/shop-categories/1029")),
+        ("category_tree_0", lambda: rms_api.get(
+            "/es/2.0/categories/category-trees/0")),
+        ("category_tree_1", lambda: rms_api.get(
+            "/es/2.0/categories/category-trees/1")),
         ("breadcrumb_resolved", lambda: {
             "category_ids": get_item_category_ids(manage_number),
             "path_last": resolve_item_breadcrumb(manage_number, "last"),
             "path_first": resolve_item_breadcrumb(manage_number, "first"),
-            "tree_map_size": len(get_category_path_map()),
+            "tree_map_size": len(get_category_path_map(force=True)),
         }),
-    ]:
+    ]
+    for path in (extra_paths or []):
+        path = str(path).strip()
+        if path:
+            probes.append((f"GET {path}",
+                           lambda p=path: rms_api.get(p)))
+    results = {}
+    for label, fn in probes:
         try:
             results[label] = {"ok": True, "data": fn()}
         except Exception as e:  # noqa: BLE001
