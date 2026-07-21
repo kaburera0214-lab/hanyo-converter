@@ -96,12 +96,20 @@ def select_breadcrumb_path(categories, position="last"):
 
 
 def diagnostics(manage_number):
-    """疎通診断。各エンドポイントの生レスポンス（or エラー）を返す。"""
+    """疎通診断。各エンドポイントの生レスポンス（or エラー）を返す。
+
+    category_* はショップカテゴリ名の解決先を特定するためのプローブ。
+    形状確定後、正式な実装は get_shop_categories() に一本化する。
+    """
     results = {}
     for label, fn in [
         ("item_get", lambda: rms_api.get(
             f"/es/2.0/items/manage-numbers/{manage_number}")),
         ("category_mapping", lambda: get_item_category_raw(manage_number)),
+        ("category_trees", lambda: rms_api.get("/es/2.0/categories/category-trees")),
+        ("shop_categories", lambda: rms_api.get("/es/2.0/categories/shop-categories")),
+        ("category_sets", lambda: rms_api.get("/es/2.0/categories/category-sets")),
+        ("categories_root", lambda: rms_api.get("/es/2.0/categories")),
     ]:
         try:
             results[label] = {"ok": True, "data": fn()}
