@@ -152,6 +152,23 @@ def set_shipping_method_group(manage_number, group_id):
     return rms_api.patch(f"/es/2.0/items/manage-numbers/{manage_number}", body)
 
 
+def price_patch_body(sku_prices):
+    """指定SKUの standardPrice（販売価格）だけを更新するPATCHボディ。
+    ※CSV運用の「表示価格・二重価格文言管理番号」に相当するAPIフィールドは
+      probe_item での実物調査後に追加を判断する（当面は販売価格のみ）。"""
+    return {"variants": {str(sku): {"standardPrice": str(int(price))}
+                         for sku, price in sku_prices.items()}}
+
+
+def set_price(manage_number, sku_prices):
+    """商品のSKU価格を変更する（指定SKU・指定項目のみのPATCH更新）。
+    sku_prices: {SKU管理番号: 新価格}"""
+    if not sku_prices:
+        raise rms_api.RMSError(f"{manage_number}: 変更するSKU価格がありません")
+    body = price_patch_body(sku_prices)
+    return rms_api.patch(f"/es/2.0/items/manage-numbers/{manage_number}", body)
+
+
 def to_sku_table(info):
     """fetch_for_codes の結果 → SKU対応表形式 {code: (商品管理番号, SKU管理番号, 連携番号)}。"""
     return {code: (d["parent"], d["sku"], d["renkei"]) for code, d in info.items()}

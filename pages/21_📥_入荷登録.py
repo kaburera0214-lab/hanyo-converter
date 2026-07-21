@@ -1,0 +1,500 @@
+# -*- coding: utf-8 -*-
+"""
+入荷登録（倉庫にはじめて入荷する商品のロケーション・配送サイズ登録）
+
+JANをスキャン → 商品マスタから商品コード・商品名を自動表示 → 資材ナンバー・
+ロケーション・配送サイズをプルダウンで選ぶ → 「🚀 更新を実行」で自動更新:
+  ① NE商品マスタ: ロケーションコード（資材ナンバー-ロケーション）＋項目1（配送サイズ）… NE API
+  ② 配送サイズが変わって便種（メール便⇔宅配便）も変わる場合: 楽天の配送方法セット … RMS API
+  ③ サイズアップで利益NGの場合: 目標利益率価格に再設定 … NE売価（NE API）＋楽天価格（RMS API）
+     Yahooの価格・配送グループはCSVをDriveに自動保存（管理者が後でまとめて反映）
+判定ロジックは価格改定の「梱包サイズ変更」を流用（lib/receiving/plan.py → lib/pricing/pipeline.py）。
+"""
+import pandas as pd
+import streamlit as st
+
+st.set_page_config(page_title="入荷登録", page_icon="📥", layout="wide")
+
+from lib.auth import require_role
+require_role("receiving")  # 認証ゲート（AUTH_ENABLED=false なら素通り）
+
+st.title("📥 入荷登録")
+import datetime as _dt
+import os as _os
+_build = _dt.datetime.fromtimestamp(_os.path.getmtime(__file__)).strftime("%Y-%m-%d %H:%M")
+st.caption("JANをスキャン → 資材・ロケーション・配送サイズを選んで「🚀 更新を実行」。"
+           "ネクストエンジンと楽天は自動更新されます（Yahooの分はDriveにCSVが残ります）。"
+           f"　（app更新: {_build}）")
+
+from lib import master_store
+from lib.ne_api import client as ne_client
+from lib.pricing import calc, export as ex, masters, rakuten_price
+from lib.receiving import plan as rp, runner
+
+product_folder = master_store.folder_id()
+params = dict(calc.DEFAULT_PARAMS)  # 計算パラメータは既定値固定（現場では変更しない）
+
+FORM_ROWS = 10  # 入力フォームの初期行数（行の追加も可能）
+_FORM_COLUMNS = ["JANコード", "商品コード", "商品名", "現サイズ", "現ロケーション",
+                 "資材ナンバー", "ロケーション", "配送サイズ"]
+
+
+# ══ 管理者向け設定（現場スタッフは触らない） ══════════════════
+
+if "pricing_settings" not in st.session_state:
+    st.session_state["pricing_settings"] = masters.load_settings(product_folder)
+_settings = st.session_state["pricing_settings"]
+
+with st.expander("🔐 NE API接続（管理者用）", expanded=False):
+    if not ne_client.is_configured():
+        st.error("Secrets に NE_CLIENT_ID / NE_CLIENT_SECRET が未設定です。"
+                 "設定するまでNEの自動更新は実行できません。")
+    else:
+        _tok = ne_client.token_status()
+        if _tok:
+            st.success(f"認可済み（トークン保存: {_tok.get('saved_at', '不明')}）。"
+                       "API呼び出しのたびに自動で更新されるため、通常は再認可不要です。")
+        else:
+            st.warning("未認可です。下のボタンからNEにログインして認可してください。")
+        c1, c2 = st.columns(2)
+        try:
+            c1.link_button("🔑 NEにログインして認可する", ne_client.auth_url(),
+                           use_container_width=True)
+        except ne_client.NENotConfigured:
+            c1.caption("Secrets に NE_REDIRECT_URI が未設定のため、下の手貼り付け方式を使ってください。")
+        if c2.button("📶 接続テスト（商品マスタを1件検索）", use_container_width=True,
+                     key="recv_ne_test"):
+            try:
+                res = ne_client.call("api_v1_master_goods/search",
+                                     {"fields": "goods_id", "limit": "1"})
+                st.success(f"接続OK（商品マスタ {res.get('count', '?')}件）")
+            except Exception as e:  # noqa: BLE001
+                st.error(f"接続に失敗しました: {e}")
+        st.caption("**フォールバック（手貼り付け）**: コールバックページに表示された uid / state を"
+                   "貼り付けてトークンを取得します（uidは短命なのですぐに実行してください）。")
+        f1, f2, f3 = st.columns([2, 2, 1])
+        _uid = f1.text_input("uid", key="recv_ne_uid")
+        _state = f2.text_input("state", key="recv_ne_state")
+        if f3.button("トークン取得", key="recv_ne_exchange",
+                     disabled=not (_uid.strip() and _state.strip())):
+            try:
+                ne_client.exchange(_uid.strip(), _state.strip())
+                st.success("認可が完了しました（トークンをDriveに保存）。")
+                st.rerun()
+            except Exception as e:  # noqa: BLE001
+                st.error(f"トークン取得に失敗しました: {e}")
+
+with st.expander("⚙️ 楽天 配送方法セット管理番号（便種変更の自動修正に必要）", expanded=False):
+    st.caption("番号はRMS「店舗設定→配送方法セット」の一覧で確認できます。"
+               "下の🔧調査ツールで既存商品を見て確かめるのも確実です"
+               "（例: gais0020のメール便SKUはshippingMethodGroup=\"2\"）。")
+    s1, s2, s3 = st.columns([1, 1, 1])
+    g_tak = s1.text_input("「宅配便のみ」の管理番号",
+                          value=str(_settings.get("rakuten_group_takuhai", "")),
+                          key="recv_grp_tak")
+    g_mail = s2.text_input("「メール便」の管理番号",
+                           value=str(_settings.get("rakuten_group_mail", "")),
+                           key="recv_grp_mail")
+    if s3.button("💾 番号を保存", key="recv_grp_save",
+                 disabled=not (g_tak.strip() and g_mail.strip())):
+        _settings["rakuten_group_takuhai"] = g_tak.strip()
+        _settings["rakuten_group_mail"] = g_mail.strip()
+        try:
+            masters.save_settings(_settings, product_folder)
+            st.success("保存しました（次回から自動入力されます）。")
+        except Exception as e:  # noqa: BLE001
+            st.warning(f"Drive保存に失敗（この画面では有効）: {e}")
+
+with st.expander("🔧 楽天API調査（配送・価格フィールドの下調べ）", expanded=False):
+    st.caption("商品管理番号を1つ入れて実行すると、その商品の配送関連フィールドと"
+               "SKUの生データを表示します（表示価格などAPIフィールドの実物確認用）。")
+    probe_mn = st.text_input("商品管理番号（例: gais0020）", key="recv_probe_mn")
+    if st.button("🔍 調査する", key="recv_probe_btn",
+                 disabled=not (probe_mn.strip() and rakuten_price.is_configured())):
+        try:
+            st.session_state["recv_probe_result"] = rakuten_price.probe_item(probe_mn.strip())
+        except Exception as e:  # noqa: BLE001
+            st.session_state.pop("recv_probe_result", None)
+            st.error(f"取得失敗: {e}")
+    _probe = st.session_state.get("recv_probe_result")
+    if _probe:
+        item = _probe.get("item", _probe)
+        st.write("商品フィールド一覧:", sorted(item.keys()))
+
+        def _find_keys(obj, path=""):
+            hits = {}
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    p = f"{path}.{k}" if path else str(k)
+                    if any(s in str(k).lower() for s in ("ship", "delivery", "postage", "price")):
+                        hits[p] = v
+                    hits.update(_find_keys(v, p))
+            elif isinstance(obj, list):
+                for i, v in enumerate(obj[:3]):
+                    hits.update(_find_keys(v, f"{path}[{i}]"))
+            return hits
+
+        st.write("配送・価格関連フィールド（全階層を検索）:")
+        st.json(_find_keys(item) or {"(該当なし)": "SKUの生データで確認してください"})
+        variants = item.get("variants") or {}
+        if isinstance(variants, dict) and variants:
+            first_key = next(iter(variants))
+            st.write(f"SKU 1件分の生データ（SKU管理番号: {first_key}）:")
+            st.json(variants[first_key])
+
+with st.expander("📚 NE商品マスタ（全機能共通・実行時に最新を自動取得）", expanded=False):
+    st.caption("汎用マスタ変換・価格改定と同じ商品マスタ（Driveの最新版）を使います。"
+               "この画面で使う列は **商品コード・JANコード・商品名・原価・項目1・ロケーションコード**。"
+               "プルダウンの選択肢（資材ナンバー・ロケーション）は既存のロケーションコードから作るため、"
+               "**NEからは全カラムでDL**してください。")
+    _f = master_store.latest_file()
+    if _f:
+        st.success(f"Driveの最新版: {_f['name']}（更新 {str(_f.get('modifiedTime', ''))[:10]}）")
+    else:
+        st.info("Driveに商品マスタ（master_*）がありません。下からアップロードしてください。")
+    if master_store.upload_widget("recv_master_up"):
+        st.rerun()
+
+
+# ══ マスタ読み込み・プルダウン選択肢 ══════════════════════════
+
+with st.spinner("商品マスタの最新版を確認中…"):
+    ne_df, master_meta = master_store.load_master()
+if ne_df is None:
+    st.error(master_meta)
+    st.stop()
+st.caption(f"使用マスタ: {master_meta}")
+
+_missing = [c for c in ("JANコード", "商品名", "原価", "項目1") if c not in ne_df.columns]
+if _missing:
+    st.warning(f"マスタに次の列がありません: {'／'.join(_missing)}。"
+               "NEから**全カラム**でDLしてアップし直してください。")
+
+jan_map, code_info = master_store.memo("pricing_lookup",
+                                       lambda: masters.build_lookup(ne_df))
+
+if "ロケーションコード" in ne_df.columns:
+    material_opts, location_opts = master_store.memo(
+        "recv_location_opts",
+        lambda: rp.split_location_values(ne_df["ロケーションコード"].astype(str).tolist()))
+
+    def _build_loc_map():
+        codes = ne_df["商品コード"].map(masters.norm_key).tolist()
+        locs = ne_df["ロケーションコード"].astype(str).tolist()
+        return {c.lower(): ("" if l.strip() in ("", "nan") else l.strip())
+                for c, l in zip(codes, locs) if c and c != "nan"}
+    loc_map = master_store.memo("recv_loc_map", _build_loc_map)
+else:
+    material_opts, location_opts, loc_map = [], [], {}
+    st.error("マスタに「ロケーションコード」列がありません。プルダウンの選択肢を作れないため、"
+             "上の📚からNEの**全カラムDL**で差し替えてください。")
+
+# 配送サイズの選択肢 = 送料・資材マスタ（正本はDrive・編集は価格改定ページで）
+if "recv_cost_df" not in st.session_state:
+    cost_df = None
+    try:
+        cost_df = masters.load_cost_master_drive(product_folder)
+    except Exception as e:  # noqa: BLE001
+        st.caption(f"（Driveの送料マスタ読込をスキップ: {e}）")
+    if cost_df is None:
+        cost_df = masters.load_cost_master_bundled()
+    st.session_state["recv_cost_df"] = cost_df
+cost_df = st.session_state["recv_cost_df"]
+cost_table = masters.cost_lookup(cost_df)
+size_opts = [s for s in cost_df["項目1"].tolist() if s]
+
+# 楽天SKU対応表（価格改定と共通・📡取得時に自動構築してDrive保存）
+if "pricing_sku_table" not in st.session_state:
+    table = {}
+    try:
+        sku_df = masters.load_sku_master_drive(product_folder)
+        if sku_df is not None:
+            table = masters.sku_lookup(sku_df)
+    except Exception:  # noqa: BLE001
+        pass
+    st.session_state["pricing_sku_table"] = table
+sku_table = st.session_state["pricing_sku_table"]
+
+
+def _save_sku_table():
+    try:
+        masters.save_sku_master_drive(
+            masters.sku_table_to_df(st.session_state["pricing_sku_table"]), product_folder)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+# ══ 入力フォーム（JANスキャン → 自動補完 → プルダウン選択） ═══
+
+st.markdown("### ① 入荷商品の入力")
+st.caption("JAN欄にスキャン（Enterで確定）すると商品コード・商品名・現在の登録内容が自動表示されます。"
+           "資材ナンバー・ロケーション・配送サイズは**プルダウンから選択**してください（手入力不可）。")
+
+if "recv_df" not in st.session_state:
+    st.session_state["recv_df"] = pd.DataFrame(
+        [{c: ("" if c in ("JANコード", "商品コード", "商品名", "現サイズ", "現ロケーション")
+              else None) for c in _FORM_COLUMNS} for _ in range(FORM_ROWS)])
+    st.session_state["recv_nonce"] = 0
+
+_nonce = st.session_state["recv_nonce"]
+edited = st.data_editor(
+    st.session_state["recv_df"], key=f"recv_editor_{_nonce}",
+    num_rows="dynamic", hide_index=True, use_container_width=True,
+    column_config={
+        "JANコード": st.column_config.TextColumn("JAN（スキャン）", width="medium"),
+        "商品コード": st.column_config.TextColumn("商品コード", disabled=True),
+        "商品名": st.column_config.TextColumn("商品名", disabled=True, width="large"),
+        "現サイズ": st.column_config.TextColumn("現サイズ", disabled=True, width="small"),
+        "現ロケーション": st.column_config.TextColumn("現ロケーション", disabled=True),
+        "資材ナンバー": st.column_config.SelectboxColumn("資材ナンバー", options=material_opts),
+        "ロケーション": st.column_config.SelectboxColumn("ロケーション", options=location_opts),
+        "配送サイズ": st.column_config.SelectboxColumn("配送サイズ（項目1）", options=size_opts),
+    })
+
+def _cell(value):
+    """セル値を文字列に正規化（NaN/None → 空文字）。"""
+    s = masters.norm_key(value)
+    return "" if s in ("nan", "None") else s
+
+
+# JANが変わった行だけマスタから補完する（変化があれば nonce+1 で再描画）
+_changed = False
+for i in edited.index:
+    jan = _cell(edited.at[i, "JANコード"])
+    cur_code = _cell(edited.at[i, "商品コード"])
+    code = jan_map.get(jan, "") if jan else ""
+    if not code and jan and jan.lower() in code_info:
+        code = code_info[jan.lower()]["商品コード"]   # JAN欄に商品コードを入れても通す
+    if jan and code and code != cur_code:
+        info = code_info[code.lower()]
+        old_size = masters.norm_key(info.get("項目1", ""))
+        edited.loc[i, ["商品コード", "商品名", "現サイズ", "現ロケーション"]] = (
+            info["商品コード"], info.get("商品名", ""),
+            "" if old_size == "nan" else old_size,
+            loc_map.get(code.lower(), ""))
+        _changed = True
+    elif (not jan or not code) and cur_code:   # JANを消した/変えた → 補完をクリア
+        edited.loc[i, ["商品コード", "商品名", "現サイズ", "現ロケーション"]] = ("", "", "", "")
+        _changed = True
+st.session_state["recv_df"] = edited
+if _changed:
+    st.session_state["recv_nonce"] = _nonce + 1
+    st.rerun()
+
+# 入力チェック（JAN未解決・選択漏れ・重複）
+_jan_s = edited["JANコード"].map(_cell)
+_code_s = edited["商品コード"].map(_cell)
+_active = edited[(_jan_s != "") | (_code_s != "")]
+_errors = []
+_bad_jan = _active[_active["商品コード"].map(_cell) == ""]
+if len(_bad_jan):
+    _errors.append("マスタに無いJAN: " + "、".join(
+        str(j) for j in _bad_jan["JANコード"].tolist()[:10]))
+_incomplete = _active[(_active["商品コード"].map(_cell) != "")
+                      & (_active[["資材ナンバー", "ロケーション", "配送サイズ"]]
+                         .isna().any(axis=1))]
+if len(_incomplete):
+    _errors.append("資材ナンバー／ロケーション／配送サイズが未選択: " + "、".join(
+        _incomplete["商品コード"].tolist()[:10]))
+_codes = [c for c in _active["商品コード"].map(_cell).tolist() if c]
+_dups = sorted({c for c in _codes if _codes.count(c) > 1})
+if _dups:
+    _errors.append("同じ商品が複数行にあります: " + "、".join(_dups[:10]))
+for e in _errors:
+    st.error("⚠️ " + e)
+
+_input_rows = [
+    {"商品コード": _cell(r["商品コード"]), "資材ナンバー": r["資材ナンバー"],
+     "ロケーション": r["ロケーション"], "配送サイズ": r["配送サイズ"]}
+    for _, r in _active.iterrows()
+    if _cell(r["商品コード"]) and not pd.isna(r["資材ナンバー"])
+    and not pd.isna(r["ロケーション"]) and not pd.isna(r["配送サイズ"])
+] if not _errors else []
+
+
+# ══ ② チェック（実行プランの作成・プレビュー） ═══════════════
+
+st.markdown("### ② チェック → ③ 更新")
+
+if st.button(f"🧮 チェック（実行プランを作成）　対象 {len(_input_rows)}件",
+             type="primary", disabled=not _input_rows, key="recv_check"):
+    # サイズが変わる行は利益チェックに楽天の現在価格が必要 → ここで自動取得
+    need_price = []
+    for r in _input_rows:
+        info = code_info.get(masters.norm_key(r["商品コード"]).lower(), {})
+        old_size = masters.norm_key(info.get("項目1", ""))
+        old_size = "" if old_size == "nan" else old_size
+        if old_size and masters.norm_key(r["配送サイズ"]) != old_size:
+            need_price.append(info["商品コード"])
+    cache = st.session_state.setdefault("pricing_rk_prices", {})
+    fetch_codes = [c for c in need_price if c.lower() not in cache]
+    if fetch_codes and rakuten_price.is_configured():
+        bar = st.progress(0.0, text="楽天から現在価格を取得中…")
+        info_rk, _rk_errors, _rk_warnings = rakuten_price.fetch_for_codes(
+            fetch_codes, sku_table,
+            on_progress=lambda done, total: bar.progress(
+                done / max(total, 1), text=f"楽天から取得中… {done}/{total}商品"))
+        bar.empty()
+        cache.update(rakuten_price.to_prices(info_rk))
+        st.session_state["pricing_sku_table"].update(rakuten_price.to_sku_table(info_rk))
+        _save_sku_table()
+        for w in _rk_warnings:
+            st.warning(w)
+    elif fetch_codes:
+        st.warning("RMSキー（RMS_SERVICE_SECRET / RMS_LICENSE_KEY）未設定のため、"
+                   "サイズ変更の利益チェックができません。")
+    st.session_state["recv_plan"] = rp.build_plan(
+        _input_rows, code_info, cost_table, params,
+        cur_prices=st.session_state.get("pricing_rk_prices", {}))
+    st.session_state["recv_plan_key"] = repr(_input_rows)  # プランと入力の対応を検知する用
+    st.session_state.pop("recv_result", None)
+    st.session_state.pop("recv_failed", None)
+    st.rerun()
+
+plan_rows = st.session_state.get("recv_plan")
+_plan_stale = (plan_rows is not None
+               and st.session_state.get("recv_plan_key") != repr(_input_rows))
+if plan_rows and _plan_stale:
+    st.warning("入力内容がチェック時から変わっています。もう一度「🧮 チェック」を押してください。")
+if plan_rows and not _plan_stale:
+    plan_df = pd.DataFrame(plan_rows)
+    lead = ["商品コード", "商品名", "警告", "区分", "配送設定", "利益チェック"]
+    plan_df = plan_df[lead + [c for c in plan_df.columns if c not in lead]]
+    st.dataframe(plan_df, use_container_width=True, hide_index=True,
+                 column_config={"新利益率": st.column_config.NumberColumn(format="percent")})
+
+    dv_rows = rp.delivery_rows(plan_rows, sku_table)
+    price_list, price_missing = rp.price_tasks(plan_rows, code_info, sku_table)
+    n_first = sum(1 for r in plan_rows if r["区分"] == "初回登録")
+    n_ng = sum(1 for r in plan_rows if r.get("新販売価格"))
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("NE更新（全行）", f"{len(plan_rows)}件")
+    c2.metric("初回登録", f"{n_first}件")
+    c3.metric("配送設定の変更", f"{len(dv_rows)}件")
+    c4.metric("利益NG→価格再設定", f"{n_ng}件")
+
+    blockers = []
+    if dv_rows and not (str(_settings.get("rakuten_group_takuhai", "")).strip()
+                        and str(_settings.get("rakuten_group_mail", "")).strip()):
+        blockers.append("便種変更があります。上の⚙️で楽天の配送方法セット管理番号を設定してください。")
+    if dv_rows and not rakuten_price.is_configured():
+        blockers.append("便種変更がありますが、RMSキー未設定のため楽天を自動修正できません。")
+    if n_ng and not rakuten_price.is_configured():
+        blockers.append("価格再設定がありますが、RMSキー未設定のため楽天価格を自動更新できません。")
+    if not ne_client.is_configured():
+        blockers.append("NE APIが未設定です（Secrets NE_CLIENT_ID / NE_CLIENT_SECRET）。")
+    for b in blockers:
+        st.error("🛑 " + b)
+    if price_missing:
+        st.warning("楽天のSKU番号が分からず価格を自動更新できない商品: "
+                   + "、".join(price_missing)
+                   + "（NE売価は更新されます。楽天は手動で修正してください）")
+    _no_price = [r["商品コード"] for r in plan_rows
+                 if r["区分"] == "サイズアップ" and r["利益チェック"] == "-"]
+    if _no_price:
+        st.warning("楽天の現在価格が取得できず**利益チェック未実施**: " + "、".join(_no_price)
+                   + "（NE・配送設定は更新されます。価格は後で確認してください）")
+
+    agree = st.checkbox("上記の内容で**本番データ（ネクストエンジン・楽天）を更新**することを確認しました",
+                        key="recv_agree")
+    if st.button("🚀 更新を実行", type="primary", key="recv_run",
+                 disabled=not agree or bool(blockers)):
+        group_of = {"宅配便": str(_settings.get("rakuten_group_takuhai", "")).strip(),
+                    "メール便": str(_settings.get("rakuten_group_mail", "")).strip()}
+        main_rows, ne_price_rows = rp.ne_rows_from_plan(plan_rows)
+        tasks = {
+            "ne_main": main_rows,
+            "ne_price": ne_price_rows,
+            "rakuten_delivery": [{**d, "group_id": group_of.get(d["新便種"], "")}
+                                 for d in dv_rows],
+            "rakuten_price": price_list,
+        }
+        total_units = ((1 if tasks["ne_main"] else 0) + (1 if tasks["ne_price"] else 0)
+                       + len(tasks["rakuten_delivery"]) + len(tasks["rakuten_price"]))
+        bar = st.progress(0.0, text="更新中…")
+        _done = {"n": 0}
+
+        def _on_step(message):
+            _done["n"] += 1
+            bar.progress(min(_done["n"] / max(total_units, 1), 1.0), text=message)
+
+        results, failed = runner.execute(tasks, on_step=_on_step)
+        bar.empty()
+
+        # 証跡（プラン・出力CSV・実行結果）をDriveの「価格改定履歴」へ版数管理で保存。
+        # Yahooの配送グループ・価格CSVもここに残る＝管理者が後でまとめて反映する運用。
+        files = rp.evidence_files(plan_rows, dv_rows, code_info, sku_table)
+        files["run_result.csv"] = ex.detail_csv(pd.DataFrame(results))
+        run_name, url, err = "", "", ""
+        try:
+            with st.spinner("Driveに証跡を保存中…"):
+                run_name, run_id = masters.save_run_to_drive(files, "入荷登録", product_folder)
+            url = f"https://drive.google.com/drive/folders/{run_id}"
+        except Exception as e:  # noqa: BLE001
+            err = str(e)
+        st.session_state["recv_result"] = {"results": results, "run": run_name,
+                                           "url": url, "err": err,
+                                           "files": files, "n_dv": len(dv_rows)}
+        st.session_state["recv_failed"] = failed
+        st.rerun()
+
+
+# ══ ③ 実行結果 ═══════════════════════════════════════════════
+
+res = st.session_state.get("recv_result")
+if res:
+    results = res["results"]
+    rdf = pd.DataFrame(results)
+    n_ok = int((rdf["状態"] == "成功").sum()) if len(rdf) else 0
+    n_fail = int((rdf["状態"] == "失敗").sum()) if len(rdf) else 0
+    n_skip = int((rdf["状態"] == "スキップ").sum()) if len(rdf) else 0
+    if n_fail == 0:
+        st.success(f"✅ 更新が完了しました（成功 {n_ok}件）")
+    else:
+        st.error(f"⚠️ 一部の更新に失敗しました（成功 {n_ok}／失敗 {n_fail}／スキップ {n_skip}）")
+    st.dataframe(rdf, use_container_width=True, hide_index=True)
+
+    if runner.has_auth_error(results):
+        st.error("🔐 認証切れが発生しています。上の「NE API接続」または"
+                 "RMSライセンスキー（Secrets）を確認して再認可・更新後、"
+                 "「失敗した処理だけ再実行」を押してください。")
+
+    failed = st.session_state.get("recv_failed") or {}
+    if any(failed.values()):
+        if st.button("🔁 失敗した処理だけ再実行", key="recv_retry", type="primary"):
+            bar = st.progress(0.0, text="再実行中…")
+            retry_results, still_failed = runner.execute(
+                failed, on_step=lambda m: bar.progress(0.5, text=m))
+            bar.empty()
+            ok_before = [r for r in results if r["状態"] == "成功"]
+            st.session_state["recv_result"]["results"] = ok_before + retry_results
+            st.session_state["recv_failed"] = still_failed
+            st.rerun()
+
+    if res["err"]:
+        st.warning(f"Driveへの証跡保存に失敗しました: {res['err']}")
+    elif res["run"]:
+        st.caption(f"証跡をDriveに保存しました: **{res['run']}**"
+                   "（プラン・実行結果・Yahoo用CSVを含む）")
+        if res["url"]:
+            st.link_button("📁 証跡フォルダを開く", res["url"])
+
+    # Yahooは当面CSV運用（配送グループのeditItem APIは全項目上書きのため見送り）
+    _yfiles = [(n, b) for n, b in res["files"].items()
+               if n in ("yahoo_delivery_update.csv", "yahoo_data.csv")]
+    if _yfiles:
+        st.info("🟡 Yahooの反映は自動化されていません。下のCSV（Driveにも保存済み）を"
+                "管理者が後でまとめてストアクリエイターProへアップしてください。")
+        cols = st.columns(len(_yfiles))
+        _suffix = "_".join(res["run"].split("_")[:2]) if res["run"] else ""
+        for col, (name, data) in zip(cols, _yfiles):
+            stem, _, ext = name.rpartition(".")
+            col.download_button(name, data,
+                                f"{stem}_{_suffix}.{ext}" if _suffix else name,
+                                "text/csv", key=f"recv_dl_{name}", use_container_width=True)
+
+    if st.button("🧹 フォームをクリアして次の入荷へ", key="recv_clear"):
+        for k in ("recv_df", "recv_plan", "recv_result", "recv_failed", "recv_agree"):
+            st.session_state.pop(k, None)
+        st.session_state["recv_nonce"] = st.session_state.get("recv_nonce", 0) + 1
+        st.rerun()

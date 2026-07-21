@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-価格改定（納品価格変更・直送価格＆送料変更・梱包サイズ変更）
+価格改定（納品価格変更・直送価格＆送料変更）
 
 インプットCSV（JAN・新下代）から新販売価格を計算し、
 楽天RMS・Yahoo!ショッピング・ネクストエンジンの価格更新CSVを出力する。
 計算ロジックはGoogleスプレッドシート「パピー納品価格変更」の数式を再現（lib/pricing/calc.py）。
 突合〜ルール適用は lib/pricing/pipeline.py（Streamlit非依存・テスト共用）。
 出力形式は実際のアップロード実績ファイルに一致（lib/pricing/export.py）。
+※梱包サイズ変更は「📥 入荷登録」ページ（pages/21）へ移設した（2026-07-21）。
 """
 import pandas as pd
 import streamlit as st
@@ -309,10 +310,6 @@ _DL_LABELS = {
     "yahoo_data.csv": "🟡 Yahoo data.csv",
     "ne_price_update.csv": "🟢 NE商品マスタ更新CSV",
     "price_detail.csv": "📄 計算明細CSV",
-    "ne_item1_update.csv": "🟢 NE項目1更新CSV",
-    "size_change_check.csv": "📄 チェック結果CSV",
-    "rakuten_delivery_update.csv": "🔴 楽天 配送方法セット修正リスト",
-    "yahoo_delivery_update.csv": "🟡 Yahoo 配送グループ更新CSV",
 }
 
 
@@ -433,7 +430,8 @@ def result_section(rows, key_prefix, tab_label, input_file=None, free_shipping=F
 
 
 # ══ タブ ════════════════════════════════════════════════════
-tab1, tab2, tab3 = st.tabs(["📦 納品価格変更", "🚛 直送価格＆送料変更", "📐 梱包サイズ変更"])
+# ※梱包サイズ変更タブは「📥 入荷登録」ページへ移設（判定ロジックはlib/pricingを共用）
+tab1, tab2 = st.tabs(["📦 納品価格変更", "🚛 直送価格＆送料変更"])
 
 # ── タブ1: 納品価格変更（本流） ─────────────────────────────
 with tab1:
@@ -524,199 +522,3 @@ with tab2:
                     result_section(rows, "t2_result", "直送価格送料変更",
                                    input_file=input_file_of(up2), free_shipping=True)
 
-# ── タブ3: 梱包サイズ変更 ───────────────────────────────────
-with tab3:
-    st.markdown("##### 入力CSV: **JAN（またはNE商品コード）・新項目1（新サイズ）**")
-    st.caption("入荷時にサイズが暫定登録と違った場合の対応。"
-               "**サイズダウン**→便種変更（メール便⇔宅配便）があればモール配送設定の修正。"
-               "**サイズアップ**→利益チェック（警告ライン基準）→NGなら納品価格変更と同じ計算で価格を再設定。"
-               "現販売価格は📡「楽天から現在価格を取得」で取り込みます。")
-    up3 = st.file_uploader("サイズ変更の入力CSV", type=["csv"], key="t3_upload")
-    if up3 is not None:
-        try:
-            in_df3 = csv_import.read_csv_auto(up3.getvalue())
-        except Exception as e:  # noqa: BLE001
-            st.error(f"CSVの読込に失敗: {e}")
-            in_df3 = None
-        if in_df3 is not None:
-            c_jan = pipeline.pick_col(in_df3, "JANコード", "JAN", "jan")
-            c_code = pipeline.pick_col(in_df3, "商品コード")
-            c_size = pipeline.pick_col(in_df3, "新項目1", "新サイズ", "項目1")
-            c_rprice = pipeline.pick_col(in_df3, "楽天販売価格", "楽天価格")
-            if not c_jan and not c_code:
-                st.error(f"JAN列（または商品コード列）が見つかりません。実際の列: {list(in_df3.columns)}")
-            elif not c_size:
-                st.error(f"新項目1（新サイズ）の列が見つかりません。実際の列: {list(in_df3.columns)}")
-            else:
-                jan_map, code_info = get_master_lookup()
-                matched = []
-                if jan_map is not None:
-                    matched, unmatched = pipeline.match_input(in_df3, c_code, c_jan, jan_map, code_info)
-                    show_unmatched(unmatched)
-                cur_prices = rakuten_price_controls(matched, "t3") if matched else {}
-                if matched:
-                    matched = exclude_not_on_rakuten(matched, cur_prices, in_df_price_col=c_rprice)
-                rows3 = pipeline.size_change_rows(matched, c_size, c_rprice, cost_table, params,
-                                                  cur_prices=cur_prices)
-                if rows3:
-                    df3 = pd.DataFrame(rows3)
-                    lead3 = ["商品コード", "商品名", "警告", "区分", "配送設定", "利益チェック"]
-                    df3 = df3[lead3 + [c for c in df3.columns if c not in lead3]]
-                    st.dataframe(df3, use_container_width=True, hide_index=True,
-                                 column_config={"新利益率": st.column_config.NumberColumn(format="percent")})
-
-                    ng = df3[df3["利益チェック"] == "×"]
-                    fix = df3[df3["配送設定"].astype(str).str.startswith("要修正")]
-                    c1, c2, c3, c4 = st.columns(4)
-                    c1.metric("サイズアップ", f"{len(df3[df3['区分'] == 'サイズアップ'])}件")
-                    c2.metric("サイズダウン", f"{len(df3[df3['区分'] == 'サイズダウン'])}件")
-                    c3.metric("配送設定の修正", f"{len(fix)}件")
-                    c4.metric("利益NG→価格再設定", f"{len(ng)}件")
-
-                    # 出力CSVを組み立て
-                    files3 = {}
-                    # ①NE項目1更新（全行）
-                    files3["ne_item1_update.csv"] = ex.ne_item1_csv(
-                        [{"商品コード": r["商品コード"], "新項目1": r["新項目1"]}
-                         for _, r in df3.iterrows()])
-                    # ②モール配送設定の修正（便種が変わった商品・親コード単位）
-                    dv_rows = []
-                    if len(fix):
-                        seen = set()
-                        for _, r in fix.iterrows():
-                            code = str(r["商品コード"]).lower()
-                            hit = sku_table.get(code)
-                            parent = (hit[0] if hit else masters.parent_code(code))
-                            if parent not in seen:
-                                seen.add(parent)
-                                dv_rows.append({"商品管理番号": parent, "商品コード": r["商品コード"],
-                                                "旧便種": r["旧便種"], "新便種": r["新便種"]})
-                        files3["rakuten_delivery_update.csv"] = ex.rakuten_delivery_csv(dv_rows)
-                        files3["yahoo_delivery_update.csv"] = ex.yahoo_delivery_csv(dv_rows)
-                    # ③利益NG品の価格再設定CSV（納品価格変更と同じ3ファイル）
-                    if len(ng):
-                        st.caption(f"💡 利益NG {len(ng)}件は新サイズのコストで目標利益率価格に再設定します"
-                                   "（表の「新販売価格」列）。下の価格CSVに含まれます。")
-                        price_df = pd.DataFrame([{
-                            "商品コード": r["商品コード"], "現販売価格": r["現販売価格"],
-                            "新販売価格": r["新販売価格"], "NE売価": r["NE売価"],
-                            "新下代": code_info.get(str(r["商品コード"]).lower(), {}).get("原価", ""),
-                        } for _, r in ng.iterrows()])
-                        pfiles, _, _ = build_output_files(price_df, include_unchanged=False)
-                        files3["normal-item.csv"] = pfiles["normal-item.csv"]
-                        files3["yahoo_data.csv"] = pfiles["yahoo_data.csv"]
-                        files3["ne_price_update.csv"] = pfiles["ne_price_update.csv"]
-                    # ④チェック明細（全行・証跡）
-                    files3["size_change_check.csv"] = ex.detail_csv(df3)
-
-                    _in3 = input_file_of(up3)
-                    confirm_gate(files3, "t3_result", "梱包サイズ変更",
-                                 extra_files=({f"input_{_in3[0]}": _in3[1]} if _in3 else None))
-
-                    # ── 楽天の配送方法セットをAPIで自動修正 ──
-                    if dv_rows:
-                        with st.expander(f"🚀 楽天の配送方法セットをAPIで自動修正（対象 {len(dv_rows)}商品）",
-                                         expanded=True):
-                            st.caption("各商品の全SKUの配送方法セット（shippingMethodGroup）を"
-                                       "APIで書き換えます（他の項目は触りません）。"
-                                       "Yahooは下の更新CSVで対応してください。")
-                            if "pricing_settings" not in st.session_state:
-                                st.session_state["pricing_settings"] = masters.load_settings(product_folder)
-                            _set = st.session_state["pricing_settings"]
-                            s1, s2, s3 = st.columns([1, 1, 1])
-                            g_tak = s1.text_input("「宅配便のみ」の管理番号",
-                                                  value=str(_set.get("rakuten_group_takuhai", "")),
-                                                  key="t3_grp_tak")
-                            g_mail = s2.text_input("「メール便」の管理番号",
-                                                   value=str(_set.get("rakuten_group_mail", "")),
-                                                   key="t3_grp_mail")
-                            if s3.button("💾 番号を保存", key="t3_grp_save",
-                                         disabled=not (g_tak.strip() and g_mail.strip())):
-                                _set["rakuten_group_takuhai"] = g_tak.strip()
-                                _set["rakuten_group_mail"] = g_mail.strip()
-                                try:
-                                    masters.save_settings(_set, product_folder)
-                                    st.success("保存しました（次回から自動入力されます）。")
-                                except Exception as e:  # noqa: BLE001
-                                    st.warning(f"Drive保存に失敗（この画面では有効）: {e}")
-                            st.caption("番号はRMS「店舗設定→配送方法セット」の一覧で確認できます。"
-                                       "調査ツールで既存商品を見て確かめるのも確実です"
-                                       "（例: gais0020のメール便SKUはshippingMethodGroup=\"2\"）。")
-
-                            if g_tak.strip() and g_mail.strip():
-                                group_of = {"宅配便": g_tak.strip(), "メール便": g_mail.strip()}
-                                plan = [{"商品管理番号": d["商品管理番号"],
-                                         "変更": f"{d['旧便種']}→{d['新便種']}",
-                                         "設定する管理番号": group_of.get(d["新便種"], "")}
-                                        for d in dv_rows]
-                                st.dataframe(pd.DataFrame(plan),
-                                             use_container_width=True, hide_index=True)
-                                agree = st.checkbox("上記の内容で楽天の本番データを変更することを確認しました",
-                                                    key="t3_api_agree")
-                                if st.button(f"🚀 {len(dv_rows)}商品の配送方法セットを変更する",
-                                             key="t3_api_run", type="primary",
-                                             disabled=not (agree and rakuten_price.is_configured())):
-                                    ok_list, ng_list = [], []
-                                    bar = st.progress(0.0, text="変更中…")
-                                    for i, d in enumerate(dv_rows):
-                                        gid = group_of.get(d["新便種"])
-                                        try:
-                                            rakuten_price.set_shipping_method_group(
-                                                d["商品管理番号"], gid)
-                                            ok_list.append(d["商品管理番号"])
-                                        except Exception as e:  # noqa: BLE001
-                                            ng_list.append(f"{d['商品管理番号']}: {e}")
-                                        bar.progress((i + 1) / len(dv_rows),
-                                                     text=f"変更中… {i + 1}/{len(dv_rows)}")
-                                    bar.empty()
-                                    if ok_list:
-                                        st.success(f"✅ {len(ok_list)}商品を変更しました: "
-                                                   + ", ".join(ok_list[:10])
-                                                   + (" …" if len(ok_list) > 10 else ""))
-                                    if ng_list:
-                                        st.error("変更できなかった商品:\n" + "\n".join(ng_list[:10]))
-                                if not rakuten_price.is_configured():
-                                    st.caption("⚠️ RMSキー未設定のため実行できません。")
-
-    with st.expander("🔧 楽天API調査（配送方法セット自動化の準備）", expanded=False):
-        st.caption("楽天の配送方法セットをAPIで自動変更するための下調べです。"
-                   "商品管理番号を1つ入れて実行すると、その商品の配送関連フィールドを表示します。"
-                   "結果を確認できたら配送設定のAPI自動修正を実装します。")
-        probe_mn = st.text_input("商品管理番号（例: gais0020）", key="t3_probe_mn")
-        if st.button("🔍 調査する", key="t3_probe_btn",
-                     disabled=not (probe_mn.strip() and rakuten_price.is_configured())):
-            try:
-                st.session_state["t3_probe_result"] = rakuten_price.probe_item(probe_mn.strip())
-            except Exception as e:  # noqa: BLE001
-                st.session_state.pop("t3_probe_result", None)
-                st.error(f"取得失敗: {e}")
-        _probe = st.session_state.get("t3_probe_result")
-        if _probe:
-            item = _probe.get("item", _probe)
-            st.write("商品フィールド一覧:", sorted(item.keys()))
-
-            # 全階層からship/delivery/postageを含むキーを探す（SKU=variants内も対象）
-            def _find_keys(obj, path=""):
-                hits = {}
-                if isinstance(obj, dict):
-                    for k, v in obj.items():
-                        p = f"{path}.{k}" if path else str(k)
-                        if any(s in str(k).lower() for s in ("ship", "delivery", "postage")):
-                            hits[p] = v
-                        hits.update(_find_keys(v, p))
-                elif isinstance(obj, list):
-                    for i, v in enumerate(obj[:3]):
-                        hits.update(_find_keys(v, f"{path}[{i}]"))
-                return hits
-
-            hits = _find_keys(item)
-            st.write("配送関連フィールド（全階層を検索）:")
-            st.json(hits or {"(該当なし)": "SKUの生データと全体表示で確認してください"})
-
-            variants = item.get("variants") or {}
-            if isinstance(variants, dict) and variants:
-                first_key = next(iter(variants))
-                st.write(f"SKU 1件分の生データ（SKU管理番号: {first_key}）:")
-                st.json(variants[first_key])
-            if st.checkbox("レスポンス全体を表示（variantsは除く）", key="t3_probe_full"):
-                st.json({k: v for k, v in item.items() if k != "variants"})
