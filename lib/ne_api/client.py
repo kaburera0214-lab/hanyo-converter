@@ -19,7 +19,7 @@ import json
 import requests
 
 API_BASE = "https://api.next-engine.org/"
-AUTH_BASE = "https://base.next-engine.org/api/neauth"
+SIGN_IN_URL = "https://base.next-engine.org/users/sign_in/"
 TOKENS_NAME = "ne_tokens.json"   # Drive（PRODUCT_MASTER_FOLDER_ID）に保存
 TIMEOUT = 60                     # 商品マスタuploadは数万行も想定して長め
 _SS_KEY = "_ne_tokens"           # session_stateキャッシュ（Drive往復の削減）
@@ -60,12 +60,16 @@ def redirect_uri():
 
 
 def auth_url(redirect=None):
-    """NEのログイン・承認画面URL。承認後、redirect_uri に uid&state が付いて戻る。"""
-    cid, secret = _secrets()
+    """NEのログイン画面URL（正式仕様: /users/sign_in/?client_id=…）。
+    ログイン完了後、アプリに登録済みのRedirect URIへ uid&state が付いて戻る。
+    redirect_uriパラメータは登録値と一致する場合のみ付与（不一致だと弾かれるため）。"""
+    import urllib.parse
+    cid, _secret = _secrets()
+    url = f"{SIGN_IN_URL}?client_id={cid}"
     uri = redirect or redirect_uri()
-    if not uri:
-        raise NENotConfigured("Secrets に NE_REDIRECT_URI が未設定です。")
-    return f"{AUTH_BASE}?client_id={cid}&client_secret={secret}&redirect_uri={uri}"
+    if uri:
+        url += "&redirect_uri=" + urllib.parse.quote(uri, safe="")
+    return url
 
 
 def _folder_id():
