@@ -29,7 +29,7 @@ st.caption("JANをスキャン → 資材・ロケーション・配送サイズ
 from lib import master_store
 from lib.ne_api import client as ne_client
 from lib.pricing import calc, export as ex, masters, rakuten_price
-from lib.receiving import plan as rp, runner
+from lib.receiving import master as recv_master, plan as rp, runner
 
 product_folder = master_store.folder_id()
 params = dict(calc.DEFAULT_PARAMS)  # 計算パラメータは既定値固定（現場では変更しない）
@@ -173,11 +173,8 @@ if _missing:
 jan_map, code_info = master_store.memo("pricing_lookup",
                                        lambda: masters.build_lookup(ne_df))
 
+# 商品コード → 現在のロケーションコード（「現ロケ」表示用。プルダウンの選択肢には使わない）
 if "ロケーションコード" in ne_df.columns:
-    material_opts, location_opts = master_store.memo(
-        "recv_location_opts",
-        lambda: rp.split_location_values(ne_df["ロケーションコード"].astype(str).tolist()))
-
     def _build_loc_map():
         codes = ne_df["商品コード"].map(masters.norm_key).tolist()
         locs = ne_df["ロケーションコード"].astype(str).tolist()
@@ -185,9 +182,64 @@ if "ロケーションコード" in ne_df.columns:
                 for c, l in zip(codes, locs) if c and c != "nan"}
     loc_map = master_store.memo("recv_loc_map", _build_loc_map)
 else:
-    material_opts, location_opts, loc_map = [], [], {}
-    st.error("マスタに「ロケーションコード」列がありません。プルダウンの選択肢を作れないため、"
-             "上の📚からNEの**全カラムDL**で差し替えてください。")
+    loc_map = {}
+
+# ── 資材ナンバー・ロケーションのプルダウン選択肢＝入荷登録マスタ（Drive・画面で編集） ──
+# 誤登録が混ざるNEの既存値ではなく、この画面で管理する専用マスタを正本にする。
+if "recv_master" not in st.session_state:
+    rm = recv_master.load(product_folder)
+    seeded = False
+    if not rm["materials"]:
+        rm["materials"] = list(recv_master.DEFAULT_MATERIALS)  # 初期19種
+        seeded = True
+    if not rm["locations"] and "ロケーションコード" in ne_df.columns:
+        # 初回の下敷きとしてNEの実ロケーションを採取（あとで画面で整理してもらう）
+        _, _locs = rp.split_location_values(ne_df["ロケーションコード"].astype(str).tolist())
+        rm["locations"] = _locs
+        seeded = True
+    st.session_state["recv_master"] = rm
+    st.session_state["recv_master_seeded"] = seeded
+
+recv_m = st.session_state["recv_master"]
+material_opts = recv_m["materials"]
+location_opts = recv_m["locations"]
+
+with st.expander("🗂 資材ナンバー・ロケーションマスタ（プルダウンの選択肢をここで管理）", expanded=False):
+    st.caption("入荷登録の「資材ナンバー」「ロケーション」プルダウンは、このマスタの内容で決まります。"
+               "行の追加＝最下段の空行に入力、削除＝左端のチェック→右上のゴミ箱。"
+               "**編集したら「💾 保存」を押してください**（保存前でもこの画面のプルダウンには反映されます）。")
+    if st.session_state.get("recv_master_seeded"):
+        st.info("初期値をセットしました（資材ナンバーは確定19種、ロケーションはNEの現状値から採取）。"
+                "内容を確認して「💾 保存」でDriveに確定してください。")
+    mcol, lcol = st.columns(2)
+    mat_edit = mcol.data_editor(
+        pd.DataFrame({"資材ナンバー": material_opts}), key="recv_mat_editor",
+        num_rows="dynamic", hide_index=True, use_container_width=True,
+        column_config={"資材ナンバー": st.column_config.TextColumn("資材ナンバー", required=True)})
+    loc_edit = lcol.data_editor(
+        pd.DataFrame({"ロケーション": location_opts}), key="recv_loc_editor",
+        num_rows="dynamic", hide_index=True, use_container_width=True,
+        column_config={"ロケーション": st.column_config.TextColumn("ロケーション", required=True)})
+    _new_mats = recv_master._norm_list(mat_edit["資材ナンバー"].tolist())
+    _new_locs = recv_master._norm_list(loc_edit["ロケーション"].tolist())
+    # 編集内容は保存前でも即プルダウンに反映（この描画内で使う変数を更新）
+    st.session_state["recv_master"] = {"materials": _new_mats, "locations": _new_locs}
+    material_opts, location_opts = _new_mats, _new_locs
+    _dirty = (_new_mats != recv_m["materials"] or _new_locs != recv_m["locations"]
+              or st.session_state.get("recv_master_seeded"))
+    if st.button("💾 保存（Driveに確定）", key="recv_master_save", type="primary",
+                 disabled=not _dirty):
+        try:
+            recv_master.save(_new_mats, _new_locs, product_folder)
+            st.session_state["recv_master_seeded"] = False
+            st.success(f"保存しました（資材ナンバー {len(_new_mats)}種・ロケーション {len(_new_locs)}種）。")
+            st.rerun()
+        except Exception as e:  # noqa: BLE001
+            st.error(f"Driveへの保存に失敗しました: {e}")
+
+if not material_opts or not location_opts:
+    st.warning("資材ナンバーまたはロケーションのマスタが空です。"
+               "上の🗂マスタで登録・保存してください（プルダウンが選べません）。")
 
 # 配送サイズの選択肢 = 送料・資材マスタ（正本はDrive・編集は価格改定ページで）
 if "recv_cost_df" not in st.session_state:
@@ -244,10 +296,11 @@ def _resolve_code(jan):
 
 st.markdown("### ① 入荷商品の入力")
 
-with st.expander("📄 プルダウン選択肢の点検（誤登録さがし・一覧ダウンロード）", expanded=False):
-    st.caption("選択肢はNE商品マスタの「ロケーションコード」既存値から自動生成しています。"
-               "**件数が極端に少ない値は誤登録の可能性大**。NE側のロケーションコードを直して"
-               "マスタを取り直すと、選択肢からも消えます。")
+with st.expander("📄 NE現状の点検（誤登録さがし・一覧ダウンロード）", expanded=False):
+    st.caption("プルダウンの選択肢は上の🗂マスタで管理します。ここはNE商品マスタに"
+               "**実際に登録されているロケーションコードの点検用**です。"
+               "**件数が極端に少ない資材ナンバーは誤登録の可能性大**。NE側を直して"
+               "マスタを取り直すと反映されます。")
     if st.button("📄 一覧を作成", key="recv_opts_report"):
         if "ロケーションコード" in ne_df.columns:
             mat_counts, loc_counts = rp.split_location_counts(

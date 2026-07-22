@@ -161,6 +161,17 @@ def test_price_patch_body():
                                  "kei0018": {"standardPrice": "2783"}}}
 
 
+def test_receiving_master_norm_list():
+    from lib.receiving import master as rm
+    # 正規化・重複除去・空値除去、登録順は保持
+    assert rm._norm_list(["100A", "60B", "100A", "", "nan", None, " 60A "]) == \
+        ["100A", "60B", "60A"]
+    # 初期資材ナンバー（ユーザー確定19種）で重複なし
+    assert len(rm.DEFAULT_MATERIALS) == 19
+    assert len(set(rm.DEFAULT_MATERIALS)) == 19
+    assert "MB2" in rm.DEFAULT_MATERIALS and "ST" in rm.DEFAULT_MATERIALS
+
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in sorted(globals().items()):
