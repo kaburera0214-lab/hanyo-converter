@@ -269,6 +269,37 @@ with st.expander("📄 プルダウン選択肢の点検（誤登録さがし・
                            st.session_state["recv_opts_txt"],
                            "pulldown_options.txt", "text/plain", key="recv_opts_dl")
 
+    st.divider()
+    st.caption("**商品コード × ロケーションコードの一覧**（資材ナンバーの誤登録さがし用）。"
+               "資材ナンバー順に並ぶので、同じ棚なのに資材ナンバーが違う商品を見つけやすくなります。")
+    if st.button("📄 商品×ロケーション一覧を作成", key="recv_loc_report"):
+        rows = []  # (資材ナンバー, ロケーション, 商品コード, 商品名, ロケーションコード原文)
+        if "ロケーションコード" in ne_df.columns:
+            codes_col = ne_df["商品コード"].map(masters.norm_key).tolist()
+            names_col = (ne_df["商品名"].astype(str).tolist()
+                         if "商品名" in ne_df.columns else [""] * len(ne_df))
+            locs_col = ne_df["ロケーションコード"].astype(str).tolist()
+            for code, name, raw in zip(codes_col, names_col, locs_col):
+                if not code or code == "nan":
+                    continue
+                loc_raw = masters.norm_key(raw)
+                if not loc_raw or loc_raw == "nan":
+                    continue  # ロケーション未設定は対象外（点検は登録済みのみ）
+                mat, _, loc = loc_raw.partition("-")
+                rows.append((mat, loc, code, name, loc_raw))
+        rows.sort(key=lambda r: (r[0], r[1], r[2]))
+        lines = ["入荷登録 商品コード×ロケーションコード一覧（資材ナンバーの誤登録点検用）",
+                 f"生成: {_dt.datetime.now().strftime('%Y-%m-%d %H:%M')} / 使用マスタ: {master_meta}",
+                 f"対象: ロケーション登録済み {len(rows)}商品（資材ナンバー→ロケーション→商品コード順）",
+                 "",
+                 "資材ナンバー\tロケーション\t商品コード\tロケーションコード\t商品名"]
+        lines += [f"{m}\t{loc}\t{code}\t{raw}\t{name}" for m, loc, code, name, raw in rows]
+        st.session_state["recv_loc_txt"] = "\r\n".join(lines).encode("utf-8-sig")
+    if st.session_state.get("recv_loc_txt") is not None:
+        st.download_button("⬇️ product_locations.txt をダウンロード",
+                           st.session_state["recv_loc_txt"],
+                           "product_locations.txt", "text/plain", key="recv_loc_dl")
+
 tab_one, tab_bulk = st.tabs(["📱 1商品ずつ", "📋 複数商品まとめて"])
 
 # ── 1商品ずつ（スキャン→3つのプルダウン。全体が1画面に収まる） ──
