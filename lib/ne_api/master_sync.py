@@ -30,44 +30,68 @@ PAGE_LIMIT = 1000     # NE searchの1回あたり取得件数（安全側）
 MAX_PAGES = 2000      # 無限ループ防止
 
 
+def available_fields(sample=1):
+    """fields未指定でNEが返す商品1件のキー一覧（実在フィールドの調査用）。"""
+    try:
+        rows = client.call("api_v1_master_goods/search",
+                           {"limit": str(sample)}).get("data") or []
+        keys = set()
+        for r in rows:
+            keys.update(r.keys())
+        return sorted(keys)
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def detect_jan_field():
-    """JANコードのAPIフィールド名を1件検索で自動判定する。見つからなければNone。"""
+    """JANコードのAPIフィールド名を自動判定する。見つからなければNone。
+    ①fields未指定で返る既定フィールドから 'jan' を含むキーを探す（最も確実）
+    ②候補名を複数件検索して実在（空でない行に出現）を確認する（NEは空値を省くことがある）"""
+    for k in available_fields(3):
+        if "jan" in k.lower():
+            return k
     for cand in JAN_CANDIDATES:
         try:
             rows = client.call("api_v1_master_goods/search",
-                               {"fields": f"goods_id,{cand}", "limit": "1"}).get("data") or []
+                               {"fields": f"goods_id,{cand}", "limit": "200"}).get("data") or []
         except Exception:  # noqa: BLE001
-            continue      # 無効なフィールド名はNEがエラーにする → 次の候補へ
-        if rows and cand in rows[0]:
+            continue      # 無効フィールドはNEがエラー → 次の候補へ
+        if any(cand in r for r in rows):
             return cand
     return None
 
 
+def total_count():
+    """NE商品マスタの総件数（進捗バー用）。取れなければ0。"""
+    try:
+        return int(client.call("api_v1_master_goods/count", {}).get("count", 0))
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 def fetch_master(on_progress=None):
     """NE商品マスタを全件取得し、正規ヘッダのDataFrameを返す。
-    返り値: (df, jan_field or None)。jan_fieldがNoneならJANが取得できていない。"""
+    返り値: (df, jan_field or None)。jan_fieldがNoneならJANが取得できていない。
+    ※NE searchの count はそのページの件数を返すため総件数の判定には使えない。
+      1ページの取得件数がPAGE_LIMIT未満になったら最終ページとみなす。"""
     jan = detect_jan_field()
     field_map = dict(FIELD_MAP)
     if jan:
         field_map[jan] = "JANコード"
     fields = ",".join(field_map.keys())
 
-    rows, offset, total = [], 0, None
+    total = total_count()
+    rows, offset = [], 0
     for _ in range(MAX_PAGES):
         result = client.call("api_v1_master_goods/search",
                              {"fields": fields, "limit": str(PAGE_LIMIT),
                               "offset": str(offset)})
         data = result.get("data") or []
-        if total is None:
-            try:
-                total = int(result.get("count", 0))
-            except (TypeError, ValueError):
-                total = 0
         rows.extend(data)
         offset += len(data)
         if on_progress:
             on_progress(offset, total or offset)
-        if not data or (total and offset >= total):
+        if len(data) < PAGE_LIMIT:   # 最終ページ（取得件数がページ上限未満）
             break
 
     df = pd.DataFrame(rows)

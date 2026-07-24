@@ -322,7 +322,9 @@ with st.expander("📚 NE商品マスタ（全機能共通・実行時に最新�
             st.dataframe(df_auto.head(5), use_container_width=True, hide_index=True)
             if jan_field is None:
                 st.warning("JANコードのAPIフィールドを特定できませんでした。"
-                           "フィールド名候補の調整が必要です（開発者に連絡）。")
+                           "下のフィールド一覧から、JANに当たる名前を教えてください（候補に追加します）。")
+                st.caption("NEが返す商品フィールド一覧（この中にJANの列名があります）:")
+                st.write(master_sync.available_fields(3))
             st.session_state.pop("_master_store", None)   # 次回load_masterで読み直す
         except Exception as e:  # noqa: BLE001
             bar.empty()
