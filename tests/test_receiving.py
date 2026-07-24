@@ -161,6 +161,22 @@ def test_price_patch_body():
                                  "kei0018": {"standardPrice": "2783"}}}
 
 
+def test_split_by_existence():
+    # NEに存在する行はNEの正確な商品コードへ置換、存在しない行はmissingに
+    rows = [{"syohin_code": "kawa3935", "location": "60A-TB1C", "org1": "nekop"},
+            {"syohin_code": "KAWA9999", "location": "80A-TA1A", "org1": "80"}]
+    found = {"kawa3935": "KAWA3935"}          # NEは大文字で保持していた例
+    ok, missing = rp.split_by_existence(rows, found)
+    assert ok == [{"syohin_code": "KAWA3935", "location": "60A-TB1C", "org1": "nekop"}]
+    assert missing == ["KAWA9999"]
+    # 全部見つかる/全部見つからない
+    ok2, miss2 = rp.split_by_existence(rows, {"kawa3935": "kawa3935",
+                                              "kawa9999": "kawa9999"})
+    assert len(ok2) == 2 and miss2 == []
+    ok3, miss3 = rp.split_by_existence(rows, {})
+    assert ok3 == [] and miss3 == ["kawa3935", "KAWA9999"]
+
+
 def test_receiving_master_norm_list():
     from lib.receiving import master as rm
     # 正規化・重複除去・空値除去、登録順は保持

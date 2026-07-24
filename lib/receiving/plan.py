@@ -108,6 +108,21 @@ def ne_rows_from_plan(plan):
     return main_rows, price_rows
 
 
+def split_by_existence(rows, found):
+    """NE更新行を「存在する／しない」に分ける（商品マスタupload前の存在確認・純関数）。
+    rows: [{syohin_code, ...}] / found: {商品コード小文字: NEの正確な商品コード}
+    存在する行は syohin_code をNEの正確なコードに置換して返す（大文字小文字ずれの吸収）。
+    返り値: (存在する行list, 見つからなかった商品コードlist)"""
+    ok, missing = [], []
+    for r in rows:
+        gid = found.get(str(r["syohin_code"]).strip().lower())
+        if gid:
+            ok.append({**r, "syohin_code": gid})
+        else:
+            missing.append(r["syohin_code"])
+    return ok, missing
+
+
 def delivery_rows(plan, sku_table):
     """便種変更（配送設定=要修正）の商品を親（商品管理番号）単位にまとめる。
     pages/20の梱包サイズ変更タブと同じ規則: SKU対応表→枝番除去→コード自身。"""

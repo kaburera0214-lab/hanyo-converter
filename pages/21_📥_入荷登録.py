@@ -108,6 +108,26 @@ with st.expander("🔐 NE API接続（管理者用）", expanded=False):
                 st.success(f"接続OK（商品マスタ {res.get('count', '?')}件）")
             except Exception as e:  # noqa: BLE001
                 st.error(f"接続に失敗しました: {e}")
+
+        st.caption("**商品コードの存在確認**: 更新が「新規登録時必須です」で失敗する場合、"
+                   "その商品コードがNEに（同じ表記で）登録されているかを確認します。")
+        d1, d2 = st.columns([2, 1])
+        _diag = d1.text_input("商品コード（例: kawa3935）", key="recv_ne_diag_code",
+                              label_visibility="collapsed", placeholder="商品コード")
+        if d2.button("🔎 NEで探す", key="recv_ne_diag_btn", disabled=not _diag.strip()):
+            try:
+                from lib.ne_api import goods as _neg
+                rows = _neg.search_goods([_diag.strip()],
+                                         fields="goods_id,goods_name")
+                if rows:
+                    st.success(f"NEに存在します → 商品コード「{rows[0].get('goods_id')}」"
+                               f"／{rows[0].get('goods_name', '')}")
+                else:
+                    st.error(f"NEに「{_diag.strip()}」が見つかりません。"
+                             "大文字小文字・表記が商品マスタとNEで一致しているか確認してください。"
+                             "（この状態だと更新は新規登録扱いになり失敗します）")
+            except Exception as e:  # noqa: BLE001
+                st.error(f"検索に失敗しました: {e}")
         st.caption("**フォールバック（手貼り付け）**: コールバックページに表示された uid / state を"
                    "貼り付けてトークンを取得します（uidは短命なのですぐに実行してください）。")
         f1, f2, f3 = st.columns([2, 2, 1])

@@ -87,3 +87,31 @@ def search_goods(codes, fields="goods_id,goods_name"):
                          {"goods_id-in": ",".join(str(c) for c in codes),
                           "fields": fields, "limit": str(max(len(codes), 1))})
     return result.get("data") or []
+
+
+def find_existing(codes):
+    """商品コード群がNEに存在するか確認し、{入力コード小文字: NEの正確な商品コード} を返す。
+
+    商品マスタuploadは「商品コードが既存と一致すれば更新（商品コードのみ必須）／
+    一致しなければ新規登録（売価・原価等が必須）」で動く。マスタ(Drive)とNEで
+    商品コードの大文字小文字や表記がずれていると新規登録扱いになりエラーになるため、
+    事前にNEへ問い合わせて存在確認し、NEが実際に持つ正確なコードへ置き換える。
+    """
+    uniq = []
+    seen = set()
+    for c in codes:
+        s = str(c).strip()
+        if s and s.lower() not in seen:
+            seen.add(s.lower())
+            uniq.append(s)
+    found = {}
+    for i in range(0, len(uniq), 100):     # NEのsearchは一括取得できる（100件ずつ）
+        chunk = uniq[i:i + 100]
+        result = client.call("api_v1_master_goods/search",
+                             {"goods_id-in": ",".join(chunk),
+                              "fields": "goods_id", "limit": str(len(chunk))})
+        for row in (result.get("data") or []):
+            gid = str(row.get("goods_id", "")).strip()
+            if gid:
+                found[gid.lower()] = gid
+    return found

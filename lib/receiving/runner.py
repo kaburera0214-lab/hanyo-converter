@@ -20,6 +20,7 @@ tasks（page 21 が組み立てる）:
 from lib.event import rms_api
 from lib.ne_api import client as ne_client, goods
 from lib.pricing import rakuten_price
+from lib.receiving import plan as rp
 
 STEP_NE_MAIN = "① NEロケーション・項目1"
 STEP_NE_PRICE = "② NE売価（価格再設定）"
@@ -44,11 +45,11 @@ def _ne_batch(step, rows, results, failed, key, on_step):
         else:
             results.append({"ステップ": step, "対象": target, "状態": "失敗",
                             "メッセージ": message})
-            failed[key] = rows
+            failed[key] = failed.get(key, []) + rows
     except Exception as e:  # noqa: BLE001
         results.append({"ステップ": step, "対象": target, "状態": "失敗",
                         "メッセージ": str(e)})
-        failed[key] = rows
+        failed[key] = failed.get(key, []) + rows
 
 
 def _rakuten_each(step, items, results, failed, key, on_step, fn, describe):
@@ -88,6 +89,33 @@ def execute(tasks, on_step=None):
 
     ne_main = tasks.get("ne_main") or []
     ne_price = tasks.get("ne_price") or []
+
+    # 事前確認: NEに存在する商品か（一致しないと新規登録扱いになり「売価は必須」等でNGになる）。
+    # 存在する行はNEの正確な商品コードへ置換し、見つからない商品は明確な失敗として記録する。
+    if ne_main:
+        if on_step:
+            on_step("NEで商品コードを確認中…")
+        try:
+            found = goods.find_existing([r["syohin_code"] for r in ne_main])
+        except ne_client.NEAuthError:
+            found = None            # 認証切れは下の_ne_batchでまとめて扱う
+        except Exception:  # noqa: BLE001
+            found = None            # 確認に失敗したら従来どおりそのまま送る（誤ブロック回避）
+        if found is not None:
+            orig_main = list(ne_main)
+            ne_main, missing = rp.split_by_existence(ne_main, found)
+            ne_price, _ = rp.split_by_existence(ne_price, found)
+            if missing:
+                miss_set = {str(m).strip().lower() for m in missing}
+                for code in missing:
+                    results.append({
+                        "ステップ": STEP_NE_MAIN, "対象": str(code), "状態": "失敗",
+                        "メッセージ": "NEにこの商品コードが見つかりません。"
+                        "商品マスタ（Drive）とNEの商品コードが一致しているか、"
+                        "NEに登録済みかを確認してください（大文字小文字の違いも確認）。"})
+                failed["ne_main"] = [r for r in orig_main
+                                     if str(r["syohin_code"]).strip().lower() in miss_set]
+
     try:
         _ne_batch(STEP_NE_MAIN, ne_main, results, failed, "ne_main", on_step)
         _ne_batch(STEP_NE_PRICE, ne_price, results, failed, "ne_price", on_step)
