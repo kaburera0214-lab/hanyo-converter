@@ -171,6 +171,11 @@ with st.expander("🔐 NE API接続（管理者用）", expanded=False):
                                      hide_index=True)
                 except Exception:  # noqa: BLE001
                     pass
+        st.caption("⚠️ **本番環境の資格情報を使ってください**。検索で自社の商品が出ず"
+                   "「hanasakuスプーン＆フォーク（kira0096）」等のサンプルしか出ない場合は、"
+                   "NEアプリの**テスト環境**に接続しています。NEデベロッパー画面でアプリを"
+                   "審査→「販売開始」し、**本番環境のclient_id/client_secret**を取得して"
+                   "Secrets（NE_CLIENT_ID / NE_CLIENT_SECRET）を差し替え、再認可してください。")
         st.caption("**フォールバック（手貼り付け）**: コールバックページに表示された uid / state を"
                    "貼り付けてトークンを取得します（uidは短命なのですぐに実行してください）。")
         f1, f2, f3 = st.columns([2, 2, 1])
