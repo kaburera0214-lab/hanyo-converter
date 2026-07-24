@@ -186,9 +186,15 @@ def size_change_rows(matched, c_size, c_rprice, cost_table, params, cur_prices=N
                     row["利益チェック"] = "〇" if ok else "×"
                     row["新利益率"] = margin
                     if not ok:
-                        # 納品価格変更と同じ再設定（下代は不変→値上げ率価格=現価格。目標利益率価格が上回る）
-                        t = calc.target_price(cost, new[0], new[1] or 0.0, new[2], params)
-                        new_price = max(t or 0, int(cur_price))
+                        # 価格の決定は価格改定(rules.decide_price)に一元化する。
+                        # サイズ変更は下代変更が無いので「値上げ率価格=現価格」の床は使わず
+                        # （旧下代/新下代を渡さない）、目標利益率価格に着地させる。
+                        new_price, _rule = rules.decide_price({
+                            "現販売価格": cur_price,
+                            "目標利益率価格": calc.target_price(cost, new[0], new[1] or 0.0,
+                                                              new[2], params),
+                            "配送種別": new[2], "mode": "normal",
+                        }, params)
                         row["新販売価格"] = new_price
                         row["NE売価"] = calc.excel_round(new_price / (1 + params["tax_rate"]))
                         _, row["新利益率"] = calc.simulate_price(new_price, cost, new[0],
