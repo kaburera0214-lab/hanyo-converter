@@ -39,6 +39,44 @@ _FORM_COLUMNS = ["JANコード", "商品コード", "商品名", "現サイズ",
                  "資材ナンバー", "ロケーション", "配送サイズ"]
 
 
+def _plan_table_html(rows):
+    """チェック結果の要点を、横スクロール無し・セル内折り返しのHTML表にする。
+    st.dataframe は列が多いと横スクロールになり現場が見落とすため、要点だけを固定幅で表示。
+    価格・利益率などの全項目は別途「明細」expanderに残す。"""
+    import html as _h
+    cols = [("区分", "区分", "9%"), ("商品コード", "商品CD", "12%"),
+            ("商品名", "商品名", "26%"), ("ロケーションコード", "ロケコード", "15%"),
+            ("新項目1", "新サイズ", "8%"), ("配送設定", "配送設定", "14%"),
+            ("利益チェック", "利益", "7%"), ("新販売価格", "新価格", "9%")]
+    div_bg = {"サイズアップ": "rgba(255,150,0,.20)", "サイズダウン": "rgba(0,120,255,.16)",
+              "変更なし": "rgba(128,128,128,.12)", "初回登録": "rgba(0,180,80,.20)",
+              "同等": "rgba(128,128,128,.12)"}
+    thead = "".join(
+        f'<th style="width:{w};text-align:left;padding:6px 8px;'
+        f'border-bottom:2px solid rgba(128,128,128,.45);">{_h.escape(lbl)}</th>'
+        for _key, lbl, w in cols)
+    trs = []
+    for r in rows:
+        tds = []
+        for key, _lbl, _w in cols:
+            v = r.get(key)
+            v = "" if v is None else str(v)
+            style = ("padding:6px 8px;border-bottom:1px solid rgba(128,128,128,.25);"
+                     "word-break:break-word;vertical-align:top;")
+            if key == "区分" and v in div_bg:
+                style += f"background:{div_bg[v]};font-weight:600;"
+            if key == "配送設定" and v.startswith("要修正"):
+                style += "background:rgba(255,70,70,.20);font-weight:600;"
+            if key == "利益チェック" and v == "×":
+                style += "color:#e03131;font-weight:700;"
+            tds.append(f'<td style="{style}">{_h.escape(v)}</td>')
+        trs.append("<tr>" + "".join(tds) + "</tr>")
+    return ('<div style="width:100%;overflow-x:hidden;">'
+            '<table style="width:100%;table-layout:fixed;border-collapse:collapse;'
+            'font-size:0.86rem;">'
+            f'<thead><tr>{thead}</tr></thead><tbody>{"".join(trs)}</tbody></table></div>')
+
+
 # ══ 管理者向け設定（現場スタッフは触らない） ══════════════════
 
 if "pricing_settings" not in st.session_state:
@@ -253,7 +291,9 @@ if not material_opts or not location_opts:
     st.warning("資材ナンバーまたはロケーションのマスタが空です。"
                "上の🗂マスタで登録・保存してください（プルダウンが選べません）。")
 
-# 配送サイズの選択肢 = 送料・資材マスタ（正本はDrive・編集は価格改定ページで）
+# 配送サイズ（項目1）のプルダウン選択肢＝入荷登録で実際に使う7種（2026-07-22ユーザー確定）。
+# 送料・資材（サイズ変更時の利益計算用）は従来どおり送料・資材マスタから引く。
+RECEIVING_SIZE_OPTS = ["nekop", "60", "80", "100", "120", "140", "160"]
 if "recv_cost_df" not in st.session_state:
     cost_df = None
     try:
@@ -265,7 +305,7 @@ if "recv_cost_df" not in st.session_state:
     st.session_state["recv_cost_df"] = cost_df
 cost_df = st.session_state["recv_cost_df"]
 cost_table = masters.cost_lookup(cost_df)
-size_opts = [s for s in cost_df["項目1"].tolist() if s]
+size_opts = RECEIVING_SIZE_OPTS
 
 # 楽天SKU対応表（価格改定と共通・📡取得時に自動構築してDrive保存）
 if "pricing_sku_table" not in st.session_state:
@@ -574,11 +614,18 @@ _plan_stale = (plan_rows is not None
 if plan_rows and _plan_stale:
     st.warning("入力内容がチェック時から変わっています。もう一度「🧮 チェック」を押してください。")
 if plan_rows and not _plan_stale:
-    plan_df = pd.DataFrame(plan_rows)
-    lead = ["商品コード", "商品名", "警告", "区分", "配送設定", "利益チェック"]
-    plan_df = plan_df[lead + [c for c in plan_df.columns if c not in lead]]
-    st.dataframe(plan_df, use_container_width=True, hide_index=True,
-                 column_config={"新利益率": st.column_config.NumberColumn(format="percent")})
+    # 現場が見落とさないよう、要点だけを横スクロール無し・折り返しで表示する
+    st.markdown(_plan_table_html(plan_rows), unsafe_allow_html=True)
+    _warn_rows = [r for r in plan_rows if str(r.get("警告", "")).strip()]
+    if _warn_rows:
+        st.warning("⚠️ 警告があります（確認してください）:\n"
+                   + "\n".join(f"- **{r['商品コード']}**: {r['警告']}" for r in _warn_rows))
+    with st.expander("🔎 明細（価格・利益率など全項目）", expanded=False):
+        plan_df = pd.DataFrame(plan_rows)
+        lead = ["商品コード", "商品名", "警告", "区分", "配送設定", "利益チェック"]
+        plan_df = plan_df[lead + [c for c in plan_df.columns if c not in lead]]
+        st.dataframe(plan_df, use_container_width=True, hide_index=True,
+                     column_config={"新利益率": st.column_config.NumberColumn(format="percent")})
 
     dv_rows = rp.delivery_rows(plan_rows, sku_table)
     price_list, price_missing = rp.price_tasks(plan_rows, code_info, sku_table)
