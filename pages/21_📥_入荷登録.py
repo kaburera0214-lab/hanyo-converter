@@ -86,6 +86,15 @@ _settings = st.session_state["pricing_settings"]
 with st.expander("🔐 NE API接続（管理者用）", expanded=False):
     from lib.ne_api import usage as ne_usage
     ne_usage.render(compact=True)   # 課金監視（回数はホームでも常時表示）
+    from lib.notify import chatwork as _cw
+    _cwc1, _cwc2 = st.columns([2, 1])
+    _cwc1.caption("課金アラートはChatwork「souko puppy land」にタスクで通知します"
+                  f"（{'設定済み' if _cw.is_configured() else 'Secrets CHATWORK_API_TOKEN 未設定'}）。")
+    if _cwc2.button("🔔 通知テスト", key="recv_cw_test", disabled=not _cw.is_configured()):
+        ok = _cw.create_task("[info][title]NE API通知テスト[/title]"
+                             "この通知が届けば設定は完了です（テスト送信）。[/info]")
+        st.success("Chatworkにテストタスクを作成しました。") if ok \
+            else st.error("送信に失敗しました。トークン/ルームIDを確認してください。")
     if not ne_client.is_configured():
         st.error("Secrets に NE_CLIENT_ID / NE_CLIENT_SECRET が未設定です。"
                  "設定するまでNEの自動更新は実行できません。")

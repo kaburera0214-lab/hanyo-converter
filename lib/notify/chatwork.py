@@ -16,6 +16,11 @@ import requests
 API = "https://api.chatwork.com/v2"
 TIMEOUT = 20
 
+# 既存のchatwork-checkと同じ運用の既定値（IDは秘密情報でないためコードに置く。Secretsで上書き可）。
+# souko puppy land = account_id 6858076 / DMルーム 270228986（members.json より）。
+DEFAULT_ROOM_ID = "270228986"
+DEFAULT_TO_IDS = ["6858076"]
+
 
 def _secret(key):
     import streamlit as st
@@ -28,14 +33,16 @@ def _token():
 
 
 def _room():
-    return str(_secret("CHATWORK_ALERT_ROOM_ID")).strip()
+    return str(_secret("CHATWORK_ALERT_ROOM_ID")).strip() or DEFAULT_ROOM_ID
 
 
 def _to_ids():
     raw = _secret("CHATWORK_ALERT_TO_IDS")
     if isinstance(raw, (list, tuple)):
-        return [str(x).strip() for x in raw if str(x).strip()]
-    return [x.strip() for x in str(raw).split(",") if x.strip()]
+        ids = [str(x).strip() for x in raw if str(x).strip()]
+    else:
+        ids = [x.strip() for x in str(raw).split(",") if x.strip()]
+    return ids or list(DEFAULT_TO_IDS)
 
 
 def is_configured():
