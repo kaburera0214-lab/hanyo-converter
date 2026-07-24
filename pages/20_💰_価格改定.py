@@ -45,6 +45,11 @@ with st.sidebar:
                                          help="送料込みの決済総額に掛かります") / 100.0
     params["free_ship_line"] = st.number_input("送料込みライン(円)", 0, 100000, 3980, 10,
                                                help="この金額以上は送料込み扱い（利益計算での加算なし）")
+    params["ship_included_line"] = st.number_input(
+        "送料無料維持ライン(本体価格・円)", 0, 100000,
+        int(calc.DEFAULT_PARAMS["ship_included_line"]), 10,
+        help="本体価格（送料を引いた価格）がこの金額を超える商品は、送料込み・送料無料で"
+             "価格を設定します（同時購入を狙える帯）。以下なら従来どおりお客様が送料負担。")
     params["takuhai_add"] = st.number_input("宅配便の込み換算加算(円)", 0, 10000, 880, 10)
     params["mail_add"] = st.number_input("メール便の込み換算加算(円)", 0, 10000, 350, 10)
     params["margin_warn"] = st.number_input("利益率の警告ライン(%)", 0.0, 50.0, 10.0, 1.0) / 100.0

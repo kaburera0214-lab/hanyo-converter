@@ -27,6 +27,8 @@ DEFAULT_PARAMS = {
     "fee_rate": 0.10,           # 楽天手数料率（送料込みの決済総額Mに対して）
     "target_margin": 0.15,      # 目標利益率（新価格はこの率にちょうど着地するよう逆算）
     "free_ship_line": 3980,     # この金額以上は送料無料（お客様の送料負担なし）
+    "ship_included_line": 3300, # 本体価格(=送料を引いた価格)がこの値を超えたら送料込み・送料無料で
+                                # 価格設定する（同時購入を狙える帯。2026-07-24ユーザー確定・可変）
     "takuhai_add": 880,         # 3980円未満・宅配便でお客様が払う送料
     "mail_add": 350,            # 3980円未満・メール便でお客様が払う送料
     "margin_warn": 0.10,        # 利益率がこの値未満なら警告（サイズ変更の利益チェックも共用）
@@ -70,11 +72,16 @@ def profit_base_price(price, delivery, params, mode="normal"):
 
 def m_to_price(m_value, delivery, params, mode="normal"):
     """利益計算価格M（送料込みベース）→ 実際に設定する販売価格。
-    3980円未満に収まるなら送料加算分を引く。例) M=1781・宅配便 → 901円"""
+
+    本体価格 p = M − 送料。pが「送料無料維持ライン」(ship_included_line, 既定3300)以下なら
+    お客様が送料を負担する前提でpを設定（例 M=1781・宅配便 → 901円）。pがラインを超えたら
+    送料込み・送料無料（価格 = M）で設定する（同時購入を狙える価格帯。例 M=4792 → 4792円）。
+    """
     if mode == "direct":
         return int(m_value)
     p = m_value - _add(delivery, params)
-    return int(p) if p < params["free_ship_line"] else int(m_value)
+    line = params.get("ship_included_line", params["free_ship_line"])
+    return int(p) if p <= line else int(m_value)
 
 
 def profit(m, cost, shipping, material, params):

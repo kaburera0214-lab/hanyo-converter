@@ -75,6 +75,21 @@ def test_fee_on_total_payment():
     assert abs(p - 799.447) < 0.01
 
 
+def test_ship_included_line():
+    """本体価格が送料無料維持ライン(既定3300)を超えたら送料込み・送料無料(=M)で設定する
+    （2026-07-24ユーザー確定・可変パラメータ）。宅配便add=880で検証。"""
+    assert calc.DEFAULT_PARAMS["ship_included_line"] == 3300
+    # 本体価格 p=M−880 が 3300以下 → お客様が送料負担（本体価格pを設定）
+    assert calc.m_to_price(4180, "宅配便", P) == 3300   # p=3300ちょうど→本体
+    assert calc.m_to_price(4179, "宅配便", P) == 3299   # p=3299→本体
+    # 本体 3300超 → 送料込み・送料無料（=M）
+    assert calc.m_to_price(4181, "宅配便", P) == 4181   # p=3301→M
+    assert calc.m_to_price(4792, "宅配便", P) == 4792   # kira0001-be相当（p=3912→M=4792）
+    # ラインを3980にすると従来挙動（谷間は本体価格＝お客様送料負担）
+    P_old = dict(calc.DEFAULT_PARAMS); P_old["ship_included_line"] = 3980
+    assert calc.m_to_price(4792, "宅配便", P_old) == 3912
+
+
 def test_target_price_lands_on_target_margin():
     """目標利益率価格は実際にその利益率に着地する（丸め誤差±1%以内）"""
     cases = [
