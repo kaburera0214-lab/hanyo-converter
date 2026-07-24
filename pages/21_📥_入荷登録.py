@@ -296,13 +296,39 @@ with st.expander("🔧 楽天API調査（配送・価格フィールドの下調
 with st.expander("📚 NE商品マスタ（全機能共通・実行時に最新を自動取得）", expanded=False):
     st.caption("汎用マスタ変換・価格改定と同じ商品マスタ（Driveの最新版）を使います。"
                "この画面で使う列は **商品コード・JANコード・商品名・原価・項目1・ロケーションコード**。"
-               "プルダウンの選択肢（資材ナンバー・ロケーション）は既存のロケーションコードから作るため、"
-               "**NEからは全カラムでDL**してください。")
+               "手動アップは `master_…`、API自動取得は `master_auto_…` の名前で保存され、"
+               "**日付・版が新しい方**が自動で使われます（列の順序・数は問いません）。")
     _f = master_store.latest_file()
     if _f:
         st.success(f"Driveの最新版: {_f['name']}（更新 {str(_f.get('modifiedTime', ''))[:10]}）")
     else:
         st.info("Driveに商品マスタ（master_*）がありません。下からアップロードしてください。")
+
+    st.markdown("**🔄 NEマスタをAPIで取得（最低限カラム・手動アップの代替）**")
+    st.caption("週次自動更新が間に合わないときに、今すぐ最新をNEから取得してDriveに保存します"
+               "（`master_auto_…`）。全カラムが必要なときは従来どおりNEからDLしてアップしてください。")
+    if st.button("🔄 今すぐNEマスタをAPIで取得", key="recv_master_sync",
+                 disabled=not ne_client.is_configured()):
+        from lib.ne_api import master_sync
+        bar = st.progress(0.0, text="NEから取得中…")
+        try:
+            df_auto, jan_field = master_sync.fetch_master(
+                on_progress=lambda d, t: bar.progress(
+                    min(d / max(t, 1), 1.0), text=f"NEから取得中… {d:,}/{t:,}件"))
+            bar.empty()
+            _name = master_sync.save_master_auto(df_auto, product_folder)
+            st.success(f"取得しました: **{_name}**（{len(df_auto):,}件）。次回実行から使われます。")
+            st.caption(f"JANフィールド: {jan_field or '（特定できず・JANスキャンに影響）'}")
+            st.dataframe(df_auto.head(5), use_container_width=True, hide_index=True)
+            if jan_field is None:
+                st.warning("JANコードのAPIフィールドを特定できませんでした。"
+                           "フィールド名候補の調整が必要です（開発者に連絡）。")
+            st.session_state.pop("_master_store", None)   # 次回load_masterで読み直す
+        except Exception as e:  # noqa: BLE001
+            bar.empty()
+            st.error(f"NEマスタの取得に失敗しました: {e}")
+
+    st.divider()
     if master_store.upload_widget("recv_master_up"):
         st.rerun()
 

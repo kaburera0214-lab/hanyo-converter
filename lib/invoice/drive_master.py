@@ -92,6 +92,15 @@ def upload_versioned(file_bytes, prefix, folder_id, mimetype="text/csv"):
     return name
 
 
+def list_files(folder_id, prefix):
+    """フォルダ内で名前が prefix で始まるファイル一覧（{id,name,modifiedTime}）を返す。"""
+    service = _service()
+    q = (f"'{folder_id}' in parents and name contains '{prefix}' and trashed = false")
+    res = service.files().list(
+        q=q, fields="files(id, name, modifiedTime)", pageSize=1000).execute()
+    return [f for f in res.get("files", []) if f["name"].startswith(prefix)]
+
+
 def find_latest(folder_id, prefix):
     """フォルダ内の {prefix}_* で最新（名前降順=日付/版数が最大）のファイルを返す。"""
     service = _service()

@@ -169,6 +169,21 @@ def test_ne_build_csv_rejects_bad_rows():
         pass
 
 
+def test_master_name_parse_and_latest():
+    """手動(master_)とAPI自動(master_auto_)の新旧判定は末尾の日付+版で行う（名前降順は誤り）"""
+    from lib import master_store as ms
+    assert ms._parse_master_name("master_20260724_003.csv") == ("20260724", 3, "手動アップ")
+    assert ms._parse_master_name("master_auto_20260725_001.csv") == ("20260725", 1, "自動(API)")
+    assert ms._parse_master_name("master.csv") is None
+    # 版キー(date, ver)で新しい方が勝つ: auto_0725 > manual_0724（名前昇順だと逆転する）
+    a = ms._parse_master_name("master_20260724_009.csv")     # 手動・古い日付
+    b = ms._parse_master_name("master_auto_20260725_001.csv")  # 自動・新しい日付
+    assert (b[0], b[1]) > (a[0], a[1])
+    # 同日は版で比較
+    c = ms._parse_master_name("master_20260724_010.csv")
+    assert (c[0], c[1]) > (a[0], a[1])
+
+
 def test_price_patch_body():
     from lib.pricing import rakuten_price
     body = rakuten_price.price_patch_body({"8577": 882, "kei0018": 2783})

@@ -9,6 +9,7 @@
 - 読み込みは「実行時」に load_master() を呼ぶ。毎回Driveで最新版を確認し、
   同じ版ならセッション内のパース済みデータを再利用する（鮮度と速度の両立）。
 """
+import re
 import unicodedata
 
 import streamlit as st
@@ -48,23 +49,52 @@ def _norm_columns(df):
     return df.rename(columns=ren)
 
 
+def _parse_master_name(name):
+    """master_YYYYMMDD_NNN.csv / master_auto_YYYYMMDD_NNN.csv → (日付, 版, 出所)。
+    末尾の 日付8桁_連番 で新旧を判定する（手動 master_ とAPI自動 master_auto_ を横断）。
+    パースできなければ None。"""
+    base = name[:-4] if name.lower().endswith(".csv") else name
+    m = re.search(r"(\d{8})_(\d+)$", base)
+    if not m:
+        return None
+    origin = "自動(API)" if "auto" in base.lower() else "手動アップ"
+    return m.group(1), int(m.group(2)), origin
+
+
+def _latest_master(folder):
+    """手動(master_*)とAPI自動(master_auto_*)を横断し、日付・版が最大のファイルを返す。
+    返り値: (meta dict, 出所文字列) ／ 無ければ (None, None)。
+    ※find_latestの名前降順ソートだと master_auto_ が常に master_ より後に並び誤判定するため、
+      末尾の日付+版をパースして厳密に新しい方を選ぶ。"""
+    files = drive_master.list_files(folder, "master_")
+    best = None
+    for f in files:
+        p = _parse_master_name(f["name"])
+        if not p:
+            continue
+        key = (p[0], p[1])
+        if best is None or key > best[0]:
+            best = (key, f, p[2])
+    return (best[1], best[2]) if best else (None, None)
+
+
 def latest_file():
-    """Drive上の最新 master_* のメタ情報（id/name/modifiedTime）。無ければNone。
-    ダウンロードはしない（画面の状態表示用）。"""
+    """Drive上の最新マスタ（手動/API自動を横断）のメタ情報。無ければNone。表示用。"""
     try:
-        return drive_master.find_latest(folder_id(), "master")
+        f, _origin = _latest_master(folder_id())
+        return f
     except Exception:  # noqa: BLE001
         return None
 
 
 def load_master():
     """
-    実行時に最新の商品マスタを取得する。
+    実行時に最新の商品マスタを取得する（手動アップ master_* とAPI自動 master_auto_* を横断）。
     毎回Driveで最新版を確認し、同じ版ならセッション内のパース済みDataFrameを再利用。
     返り値: (df, meta文字列) ／ 失敗時: (None, 理由)
     """
     try:
-        f = drive_master.find_latest(folder_id(), "master")
+        f, origin = _latest_master(folder_id())
     except Exception as e:  # noqa: BLE001
         return None, f"Driveに接続できません: {e}"
     if not f:
@@ -79,7 +109,8 @@ def load_master():
     if "商品コード" not in df.columns:
         return None, (f"最新マスタ {f['name']} に「商品コード」列がありません。"
                       f"実際の列: {list(df.columns)[:15]}")
-    meta = f"{f['name']}（{len(df):,}件・更新 {str(f.get('modifiedTime', ''))[:10]}）"
+    meta = (f"{f['name']}（{origin or '不明'}・{len(df):,}件・"
+            f"更新 {str(f.get('modifiedTime', ''))[:10]}）")
     st.session_state[_SS_KEY] = {"key": key, "df": df, "meta": meta, "lookups": {}}
     return df, meta
 
