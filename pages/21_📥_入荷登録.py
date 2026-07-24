@@ -190,41 +190,47 @@ if "recv_master" not in st.session_state:
     rm = recv_master.load(product_folder)
     seeded = False
     if not rm["materials"]:
-        rm["materials"] = list(recv_master.DEFAULT_MATERIALS)  # 初期19種
+        rm["materials"] = list(recv_master.DEFAULT_MATERIALS)      # 初期19種
         seeded = True
-    if not rm["locations"] and "ロケーションコード" in ne_df.columns:
-        # 初回の下敷きとしてNEの実ロケーションを採取（あとで画面で整理してもらう）
-        _, _locs = rp.split_location_values(ne_df["ロケーションコード"].astype(str).tolist())
-        rm["locations"] = _locs
+    if not rm["locations"]:
+        rm["locations"] = recv_master.load_bundled_locations()     # 同梱のロケ一覧
         seeded = True
     st.session_state["recv_master"] = rm
     st.session_state["recv_master_seeded"] = seeded
 
 recv_m = st.session_state["recv_master"]
 material_opts = recv_m["materials"]
-location_opts = recv_m["locations"]
+loc_rows = recv_m["locations"]
 
 with st.expander("🗂 資材ナンバー・ロケーションマスタ（プルダウンの選択肢をここで管理）", expanded=False):
-    st.caption("入荷登録の「資材ナンバー」「ロケーション」プルダウンは、このマスタの内容で決まります。"
+    st.caption("入荷登録のプルダウンは、このマスタの内容で決まります。"
+               "ロケーションは**3階層**（第一階層＝エリア／第二階層＝棚・列／第三階層＝段）で、"
+               "作業者は上から順に選びます。**NEに登録されるのは最下層の値**"
+               "（例: トイプー／TA／TA10B → `TA10B`、梱包室／CB1／空 → `CB1`）。"
                "行の追加＝最下段の空行に入力、削除＝左端のチェック→右上のゴミ箱。"
                "**編集したら「💾 保存」を押してください**（保存前でもこの画面のプルダウンには反映されます）。")
     if st.session_state.get("recv_master_seeded"):
-        st.info("初期値をセットしました（資材ナンバーは確定19種、ロケーションはNEの現状値から採取）。"
+        st.info("初期値をセットしました（資材ナンバー19種・ロケーション一覧）。"
                 "内容を確認して「💾 保存」でDriveに確定してください。")
-    mcol, lcol = st.columns(2)
+    mcol, lcol = st.columns([1, 3])
     mat_edit = mcol.data_editor(
         pd.DataFrame({"資材ナンバー": material_opts}), key="recv_mat_editor",
         num_rows="dynamic", hide_index=True, use_container_width=True,
         column_config={"資材ナンバー": st.column_config.TextColumn("資材ナンバー", required=True)})
     loc_edit = lcol.data_editor(
-        pd.DataFrame({"ロケーション": location_opts}), key="recv_loc_editor",
-        num_rows="dynamic", hide_index=True, use_container_width=True,
-        column_config={"ロケーション": st.column_config.TextColumn("ロケーション", required=True)})
+        recv_master.locations_to_df(loc_rows), key="recv_loc_editor",
+        num_rows="dynamic", hide_index=True, use_container_width=True, height=320,
+        column_config={
+            "第一階層": st.column_config.TextColumn("第一階層（エリア）", required=True),
+            "第二階層": st.column_config.TextColumn("第二階層（棚・列）", required=True),
+            "第三階層": st.column_config.TextColumn("第三階層（段・空欄可）"),
+        })
     _new_mats = recv_master._norm_list(mat_edit["資材ナンバー"].tolist())
-    _new_locs = recv_master._norm_list(loc_edit["ロケーション"].tolist())
+    _new_locs = recv_master.norm_locations(
+        loc_edit[recv_master.LOC_COLUMNS].itertuples(index=False, name=None))
     # 編集内容は保存前でも即プルダウンに反映（この描画内で使う変数を更新）
     st.session_state["recv_master"] = {"materials": _new_mats, "locations": _new_locs}
-    material_opts, location_opts = _new_mats, _new_locs
+    material_opts, loc_rows = _new_mats, _new_locs
     _dirty = (_new_mats != recv_m["materials"] or _new_locs != recv_m["locations"]
               or st.session_state.get("recv_master_seeded"))
     if st.button("💾 保存（Driveに確定）", key="recv_master_save", type="primary",
@@ -232,10 +238,16 @@ with st.expander("🗂 資材ナンバー・ロケーションマスタ（プル
         try:
             recv_master.save(_new_mats, _new_locs, product_folder)
             st.session_state["recv_master_seeded"] = False
-            st.success(f"保存しました（資材ナンバー {len(_new_mats)}種・ロケーション {len(_new_locs)}種）。")
+            st.success(f"保存しました（資材ナンバー {len(_new_mats)}種・"
+                       f"ロケーション {len(_new_locs)}件）。")
             st.rerun()
         except Exception as e:  # noqa: BLE001
             st.error(f"Driveへの保存に失敗しました: {e}")
+
+loc_tree = recv_master.hierarchy(loc_rows)                 # {第一階層: {第二階層: [第三階層…]}}
+loc_flat = recv_master.flat_options(loc_rows)              # [(表示ラベル, コード)]
+location_opts = [code for _label, code in loc_flat]        # 最下層コードの一覧
+_label_of_code = {code: label for label, code in loc_flat}
 
 if not material_opts or not location_opts:
     st.warning("資材ナンバーまたはロケーションのマスタが空です。"
@@ -370,11 +382,28 @@ with tab_one:
         i1.markdown(f"**{info1['商品コード']}**　{info1.get('商品名', '')}")
         i2.markdown(f"現サイズ: **{old_size1 or '（未設定）'}**　／　"
                     f"現ロケーション: **{loc_map.get(code1.lower(), '') or '（未設定）'}**")
-        s1, s2, s3 = st.columns(3)
+
+        # ロケーションは階層で上から順に選ぶ（第三階層が無い棚は第二階層で確定）
+        st.markdown("**📍 ロケーション（上から順に選択）**")
+        h1, h2, h3 = st.columns(3)
+        lv1 = h1.selectbox("第一階層（エリア）", list(loc_tree), index=None,
+                           placeholder="▼ 選択", key="recv1_l1")
+        lv2_opts = list(loc_tree.get(lv1, {})) if lv1 else []
+        lv2 = h2.selectbox("第二階層（棚・列）", lv2_opts, index=None,
+                           placeholder="▼ 選択", key="recv1_l2",
+                           disabled=not lv2_opts)
+        lv3_opts = loc_tree.get(lv1, {}).get(lv2, []) if (lv1 and lv2) else []
+        lv3 = h3.selectbox("第三階層（段）", lv3_opts, index=None,
+                           placeholder="▼ 選択" if lv3_opts else "この棚は第二階層まで",
+                           key="recv1_l3", disabled=not lv3_opts)
+        # 第三階層があるのに未選択のときだけ未確定。無い棚は第二階層で確定。
+        loc1 = lv3 if lv3_opts else (lv2 if lv2 else None)
+        if lv3_opts and not lv3:
+            loc1 = None
+
+        s1, s3 = st.columns(2)
         mat1 = s1.selectbox("📂 資材ナンバー", material_opts, index=None,
                             placeholder="▼ タップして選択", key="recv1_mat")
-        loc1 = s2.selectbox("📍 ロケーション", location_opts, index=None,
-                            placeholder="▼ タップして選択", key="recv1_loc")
         size1 = s3.selectbox("📦 配送サイズ（項目1）", size_opts, index=None,
                              placeholder="▼ タップして選択", key="recv1_size")
         if mat1 and loc1 and size1:
@@ -383,7 +412,7 @@ with tab_one:
             st.success(f"ロケーションコード: **{rp.location_code(mat1, loc1)}** ／ "
                        f"サイズ: **{size1}** → 下の「🧮 チェック」へ")
         else:
-            st.info("▼のプルダウンを3つとも選択してください。")
+            st.info("ロケーション（階層）・資材ナンバー・配送サイズをすべて選択してください。")
 
 # ── 複数商品まとめて（表形式・横スクロール無しで全列表示） ──
 bulk_rows = []
@@ -392,11 +421,30 @@ with tab_bulk:
     st.caption("JAN列にスキャン（Enterで確定）すると商品情報が自動表示されます。"
                "**▼が付いた列**はセルをクリックするとプルダウンが開きます（手入力不可）。")
 
+    # 表のセルでは階層を辿れないため、階層は表の外で絞り込む（同じエリアへの入荷が多いため）
+    f1, f2, f3 = st.columns([1, 1, 2])
+    _ALL = "（すべて）"
+    fl1 = f1.selectbox("絞り込み: 第一階層", [_ALL] + list(loc_tree), key="recv_flt_l1")
+    _f2_opts = list(loc_tree.get(fl1, {})) if fl1 != _ALL else []
+    fl2 = f2.selectbox("絞り込み: 第二階層", [_ALL] + _f2_opts, key="recv_flt_l2",
+                       disabled=not _f2_opts)
+    _filtered = [r for r in loc_rows
+                 if (fl1 == _ALL or r[0] == fl1) and (fl2 == _ALL or r[1] == fl2)]
+    _loc_choices = [recv_master.location_code(r) for r in _filtered] or location_opts
+    f3.caption(f"▼ロケ列の選択肢: **{len(_loc_choices)}件**"
+               f"{'（絞り込み中）' if _loc_choices is not location_opts else '（全件）'}。"
+               "絞り込むと目的の棚を選びやすくなります。")
+
     if "recv_df" not in st.session_state:
         st.session_state["recv_df"] = pd.DataFrame(
             [{c: ("" if c in ("JANコード", "商品コード", "商品名", "現サイズ", "現ロケーション")
                   else None) for c in _FORM_COLUMNS} for _ in range(FORM_ROWS)])
         st.session_state["recv_nonce"] = 0
+
+    # 絞り込みを変えても入力済みの値が消えないよう、選択済みの値は必ず候補に残す
+    _already = [_cell(v) for v in st.session_state["recv_df"]["ロケーション"].tolist()]
+    _loc_opts_for_editor = list(dict.fromkeys(
+        _loc_choices + [v for v in _already if v and v in location_opts]))
 
     _nonce = st.session_state["recv_nonce"]
     # 列名は全列が横スクロール無しで収まるよう短縮（表のヘッダは改行表示ができないため）
@@ -413,9 +461,9 @@ with tab_bulk:
             "資材ナンバー": st.column_config.SelectboxColumn("▼資材", options=material_opts,
                                                         width="small",
                                                         help="プルダウンから選択"),
-            "ロケーション": st.column_config.SelectboxColumn("▼ロケ", options=location_opts,
-                                                       width="small",
-                                                       help="プルダウンから選択"),
+            "ロケーション": st.column_config.SelectboxColumn(
+                "▼ロケ", options=_loc_opts_for_editor, width="small",
+                help="プルダウンから選択（上の絞り込みで候補を減らせます）"),
             "配送サイズ": st.column_config.SelectboxColumn("▼サイズ", options=size_opts,
                                                       width="small",
                                                       help="プルダウンから選択（項目1）"),

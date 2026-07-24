@@ -172,6 +172,44 @@ def test_receiving_master_norm_list():
     assert "MB2" in rm.DEFAULT_MATERIALS and "ST" in rm.DEFAULT_MATERIALS
 
 
+def test_receiving_master_locations():
+    from lib.receiving import master as rm
+    rows = rm.norm_locations([
+        ("トイプー", "TA", "TA10B"),
+        ("梱包室", "CB1", ""),            # 第三階層なし → 第二階層が最下層
+        ("トイプー", "TA", "TA10B"),      # 最下層コードの重複は除去
+        ("", "", ""),                     # 第二階層が無い行は捨てる
+        {"l1": "事務所", "l2": "JT", "l3": ""},
+        "PA1",                            # 旧形式（フラットな文字列）からの移行
+    ])
+    assert rows == [("トイプー", "TA", "TA10B"), ("梱包室", "CB1", ""),
+                    ("事務所", "JT", ""), ("", "PA1", "")]
+    # NEに書くのは最下層の値
+    assert rm.location_code(("トイプー", "TA", "TA10B")) == "TA10B"
+    assert rm.location_code(("梱包室", "CB1", "")) == "CB1"
+    # 階層選択用の入れ子（第三階層が無い棚は空リスト）
+    tree = rm.hierarchy(rows)
+    assert tree["トイプー"]["TA"] == ["TA10B"]
+    assert tree["梱包室"]["CB1"] == []
+    # まとめて入力用のフラット選択肢（ラベルは階層をつなげたもの）
+    flat = rm.flat_options(rows)
+    assert flat[0] == ("トイプー ｜ TA ｜ TA10B", "TA10B")
+    assert flat[1] == ("梱包室 ｜ CB1", "CB1")
+
+
+def test_bundled_locations():
+    """同梱のロケ一覧（ロケ一覧.xlsx由来）が読め、最下層コードが一意であること"""
+    from lib.receiving import master as rm
+    rows = rm.load_bundled_locations()
+    assert len(rows) == 492
+    codes = [rm.location_code(r) for r in rows]
+    assert len(set(codes)) == len(codes)      # 最下層コードは全件ユニーク
+    assert ("トイプー", "TA", "TA10B") in rows  # NE実データ 100A-TA10B と整合
+    assert ("梱包室", "CB1", "") in rows        # 2階層までの棚
+    tree = rm.hierarchy(rows)
+    assert set(tree) == {"トイプー", "シュナ", "ポメ", "梱包室", "事務所", "TeamEC"}
+
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in sorted(globals().items()):
