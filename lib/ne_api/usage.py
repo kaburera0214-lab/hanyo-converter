@@ -77,8 +77,37 @@ def flush():
     data["calls"] = int(data.get("calls", 0)) + p["calls"]
     data["bytes"] = int(data.get("bytes", 0)) + p["bytes"]
     data["updated"] = datetime.datetime.now().isoformat(timespec="seconds")
+    _maybe_alert(data)   # 閾値を初めて超えたらChatworkタスクを作成（月×レベルで1回）
     _write(data)
     st.session_state[_PENDING] = {"calls": 0, "bytes": 0}
+
+
+def _maybe_alert(data):
+    """使用量が閾値を初めて超えたときだけ外部通知（Chatworkタスク）を送る。
+    dataの alerted に到達済みレベル(warn/over)を記録し、月内は同レベルの再送を防ぐ。"""
+    calls = int(data.get("calls", 0))
+    level = _level(calls, FREE_LIMIT, WARN_RATIO)
+    if level == "ok":
+        return
+    already = data.get("alerted", "")
+    if already == "over" or (already == "warn" and level == "warn"):
+        return   # 既に通知済み
+    try:
+        from lib.notify import chatwork
+        if not chatwork.is_configured():
+            return   # 通知先未設定 → 既読にしない（後で設定したら通知できるように）
+        if level == "over":
+            body = (f"[info][title]🔴 NE API 無料枠を超過[/title]"
+                    f"今月のNE API呼び出しが無料枠(1000回)を超えました（{calls}回）。"
+                    f"以降は課金対象です。マスタ自動取得・入荷登録の頻度を確認してください。[/info]")
+        else:
+            body = (f"[info][title]🟡 NE API 無料枠の80%超過[/title]"
+                    f"今月のNE API呼び出しが{calls}/1000回になりました。"
+                    f"残り{FREE_LIMIT - calls}回で課金に入ります。[/info]")
+        if chatwork.create_task(body, limit_days=3):
+            data["alerted"] = level
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _level(calls, limit, warn_ratio):

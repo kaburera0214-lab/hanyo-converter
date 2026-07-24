@@ -319,6 +319,7 @@ with st.expander("📚 NE商品マスタ（全機能共通・実行時に最新�
                     min(d / max(t, 1), 1.0), text=f"NEから取得中… {d:,}/{t:,}件"))
             bar.empty()
             _name = master_sync.save_master_auto(df_auto, product_folder)
+            ne_usage.flush()   # 取得ぶんのAPI回数を即座にカウンタへ反映
             st.success(f"取得しました: **{_name}**（{len(df_auto):,}件）。次回実行から使われます。")
             st.dataframe(df_auto.head(5), use_container_width=True, hide_index=True)
             if not jan_ok:
@@ -846,6 +847,7 @@ if plan_rows and not _plan_stale:
 
         results, failed = runner.execute(tasks, on_step=_on_step)
         bar.empty()
+        ne_usage.flush()   # 更新で使ったAPI回数を即座にカウンタへ反映
 
         # 証跡（プラン・出力CSV・実行結果）をDriveの「価格改定履歴」へ版数管理で保存。
         files = rp.evidence_files(plan_rows, dv_rows, code_info, sku_table)
