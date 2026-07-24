@@ -105,13 +105,22 @@ def find_existing(codes):
             seen.add(s.lower())
             uniq.append(s)
     found = {}
-    for i in range(0, len(uniq), 100):     # NEのsearchは一括取得できる（100件ずつ）
-        chunk = uniq[i:i + 100]
-        result = client.call("api_v1_master_goods/search",
-                             {"goods_id-in": ",".join(chunk),
-                              "fields": "goods_id", "limit": str(len(chunk))})
-        for row in (result.get("data") or []):
-            gid = str(row.get("goods_id", "")).strip()
-            if gid:
-                found[gid.lower()] = gid
+    for code in uniq:
+        # 手動アップロードは大文字小文字を無視して一致するが、APIは厳密一致。
+        # 元の表記・大文字・小文字の順に試し、NEが実際に持つ正確なコードを採用する。
+        for variant in dict.fromkeys([code, code.upper(), code.lower()]):
+            try:
+                result = client.call("api_v1_master_goods/search",
+                                     {"goods_id-eq": variant,
+                                      "fields": "goods_id", "limit": "1"})
+            except client.NEAuthError:
+                raise
+            except Exception:  # noqa: BLE001
+                continue
+            rows = result.get("data") or []
+            if rows:
+                gid = str(rows[0].get("goods_id", "")).strip()
+                if gid:
+                    found[code.lower()] = gid   # 入力コード → NEの正確なコード
+                    break
     return found

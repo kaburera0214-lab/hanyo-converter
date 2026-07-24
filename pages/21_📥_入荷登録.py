@@ -115,19 +115,39 @@ with st.expander("🔐 NE API接続（管理者用）", expanded=False):
         _diag = d1.text_input("商品コード（例: kawa3935）", key="recv_ne_diag_code",
                               label_visibility="collapsed", placeholder="商品コード")
         if d2.button("🔎 NEで探す", key="recv_ne_diag_btn", disabled=not _diag.strip()):
-            try:
-                from lib.ne_api import goods as _neg
-                rows = _neg.search_goods([_diag.strip()],
-                                         fields="goods_id,goods_name")
-                if rows:
-                    st.success(f"NEに存在します → 商品コード「{rows[0].get('goods_id')}」"
-                               f"／{rows[0].get('goods_name', '')}")
-                else:
-                    st.error(f"NEに「{_diag.strip()}」が見つかりません。"
-                             "大文字小文字・表記が商品マスタとNEで一致しているか確認してください。"
-                             "（この状態だと更新は新規登録扱いになり失敗します）")
-            except Exception as e:  # noqa: BLE001
-                st.error(f"検索に失敗しました: {e}")
+            _code = _diag.strip()
+
+            def _ne_search(params):
+                params = {**params, "fields": "goods_id,goods_name"}
+                return ne_client.call("api_v1_master_goods/search", params).get("data") or []
+
+            hit = None
+            for _label, _val in [("入力どおり", _code), ("大文字", _code.upper()),
+                                 ("小文字", _code.lower())]:
+                try:
+                    _rows = _ne_search({"goods_id-eq": _val, "limit": "1"})
+                except Exception as e:  # noqa: BLE001
+                    st.error(f"検索に失敗しました: {e}")
+                    _rows = None
+                    break
+                if _rows:
+                    hit = (_label, _rows[0])
+                    break
+            if hit:
+                st.success(f"NEに存在します（{hit[0]}で一致）→ 商品コード"
+                           f"「**{hit[1].get('goods_id')}**」／{hit[1].get('goods_name', '')}。"
+                           "この表記で自動更新できます（大文字小文字は自動で合わせます）。")
+            elif hit is None:
+                st.warning(f"「{_code}」は完全一致（入力どおり／大文字／小文字）で見つかりません。"
+                           "下のサンプルでNEの商品コードの実際の形式を確認してください。")
+                try:
+                    _samples = _ne_search({"limit": "8"})
+                    if _samples:
+                        st.caption("参考: NEに登録されている商品コードのサンプル（実際の形式）")
+                        st.dataframe(pd.DataFrame(_samples), use_container_width=True,
+                                     hide_index=True)
+                except Exception:  # noqa: BLE001
+                    pass
         st.caption("**フォールバック（手貼り付け）**: コールバックページに表示された uid / state を"
                    "貼り付けてトークンを取得します（uidは短命なのですぐに実行してください）。")
         f1, f2, f3 = st.columns([2, 2, 1])
