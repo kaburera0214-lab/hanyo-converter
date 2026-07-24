@@ -88,6 +88,13 @@ with st.expander("🔐 NE API接続（管理者用）", expanded=False):
         st.error("Secrets に NE_CLIENT_ID / NE_CLIENT_SECRET が未設定です。"
                  "設定するまでNEの自動更新は実行できません。")
     else:
+        # 設定確認: いまアプリが使っている client_id と redirect_uri（本番切替の確認用）
+        _cid = str(st.secrets.get("NE_CLIENT_ID", "")).strip()
+        _cid_mask = (f"{_cid[:4]}…{_cid[-4:]}（{len(_cid)}文字）"
+                     if len(_cid) > 8 else _cid)
+        st.caption(f"現在のNE_CLIENT_ID: **{_cid_mask}** ／ "
+                   f"NE_REDIRECT_URI: `{ne_client.redirect_uri() or '(未設定)'}`。"
+                   "テスト環境の旧IDは `1D78…cdfz`。本番の値に変わっているか確認してください。")
         _tok = ne_client.token_status()
         if _tok:
             st.success(f"認可済み（トークン保存: {_tok.get('saved_at', '不明')}）。"
