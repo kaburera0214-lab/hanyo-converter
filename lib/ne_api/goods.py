@@ -106,21 +106,41 @@ def find_existing(codes):
             uniq.append(s)
     found = {}
     for code in uniq:
-        # 手動アップロードは大文字小文字を無視して一致するが、APIは厳密一致。
-        # 元の表記・大文字・小文字の順に試し、NEが実際に持つ正確なコードを採用する。
-        for variant in dict.fromkeys([code, code.upper(), code.lower()]):
-            try:
-                result = client.call("api_v1_master_goods/search",
-                                     {"goods_id-eq": variant,
-                                      "fields": "goods_id", "limit": "1"})
-            except client.NEAuthError:
-                raise
-            except Exception:  # noqa: BLE001
-                continue
-            rows = result.get("data") or []
-            if rows:
-                gid = str(rows[0].get("goods_id", "")).strip()
-                if gid:
-                    found[code.lower()] = gid   # 入力コード → NEの正確なコード
-                    break
+        gid = _search_one_code(code)
+        if gid:
+            found[code.lower()] = gid          # 入力コード → NEの正確なコード
     return found
+
+
+def _search_one_code(code):
+    """1つの商品コードをNEで探し、NEが実際に持つ正確な商品コードを返す（無ければNone）。
+    完全一致(-eq)で見つからないNE環境があるため、部分一致(-like)でも探し、
+    大文字小文字を無視して同じコードを採用する（NE商品管理UIの前方一致と同じ考え方）。"""
+    # ① 完全一致（入力どおり・大文字・小文字）
+    for variant in dict.fromkeys([code, code.upper(), code.lower()]):
+        try:
+            rows = client.call("api_v1_master_goods/search",
+                               {"goods_id-eq": variant,
+                                "fields": "goods_id", "limit": "1"}).get("data") or []
+        except client.NEAuthError:
+            raise
+        except Exception:  # noqa: BLE001
+            rows = []
+        if rows:
+            gid = str(rows[0].get("goods_id", "")).strip()
+            if gid:
+                return gid
+    # ② 部分一致（-like）で探し、大文字小文字を無視して完全一致する候補を採用
+    try:
+        rows = client.call("api_v1_master_goods/search",
+                           {"goods_id-like": code,
+                            "fields": "goods_id", "limit": "100"}).get("data") or []
+    except client.NEAuthError:
+        raise
+    except Exception:  # noqa: BLE001
+        rows = []
+    for row in rows:
+        gid = str(row.get("goods_id", "")).strip()
+        if gid.lower() == code.strip().lower():
+            return gid
+    return None

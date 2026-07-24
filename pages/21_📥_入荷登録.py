@@ -121,29 +121,52 @@ with st.expander("🔐 NE API接続（管理者用）", expanded=False):
                 params = {**params, "fields": "goods_id,goods_name"}
                 return ne_client.call("api_v1_master_goods/search", params).get("data") or []
 
+            # ① 完全一致（入力どおり／大文字／小文字）
             hit = None
+            _err = False
             for _label, _val in [("入力どおり", _code), ("大文字", _code.upper()),
                                  ("小文字", _code.lower())]:
                 try:
                     _rows = _ne_search({"goods_id-eq": _val, "limit": "1"})
                 except Exception as e:  # noqa: BLE001
                     st.error(f"検索に失敗しました: {e}")
-                    _rows = None
+                    _err = True
                     break
                 if _rows:
                     hit = (_label, _rows[0])
                     break
+            # ② 完全一致でダメなら部分一致（-like）でNEの実際のコードを探す
+            like_rows = None
+            if hit is None and not _err:
+                try:
+                    like_rows = _ne_search({"goods_id-like": _code, "limit": "20"})
+                except Exception as e:  # noqa: BLE001
+                    st.error(f"部分一致検索に失敗しました: {e}")
+                    _err = True
+
             if hit:
-                st.success(f"NEに存在します（{hit[0]}で一致）→ 商品コード"
+                st.success(f"NEに存在します（{hit[0]}の完全一致）→ 商品コード"
                            f"「**{hit[1].get('goods_id')}**」／{hit[1].get('goods_name', '')}。"
-                           "この表記で自動更新できます（大文字小文字は自動で合わせます）。")
-            elif hit is None:
-                st.warning(f"「{_code}」は完全一致（入力どおり／大文字／小文字）で見つかりません。"
-                           "下のサンプルでNEの商品コードの実際の形式を確認してください。")
+                           "この表記で自動更新できます。")
+            elif like_rows:
+                _exact = [r for r in like_rows
+                          if str(r.get("goods_id", "")).strip().lower() == _code.lower()]
+                if _exact:
+                    st.success(f"部分一致で見つかりました → NEでの正確な商品コードは"
+                               f"「**{_exact[0].get('goods_id')}**」。"
+                               "更新時はこの表記を自動で使うので、そのまま実行できます。")
+                else:
+                    st.warning(f"「{_code}」に部分一致する商品コードはありますが、"
+                               "完全一致はありません。下の一覧で実際のコードを確認してください。")
+                st.caption("部分一致した商品コード（NEの実際の表記）:")
+                st.dataframe(pd.DataFrame(like_rows), use_container_width=True, hide_index=True)
+            elif not _err:
+                st.error(f"「{_code}」はNEのAPIで見つかりません（完全一致・部分一致とも）。"
+                         "接続先のNEアカウントが商品管理画面と同じか確認してください。"
+                         "下はNEのサンプルです。")
                 try:
                     _samples = _ne_search({"limit": "8"})
                     if _samples:
-                        st.caption("参考: NEに登録されている商品コードのサンプル（実際の形式）")
                         st.dataframe(pd.DataFrame(_samples), use_container_width=True,
                                      hide_index=True)
                 except Exception:  # noqa: BLE001
