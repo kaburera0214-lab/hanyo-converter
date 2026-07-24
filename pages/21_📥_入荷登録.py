@@ -123,7 +123,9 @@ with st.expander("🔐 NE API接続（管理者用）", expanded=False):
             try:
                 res = ne_client.call("api_v1_master_goods/search",
                                      {"fields": "goods_id", "limit": "1"})
-                st.success(f"接続OK（商品マスタ {res.get('count', '?')}件）")
+                ne_usage.flush()   # この1回ぶんを即カウントへ反映
+                st.success(f"接続OK（商品マスタ {res.get('count', '?')}件）。"
+                           "使用量カウントに+1されます（ホームで確認）。")
             except Exception as e:  # noqa: BLE001
                 st.error(f"接続に失敗しました: {e}")
 
