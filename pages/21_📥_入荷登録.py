@@ -29,7 +29,7 @@ st.caption("JANをスキャン → 資材・ロケーション・配送サイズ
 from lib import master_store
 from lib.ne_api import client as ne_client
 from lib.pricing import calc, export as ex, masters, rakuten_price
-from lib.receiving import master as recv_master, plan as rp, runner
+from lib.receiving import master as recv_master, plan as rp, runner, yahoo_queue as yq
 
 product_folder = master_store.folder_id()
 params = dict(calc.DEFAULT_PARAMS)  # 計算パラメータは既定値固定（現場では変更しない）
@@ -196,6 +196,44 @@ with st.expander("🔐 NE API接続（管理者用）", expanded=False):
                 st.rerun()
             except Exception as e:  # noqa: BLE001
                 st.error(f"トークン取得に失敗しました: {e}")
+
+with st.expander("🟡 Yahoo反映待ちキュー（管理者がまとめてアップ）", expanded=False):
+    st.caption("入荷登録で価格・配送グループが変わった商品が貯まります。"
+               "**下の一括CSVを1回ダウンロード → ストアクリエイターProへアップ → 「アップ済み」**で"
+               "キューを空にします（内容はDrive「Yahoo反映済み」へ自動アーカイブ）。"
+               "YahooのAPI自動反映（審査通過後）が入れば、このキューは不要になります。")
+    _yp = yq.load_prices(product_folder)
+    _yd = yq.load_delivery(product_folder)
+    yc1, yc2 = st.columns(2)
+    with yc1:
+        st.markdown(f"**価格の反映待ち: {len(_yp)}件**")
+        if len(_yp):
+            st.dataframe(_yp, use_container_width=True, hide_index=True, height=180)
+            st.download_button("⬇️ Yahoo一括アップ用（価格 code,price）",
+                               yq.upload_csv_bytes(_yp, "price"), "yahoo_data.csv",
+                               "text/csv", key="yq_dl_price", use_container_width=True)
+            if st.checkbox("価格をYahooにアップ済みにする", key="yq_price_confirm"):
+                if st.button("✅ 価格キューを空にする", key="yq_price_clear"):
+                    n = yq.clear_prices(product_folder)
+                    st.success(f"{n}件をアーカイブしてキューを空にしました。")
+                    st.rerun()
+        else:
+            st.caption("なし")
+    with yc2:
+        st.markdown(f"**配送グループの反映待ち: {len(_yd)}件**")
+        if len(_yd):
+            st.dataframe(_yd, use_container_width=True, hide_index=True, height=180)
+            st.download_button("⬇️ Yahoo一括アップ用（配送 code,グループ番号）",
+                               yq.upload_csv_bytes(_yd, "配送グループ管理番号"),
+                               "yahoo_delivery.csv", "text/csv",
+                               key="yq_dl_dv", use_container_width=True)
+            if st.checkbox("配送グループをYahooにアップ済みにする", key="yq_dv_confirm"):
+                if st.button("✅ 配送キューを空にする", key="yq_dv_clear"):
+                    n = yq.clear_delivery(product_folder)
+                    st.success(f"{n}件をアーカイブしてキューを空にしました。")
+                    st.rerun()
+        else:
+            st.caption("なし")
 
 with st.expander("⚙️ 楽天 配送方法セット管理番号（便種変更の自動修正に必要）", expanded=False):
     st.caption("番号はRMS「店舗設定→配送方法セット」の一覧で確認できます。"
@@ -784,9 +822,25 @@ if plan_rows and not _plan_stale:
         bar.empty()
 
         # 証跡（プラン・出力CSV・実行結果）をDriveの「価格改定履歴」へ版数管理で保存。
-        # Yahooの配送グループ・価格CSVもここに残る＝管理者が後でまとめて反映する運用。
         files = rp.evidence_files(plan_rows, dv_rows, code_info, sku_table)
         files["run_result.csv"] = ex.detail_csv(pd.DataFrame(results))
+
+        # Yahoo反映待ちキューへ追記（管理者が後でまとめて1枚をアップする運用）
+        try:
+            _repriced = [r for r in plan_rows if r.get("新販売価格")]
+            if _repriced:
+                _mall = [{"商品コード": r["商品コード"], "楽天販売価格": r["新販売価格"],
+                          "Yahoo販売価格": r["新販売価格"]} for r in _repriced]
+                _yrows, _ = ex.yahoo_rows(_mall, sku_table)
+                yq.append_prices([{"code": r["code"], "price": r["price"]} for r in _yrows],
+                                 product_folder)
+            if dv_rows:
+                _ydv = [{"code": str(d["商品管理番号"]).lower(),
+                         "配送グループ管理番号": ex.YAHOO_DELIVERY_VALUE.get(d["新便種"], d["新便種"])}
+                        for d in dv_rows]
+                yq.append_delivery(_ydv, product_folder)
+        except Exception:  # noqa: BLE001
+            pass   # キュー追記失敗は更新本体を妨げない（証跡CSVは別途残る）
         run_name, url, err = "", "", ""
         try:
             with st.spinner("Driveに証跡を保存中…"):
@@ -841,19 +895,11 @@ if res:
         if res["url"]:
             st.link_button("📁 証跡フォルダを開く", res["url"])
 
-    # Yahooは当面CSV運用（配送グループのeditItem APIは全項目上書きのため見送り）
-    _yfiles = [(n, b) for n, b in res["files"].items()
-               if n in ("yahoo_delivery_update.csv", "yahoo_data.csv")]
-    if _yfiles:
-        st.info("🟡 Yahooの反映は自動化されていません。下のCSV（Driveにも保存済み）を"
-                "管理者が後でまとめてストアクリエイターProへアップしてください。")
-        cols = st.columns(len(_yfiles))
-        _suffix = "_".join(res["run"].split("_")[:2]) if res["run"] else ""
-        for col, (name, data) in zip(cols, _yfiles):
-            stem, _, ext = name.rpartition(".")
-            col.download_button(name, data,
-                                f"{stem}_{_suffix}.{ext}" if _suffix else name,
-                                "text/csv", key=f"recv_dl_{name}", use_container_width=True)
+    # Yahooは当面CSV運用。個別DLではなく「反映待ちキュー」に貯めて管理者がまとめて反映する。
+    if any(r.get("新販売価格") for r in (st.session_state.get("recv_plan") or [])) \
+            or res.get("n_dv"):
+        st.info("🟡 Yahooの価格・配送は下の管理者用「Yahoo反映待ちキュー」に貯まりました。"
+                "管理者がまとめて1枚のCSVでストアクリエイターProへアップします。")
 
     if st.button("🧹 フォームをクリアして次の入荷へ", key="recv_clear"):
         for k in ("recv_df", "recv_plan", "recv_result", "recv_failed", "recv_agree",
