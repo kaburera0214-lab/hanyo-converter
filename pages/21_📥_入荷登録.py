@@ -693,8 +693,13 @@ if plan_rows and not _plan_stale:
     st.markdown(_plan_table_html(plan_rows), unsafe_allow_html=True)
     _warn_rows = [r for r in plan_rows if str(r.get("警告", "")).strip()]
     if _warn_rows:
+        def _clean_warn(w):   # page21には📡ボタンが無い（自動取得）ので文言を差し替える
+            return str(w).replace(
+                "→ 📡「楽天から現在価格を取得」を押してください",
+                "（楽天の現在価格を自動取得できませんでした。下で価格を入力してください）")
         st.warning("⚠️ 警告があります（確認してください）:\n"
-                   + "\n".join(f"- **{r['商品コード']}**: {r['警告']}" for r in _warn_rows))
+                   + "\n".join(f"- **{r['商品コード']}**: {_clean_warn(r['警告'])}"
+                               for r in _warn_rows))
     with st.expander("🔎 明細（価格・利益率など全項目）", expanded=False):
         plan_df = pd.DataFrame(plan_rows)
         lead = ["商品コード", "商品名", "警告", "区分", "配送設定", "利益チェック"]
@@ -712,6 +717,10 @@ if plan_rows and not _plan_stale:
     c3.metric("配送設定の変更", f"{len(dv_rows)}件")
     c4.metric("利益NG→価格再設定", f"{n_ng}件")
 
+    # サイズアップなのに楽天現在価格が取れず利益チェックができていない行（更新をブロックする）
+    _no_price_rows = [r for r in plan_rows
+                      if r["区分"] == "サイズアップ" and r["利益チェック"] == "-"]
+
     blockers = []
     if dv_rows and not (str(_settings.get("rakuten_group_takuhai", "")).strip()
                         and str(_settings.get("rakuten_group_mail", "")).strip()):
@@ -722,17 +731,41 @@ if plan_rows and not _plan_stale:
         blockers.append("価格再設定がありますが、RMSキー未設定のため楽天価格を自動更新できません。")
     if not ne_client.is_configured():
         blockers.append("NE APIが未設定です（Secrets NE_CLIENT_ID / NE_CLIENT_SECRET）。")
+    if _no_price_rows:
+        blockers.append("サイズアップの利益チェックが未完了です（"
+                        + "、".join(r["商品コード"] for r in _no_price_rows)
+                        + "）。楽天の現在価格が必要です。下で価格を入力して再チェックしてください。")
     for b in blockers:
         st.error("🛑 " + b)
     if price_missing:
         st.warning("楽天のSKU番号が分からず価格を自動更新できない商品: "
                    + "、".join(price_missing)
                    + "（NE売価は更新されます。楽天は手動で修正してください）")
-    _no_price = [r["商品コード"] for r in plan_rows
-                 if r["区分"] == "サイズアップ" and r["利益チェック"] == "-"]
-    if _no_price:
-        st.warning("楽天の現在価格が取得できず**利益チェック未実施**: " + "、".join(_no_price)
-                   + "（NE・配送設定は更新されます。価格は後で確認してください）")
+
+    # 楽天価格を自動取得できなかったサイズアップ品は、現在価格を手入力して利益チェックを通す
+    if _no_price_rows:
+        st.markdown("##### 💴 現在の楽天販売価格を入力（自動取得できなかったサイズアップ品）")
+        st.caption("楽天に未登録か、商品管理番号が自動で特定できない商品です。"
+                   "現在の楽天販売価格を入力して「🔄 入力した価格で再チェック」を押すと、"
+                   "利益チェックが実行され、必要なら価格が再設定されます。")
+        _manual = st.session_state.setdefault("recv_manual_prices", {})
+        with st.form("recv_manual_price_form"):
+            for r in _no_price_rows:
+                st.number_input(
+                    f"{r['商品コード']}（{r.get('商品名', '')}）の現在の楽天販売価格（円）",
+                    min_value=0, step=1,
+                    value=int(_manual.get(r["商品コード"].lower(), 0)),
+                    key=f"recv_mp_{r['商品コード']}")
+            if st.form_submit_button("🔄 入力した価格で再チェック", type="primary"):
+                _cache = st.session_state.setdefault("pricing_rk_prices", {})
+                for r in _no_price_rows:
+                    v = int(st.session_state.get(f"recv_mp_{r['商品コード']}", 0) or 0)
+                    if v > 0:
+                        _manual[r["商品コード"].lower()] = v
+                        _cache[r["商品コード"].lower()] = v
+                st.session_state["recv_plan"] = rp.build_plan(
+                    _input_rows, code_info, cost_table, params, cur_prices=_cache)
+                st.rerun()
 
     agree = st.checkbox("上記の内容で**本番データ（ネクストエンジン・楽天）を更新**することを確認しました",
                         key="recv_agree")
