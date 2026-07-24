@@ -15,18 +15,20 @@ import pandas as pd
 from . import client
 
 # NE APIフィールド名 → マスタの正規（日本語）ヘッダ。列順は問わない（読み手が列名で解決する）。
+# JAN= goods_jan_code（2026-07-24 API仕様マニュアルでユーザー確認）。
 FIELD_MAP = {
     "goods_id": "商品コード",
+    "goods_jan_code": "JANコード",
     "goods_name": "商品名",
     "goods_cost_price": "原価",
     "goods_1_item": "項目1",
     "goods_location": "ロケーションコード",
 }
-# JANのフィールド名候補（先に1件検索して実在するものを採用する）
-JAN_CANDIDATES = ["goods_jan_cd", "goods_jan", "goods_jancd", "jan_cd", "jan_code"]
 CANONICAL_ORDER = ["商品コード", "JANコード", "商品名", "原価", "項目1", "ロケーションコード"]
 
-PAGE_LIMIT = 1000     # NE searchの1回あたり取得件数（安全側）
+# APIは呼び出し回数で課金されるため、1回で多く取得して呼び出し回数を最小化する
+# （10万件: 1万件/回なら約11回、1000件/回だと約101回）。
+PAGE_LIMIT = 10000
 MAX_PAGES = 2000      # 無限ループ防止
 
 
@@ -43,26 +45,8 @@ def available_fields(sample=1):
         return []
 
 
-def detect_jan_field():
-    """JANコードのAPIフィールド名を自動判定する。見つからなければNone。
-    ①fields未指定で返る既定フィールドから 'jan' を含むキーを探す（最も確実）
-    ②候補名を複数件検索して実在（空でない行に出現）を確認する（NEは空値を省くことがある）"""
-    for k in available_fields(3):
-        if "jan" in k.lower():
-            return k
-    for cand in JAN_CANDIDATES:
-        try:
-            rows = client.call("api_v1_master_goods/search",
-                               {"fields": f"goods_id,{cand}", "limit": "200"}).get("data") or []
-        except Exception:  # noqa: BLE001
-            continue      # 無効フィールドはNEがエラー → 次の候補へ
-        if any(cand in r for r in rows):
-            return cand
-    return None
-
-
 def total_count():
-    """NE商品マスタの総件数（進捗バー用）。取れなければ0。"""
+    """NE商品マスタの総件数（進捗バー・終了判定用）。取れなければ0。"""
     try:
         return int(client.call("api_v1_master_goods/count", {}).get("count", 0))
     except Exception:  # noqa: BLE001
@@ -71,15 +55,10 @@ def total_count():
 
 def fetch_master(on_progress=None):
     """NE商品マスタを全件取得し、正規ヘッダのDataFrameを返す。
-    返り値: (df, jan_field or None)。jan_fieldがNoneならJANが取得できていない。
-    ※NE searchの count はそのページの件数を返すため総件数の判定には使えない。
-      1ページの取得件数がPAGE_LIMIT未満になったら最終ページとみなす。"""
-    jan = detect_jan_field()
-    field_map = dict(FIELD_MAP)
-    if jan:
-        field_map[jan] = "JANコード"
-    fields = ",".join(field_map.keys())
-
+    返り値: (df, jan_ok)。jan_okがFalseならJAN列が空（JANスキャンに影響）。
+    ※NE searchの count はそのページの件数を返すため終了判定には使わず、
+      count APIの総件数(total)で offset>=total まで回す（呼び出し回数も最小化）。"""
+    fields = ",".join(FIELD_MAP.keys())
     total = total_count()
     rows, offset = [], 0
     for _ in range(MAX_PAGES):
@@ -91,14 +70,16 @@ def fetch_master(on_progress=None):
         offset += len(data)
         if on_progress:
             on_progress(offset, total or offset)
-        if len(data) < PAGE_LIMIT:   # 最終ページ（取得件数がページ上限未満）
+        if not data or (total and offset >= total):
             break
 
     df = pd.DataFrame(rows)
-    # 正規ヘッダにリネーム（存在する列だけ）。列順・列数は問わない。
-    df = df.rename(columns={k: v for k, v in field_map.items() if k in df.columns})
+    df = df.rename(columns={k: v for k, v in FIELD_MAP.items() if k in df.columns})
     keep = [c for c in CANONICAL_ORDER if c in df.columns]
-    return df[keep] if keep else df, jan
+    df = df[keep] if keep else df
+    jan_ok = ("JANコード" in df.columns
+              and df["JANコード"].astype(str).str.strip().replace("nan", "").ne("").any())
+    return df, jan_ok
 
 
 def save_master_auto(df, folder_id):

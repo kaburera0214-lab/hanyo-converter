@@ -312,19 +312,15 @@ with st.expander("📚 NE商品マスタ（全機能共通・実行時に最新�
         from lib.ne_api import master_sync
         bar = st.progress(0.0, text="NEから取得中…")
         try:
-            df_auto, jan_field = master_sync.fetch_master(
+            df_auto, jan_ok = master_sync.fetch_master(
                 on_progress=lambda d, t: bar.progress(
                     min(d / max(t, 1), 1.0), text=f"NEから取得中… {d:,}/{t:,}件"))
             bar.empty()
             _name = master_sync.save_master_auto(df_auto, product_folder)
             st.success(f"取得しました: **{_name}**（{len(df_auto):,}件）。次回実行から使われます。")
-            st.caption(f"JANフィールド: {jan_field or '（特定できず・JANスキャンに影響）'}")
             st.dataframe(df_auto.head(5), use_container_width=True, hide_index=True)
-            if jan_field is None:
-                st.warning("JANコードのAPIフィールドを特定できませんでした。"
-                           "下のフィールド一覧から、JANに当たる名前を教えてください（候補に追加します）。")
-                st.caption("NEが返す商品フィールド一覧（この中にJANの列名があります）:")
-                st.write(master_sync.available_fields(3))
+            if not jan_ok:
+                st.warning("JANコード列が空でした。フィールド名（goods_jan_code）を確認します。")
             st.session_state.pop("_master_store", None)   # 次回load_masterで読み直す
         except Exception as e:  # noqa: BLE001
             bar.empty()

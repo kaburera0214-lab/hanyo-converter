@@ -64,9 +64,10 @@ def que_status(que_id):
     return status, str(row.get("que_message") or "")
 
 
-def wait_que(que_id, timeout=120, interval=3):
+def wait_que(que_id, timeout=120, interval=5):
     """キュー完了までポーリングする。返り値: (成功:bool, メッセージ:str)。
-    que_status_id: 0=待機 / 1=処理中 / 2=完了 / -1=失敗（理由は que_message）"""
+    que_status_id: 0=待機 / 1=処理中 / 2=完了 / -1=失敗（理由は que_message）
+    ※ポーリングもAPI呼び出し（課金対象）のため間隔はやや広め。"""
     deadline = time.time() + timeout
     last = None
     while time.time() < deadline:
