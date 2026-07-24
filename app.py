@@ -17,3 +17,15 @@ if "uid" in _qp and "state" in _qp:
 
 st.title("パピー業務ツール")
 st.markdown("左のメニューからページを選択してください。")
+
+# NE APIの使用量（月間の呼び出し回数・通信量）。無料枠に近づくと警告。
+# 全機能共通のため、個別ページに依存せずホームで常時表示する。
+try:
+    from lib.ne_api import client as _ne_client, usage as _ne_usage
+    if _ne_client.is_configured():
+        st.divider()
+        st.markdown("#### 🔌 NE API 使用量（今月）")
+        _ne_usage.render()
+        st.caption("NEは月1000回まで無料（超過は課金）。マスタ自動取得は1回で約12回消費します。")
+except Exception:  # noqa: BLE001
+    pass

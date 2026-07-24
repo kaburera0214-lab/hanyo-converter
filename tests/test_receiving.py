@@ -169,6 +169,17 @@ def test_ne_build_csv_rejects_bad_rows():
         pass
 
 
+def test_ne_usage_level():
+    from lib.ne_api import usage
+    assert usage._level(0, 1000, 0.8) == "ok"
+    assert usage._level(799, 1000, 0.8) == "ok"
+    assert usage._level(800, 1000, 0.8) == "warn"    # 80%到達で警告
+    assert usage._level(999, 1000, 0.8) == "warn"
+    assert usage._level(1000, 1000, 0.8) == "over"   # 上限到達で課金
+    assert usage._level(1500, 1000, 0.8) == "over"
+    assert usage._level(500, 0, 0.8) == "ok"          # 上限0（無効）は常にok
+
+
 def test_master_name_parse_and_latest():
     """手動(master_)とAPI自動(master_auto_)の新旧判定は末尾の日付+版で行う（名前降順は誤り）"""
     from lib import master_store as ms

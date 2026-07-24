@@ -146,6 +146,11 @@ def call(endpoint, params=None):
     if params:
         data.update(params)
     res = requests.post(API_BASE + endpoint, data=data, timeout=TIMEOUT)
+    try:                                  # 全NE API呼び出しを横断でカウント（課金監視）
+        from . import usage
+        usage.record(1, len(res.content or b""))
+    except Exception:  # noqa: BLE001
+        pass
     try:
         result = res.json()
     except ValueError:

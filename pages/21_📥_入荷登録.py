@@ -84,6 +84,8 @@ if "pricing_settings" not in st.session_state:
 _settings = st.session_state["pricing_settings"]
 
 with st.expander("🔐 NE API接続（管理者用）", expanded=False):
+    from lib.ne_api import usage as ne_usage
+    ne_usage.render(compact=True)   # 課金監視（回数はホームでも常時表示）
     if not ne_client.is_configured():
         st.error("Secrets に NE_CLIENT_ID / NE_CLIENT_SECRET が未設定です。"
                  "設定するまでNEの自動更新は実行できません。")
