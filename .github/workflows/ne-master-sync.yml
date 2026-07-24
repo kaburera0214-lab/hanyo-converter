@@ -1,0 +1,35 @@
+name: ne-master-sync-weekly
+
+on:
+  schedule:
+    - cron: "0 20 * * 0"   # 毎週日曜20:00 UTC = 月曜05:00 JST
+  workflow_dispatch: {}     # 手動実行も可
+
+concurrency:
+  group: ne-master-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # libの依存のみ（streamlitはシムで置換するため不要）
+      - run: pip install pandas requests google-api-python-client google-auth
+
+      - name: Run NE master sync
+        env:
+          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          NE_CLIENT_ID: ${{ secrets.NE_CLIENT_ID }}
+          NE_CLIENT_SECRET: ${{ secrets.NE_CLIENT_SECRET }}
+          PRODUCT_MASTER_FOLDER_ID: ${{ secrets.PRODUCT_MASTER_FOLDER_ID }}
+          CHATWORK_API_TOKEN: ${{ secrets.CHATWORK_API_TOKEN }}
+        run: python batch/ne_master_sync.py

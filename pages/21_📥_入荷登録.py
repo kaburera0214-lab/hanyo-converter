@@ -95,6 +95,18 @@ with st.expander("🔐 NE API接続（管理者用）", expanded=False):
                              "この通知が届けば設定は完了です（テスト送信）。[/info]")
         st.success("Chatworkにテストタスクを作成しました。") if ok \
             else st.error("送信に失敗しました。トークン/ルームIDを確認してください。")
+
+    with st.expander("📝 今月の使用量に予測値をセット（計測開始前の過去分）", expanded=False):
+        st.caption("使用量カウントは導入後のNE呼び出しから記録されます。導入前に実行した分を、"
+                   "予測値として今月だけ手入力できます（来月からは実測のみ）。")
+        _b1, _b2 = st.columns(2)
+        _bc = _b1.number_input("今月の呼び出し回数（予測）", 0, 100000, 200, 10, key="recv_seed_calls")
+        _bm = _b2.number_input("今月の通信量（予測・MB）", 0.0, 100000.0, 50.0, 1.0, key="recv_seed_mb")
+        if st.button("この予測値を今月にセット", key="recv_seed_btn"):
+            ne_usage.set_baseline(int(_bc), int(_bm * 1024 * 1024))
+            st.success(f"今月を 呼び出し{int(_bc):,}回・{_bm:.0f}MB で初期化しました。"
+                       "以降の実測はこれに加算されます。")
+            st.rerun()
     if not ne_client.is_configured():
         st.error("Secrets に NE_CLIENT_ID / NE_CLIENT_SECRET が未設定です。"
                  "設定するまでNEの自動更新は実行できません。")

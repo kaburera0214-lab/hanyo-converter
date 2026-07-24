@@ -110,6 +110,17 @@ def _maybe_alert(data):
         pass
 
 
+def set_baseline(calls, nbytes):
+    """今月のカウンタを指定値で初期化する（計測開始前の過去分を予測値でセットする用）。
+    以降の実測はこの値に加算され、翌月は自動で0にリセットされる。"""
+    data = {"month": _month(), "calls": int(calls), "bytes": int(nbytes),
+            "updated": datetime.datetime.now().isoformat(timespec="seconds"),
+            "note": "baseline(予測値含む)"}
+    _write(data)
+    st.session_state[_PENDING] = {"calls": 0, "bytes": 0}
+    return data
+
+
 def _level(calls, limit, warn_ratio):
     """使用量レベル（純関数・テスト対象）: over / warn / ok。"""
     if limit and calls >= limit:
