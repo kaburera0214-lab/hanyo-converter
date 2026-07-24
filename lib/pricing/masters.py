@@ -280,3 +280,20 @@ def parent_code(code):
       kei0001-01 → kei0001 ／ gais0020-01-06 → gais0020
     楽天の検索はこの値とコードそのものの2つだけで行う（前方一致はしない）。"""
     return re.sub(r"(?:-\d+)+$", "", str(code))
+
+
+def manage_number_candidates(code):
+    """NE商品コード → 楽天の商品管理番号の候補（優先順・重複なし）。
+    枝番のルールが商品で分かれるため、複数候補を順に楽天へ問い合わせて実在するものを採る:
+      - `parent_code`（末尾-数字を除去。gais0020-01-06→gais0020、wauyuu-v3-1478→wauyuu-v3を保持）
+      - **最初のハイフンより前**（枝番なしが管理番号。kira0001-be→kira0001、atin0002-01-01→atin0002、
+        2026-07-24ユーザー確定）
+      - コード自身（枝番なし単品や、コード=管理番号の店舗パターン）"""
+    key = norm_key(code)
+    base = key.split("-", 1)[0]
+    cands = []
+    for c in (parent_code(key), base, key):
+        c = str(c).strip()
+        if c and c not in cands:
+            cands.append(c)
+    return cands

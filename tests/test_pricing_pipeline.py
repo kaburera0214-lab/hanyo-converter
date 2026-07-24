@@ -264,6 +264,21 @@ def test_parent_code_strips_all_numeric_suffixes():
     assert masters.parent_code("wauyuu-v3-1478") == "wauyuu-v3"  # 数字でない区切りは残す
 
 
+def test_manage_number_candidates():
+    """枝番付きは枝番なしが管理番号（2026-07-24ユーザー確定）。候補を優先順で返す"""
+    # kira0001-be → kira0001（-数字でない枝番も最初のハイフンより前を候補に）
+    assert masters.manage_number_candidates("kira0001-be") == ["kira0001-be", "kira0001"]
+    # atin0002-01-01 → atin0002（parent_codeで既に落ちる。基底も同じなので1候補）
+    assert masters.manage_number_candidates("atin0002-01-01") == ["atin0002", "atin0002-01-01"]
+    # 数字枝番: parent_codeと基底が一致
+    assert masters.manage_number_candidates("kei0001-01") == ["kei0001", "kei0001-01"]
+    # v3を保持する商品はparent_code候補を先に試す（後段でwauyuu/コード自身も候補）
+    assert masters.manage_number_candidates("wauyuu-v3-1478") == \
+        ["wauyuu-v3", "wauyuu", "wauyuu-v3-1478"]
+    # 枝番なしは1候補
+    assert masters.manage_number_candidates("kei0018") == ["kei0018"]
+
+
 def test_match_variants():
     """variantsとNEコードの照合（連携番号一致→SKU番号一致→単一SKU）"""
     from lib.pricing import rakuten_price

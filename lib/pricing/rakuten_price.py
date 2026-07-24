@@ -90,42 +90,44 @@ def fetch_for_codes(codes, sku_table, on_progress=None):
                         "楽天価格は取得できません。")
         return info, errors, warnings
 
-    # 親（商品管理番号）ごとに対象コードをまとめる
-    groups = {}
-    for code in codes:
-        key = masters.norm_key(code).lower()
-        hit = sku_table.get(key)
-        parent = (hit[0] if hit else masters.parent_code(key)).lower()
-        groups.setdefault(parent, []).append(key)
+    variants_cache = {}   # 商品管理番号 → variants（同じ親への重複GETを避ける）
 
-    total = len(groups)
-    done = 0
-    for parent, member_codes in groups.items():
-        try:
-            found = match_variants(member_codes, parent, _get_variants(parent))
-        except rms_api.RMSAuthError as e:
-            warnings.append(str(e))
-            break  # 認証切れは以降も失敗するので打ち切り
-        except rms_api.RMSError:
-            found = {}
-        except Exception as e:  # noqa: BLE001
-            errors[parent] = f"取得失敗: {e}"
-            found = {}
-        info.update(found)
-        # 見つからなかったコードは、コード自身を商品管理番号として再試行
-        for code in member_codes:
-            if code in info or code == parent:
-                continue
+    def _variants(mn):
+        if mn not in variants_cache:
+            variants_cache[mn] = _get_variants(mn)
+        return variants_cache[mn]
+
+    total = len(codes)
+    for done, code in enumerate(codes, start=1):
+        key = masters.norm_key(code).lower()
+        # 候補の商品管理番号: 保存済みSKU表 → 枝番なし系の候補（masters）の順に、実在するものを採る
+        cands = []
+        hit = sku_table.get(key)
+        if hit and hit[0]:
+            cands.append(masters.norm_key(hit[0]).lower())
+        for c in masters.manage_number_candidates(key):
+            c = c.lower()
+            if c not in cands:
+                cands.append(c)
+        found_this = False
+        for mn in cands:
             try:
-                info.update(match_variants([code], code, _get_variants(code)))
+                got = match_variants([key], mn, _variants(mn))
             except rms_api.RMSAuthError as e:
                 warnings.append(str(e))
-                break
+                if on_progress:
+                    on_progress(total, total)
+                return info, errors, warnings  # 認証切れは以降も失敗するので打ち切り
+            except rms_api.RMSError:
+                continue                        # その管理番号は存在しない → 次の候補へ
             except Exception:  # noqa: BLE001
-                pass
-            if code not in info:
-                errors[code] = "楽天に該当商品が見つかりません（商品管理番号を推定できず）"
-        done += 1
+                continue
+            if got:
+                info.update(got)
+                found_this = True
+                break
+        if not found_this:
+            errors[key] = "楽天に該当商品が見つかりません（商品管理番号を推定できず）"
         if on_progress:
             on_progress(done, total)
     return info, errors, warnings

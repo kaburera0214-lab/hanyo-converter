@@ -732,40 +732,17 @@ if plan_rows and not _plan_stale:
     if not ne_client.is_configured():
         blockers.append("NE APIが未設定です（Secrets NE_CLIENT_ID / NE_CLIENT_SECRET）。")
     if _no_price_rows:
-        blockers.append("サイズアップの利益チェックが未完了です（"
+        blockers.append("サイズアップの利益チェックができませんでした（"
                         + "、".join(r["商品コード"] for r in _no_price_rows)
-                        + "）。楽天の現在価格が必要です。下で価格を入力して再チェックしてください。")
+                        + "）。楽天の現在価格を自動取得できない商品です。"
+                        "**この商品はEC運営層に連絡してください**（楽天の登録・商品管理番号の確認が必要）。"
+                        "他の商品を進める場合は、この行をフォームから外してください。")
     for b in blockers:
         st.error("🛑 " + b)
     if price_missing:
         st.warning("楽天のSKU番号が分からず価格を自動更新できない商品: "
                    + "、".join(price_missing)
-                   + "（NE売価は更新されます。楽天は手動で修正してください）")
-
-    # 楽天価格を自動取得できなかったサイズアップ品は、現在価格を手入力して利益チェックを通す
-    if _no_price_rows:
-        st.markdown("##### 💴 現在の楽天販売価格を入力（自動取得できなかったサイズアップ品）")
-        st.caption("楽天に未登録か、商品管理番号が自動で特定できない商品です。"
-                   "現在の楽天販売価格を入力して「🔄 入力した価格で再チェック」を押すと、"
-                   "利益チェックが実行され、必要なら価格が再設定されます。")
-        _manual = st.session_state.setdefault("recv_manual_prices", {})
-        with st.form("recv_manual_price_form"):
-            for r in _no_price_rows:
-                st.number_input(
-                    f"{r['商品コード']}（{r.get('商品名', '')}）の現在の楽天販売価格（円）",
-                    min_value=0, step=1,
-                    value=int(_manual.get(r["商品コード"].lower(), 0)),
-                    key=f"recv_mp_{r['商品コード']}")
-            if st.form_submit_button("🔄 入力した価格で再チェック", type="primary"):
-                _cache = st.session_state.setdefault("pricing_rk_prices", {})
-                for r in _no_price_rows:
-                    v = int(st.session_state.get(f"recv_mp_{r['商品コード']}", 0) or 0)
-                    if v > 0:
-                        _manual[r["商品コード"].lower()] = v
-                        _cache[r["商品コード"].lower()] = v
-                st.session_state["recv_plan"] = rp.build_plan(
-                    _input_rows, code_info, cost_table, params, cur_prices=_cache)
-                st.rerun()
+                   + "（EC運営層へ連絡してください）")
 
     agree = st.checkbox("上記の内容で**本番データ（ネクストエンジン・楽天）を更新**することを確認しました",
                         key="recv_agree")
