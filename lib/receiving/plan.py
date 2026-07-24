@@ -49,6 +49,25 @@ def _empty(size):
     return "" if s == "nan" else s
 
 
+def default_size(material, size_opts):
+    """資材ナンバー → デフォルトの配送サイズ（プルダウン初期値・2026-07-24ユーザー確定）。
+      60A→60 / 80B→80 …（先頭の数字部分） ／ MB系→nekop ／ ND・ST→None（セットなし）
+    size_opts に無いサイズは None（安全側）。"""
+    import re
+    m = str(material or "").strip()
+    if not m:
+        return None
+    up = m.upper()
+    if up.startswith("MB"):
+        return "nekop" if "nekop" in size_opts else None
+    if up in ("ND", "ST"):
+        return None
+    mo = re.match(r"(\d+)", m)
+    if mo and mo.group(1) in size_opts:
+        return mo.group(1)
+    return None
+
+
 def build_plan(rows, code_info, cost_table, params, cur_prices=None):
     """
     入力行 → 実行プラン行のリスト。

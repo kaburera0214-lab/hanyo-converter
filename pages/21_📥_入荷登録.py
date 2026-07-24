@@ -519,7 +519,13 @@ with tab_one:
         s1, s3 = st.columns(2)
         mat1 = s1.selectbox("📂 資材ナンバー", material_opts, index=None,
                             placeholder="▼ タップして選択", key="recv1_mat")
-        size1 = s3.selectbox("📦 配送サイズ（項目1）", size_opts, index=None,
+        # 資材ナンバーが変わったら配送サイズを自動セット（60A→60・MB系→nekop・ND/STはセットなし）
+        if st.session_state.get("recv1_mat_prev") != mat1:
+            st.session_state["recv1_mat_prev"] = mat1
+            _ds1 = rp.default_size(mat1, size_opts) if mat1 else None
+            if _ds1:
+                st.session_state["recv1_size"] = _ds1
+        size1 = s3.selectbox("📦 配送サイズ（項目1・自動セット／変更可）", size_opts, index=None,
                              placeholder="▼ タップして選択", key="recv1_size")
         if mat1 and loc1 and size1:
             single_rows = [{"商品コード": code1, "資材ナンバー": mat1,
@@ -601,6 +607,13 @@ with tab_bulk:
         elif (not jan or not code) and cur_code:   # JANを消した/変えた → 補完をクリア
             edited.loc[i, ["商品コード", "商品名", "現サイズ", "現ロケーション"]] = ("", "", "", "")
             _changed = True
+        # 資材ナンバー→配送サイズを自動セット（配送サイズが空のときだけ・60A→60/MB系→nekop）
+        _mat = _cell(edited.at[i, "資材ナンバー"])
+        if _mat and not _cell(edited.at[i, "配送サイズ"]):
+            _ds = rp.default_size(_mat, size_opts)
+            if _ds:
+                edited.at[i, "配送サイズ"] = _ds
+                _changed = True
     st.session_state["recv_df"] = edited
     if _changed:
         st.session_state["recv_nonce"] = _nonce + 1

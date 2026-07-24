@@ -129,6 +129,21 @@ def test_build_plan():
     assert "slvb0144,802,480" in files["ne_price_update.csv"].decode("cp932")  # NE売価=税抜
 
 
+def test_default_size():
+    opts = ["nekop", "60", "80", "100", "120", "140", "160"]
+    assert rp.default_size("60A", opts) == "60"
+    assert rp.default_size("80B", opts) == "80"
+    assert rp.default_size("100A", opts) == "100"
+    assert rp.default_size("160B", opts) == "160"
+    assert rp.default_size("MB2", opts) == "nekop"
+    assert rp.default_size("MB5", opts) == "nekop"
+    assert rp.default_size("ND", opts) is None      # セットなし
+    assert rp.default_size("ST", opts) is None      # セットなし
+    assert rp.default_size("", opts) is None
+    assert rp.default_size(None, opts) is None
+    assert rp.default_size("999X", opts) is None     # size_optsに無い数字は安全側でNone
+
+
 def test_ne_build_csv_rejects_bad_rows():
     csv_text = goods.build_csv([{"syohin_code": "abc0001", "location": "100A-TA10B",
                                  "org1": "80"}])
