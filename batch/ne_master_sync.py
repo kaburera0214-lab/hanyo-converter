@@ -25,16 +25,18 @@ sys.path.insert(0, ROOT)
 # ── Streamlit ヘッドレスシム（libがst.secrets/st.session_stateだけ使うのを満たす） ──
 class _Secrets:
     def get(self, key, default=None):
-        return os.environ.get(key, default)
+        # GitHub Actionsは未登録のsecretも空文字でenvにセットするため、空は「未設定」として既定値を使う
+        v = os.environ.get(key)
+        return v if v not in (None, "") else default
 
     def __getitem__(self, key):
         v = os.environ.get(key)
-        if v is None:
+        if not v:
             raise KeyError(key)
         return v
 
     def __contains__(self, key):
-        return key in os.environ
+        return bool(os.environ.get(key))
 
 
 class _NoOp:

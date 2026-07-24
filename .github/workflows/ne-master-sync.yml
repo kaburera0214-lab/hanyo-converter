@@ -30,6 +30,6 @@ jobs:
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           NE_CLIENT_ID: ${{ secrets.NE_CLIENT_ID }}
           NE_CLIENT_SECRET: ${{ secrets.NE_CLIENT_SECRET }}
-          PRODUCT_MASTER_FOLDER_ID: ${{ secrets.PRODUCT_MASTER_FOLDER_ID }}
+          # PRODUCT_MASTER_FOLDER_ID はコード既定値を使うため未設定でよい（設定するなら secrets へ）
           CHATWORK_API_TOKEN: ${{ secrets.CHATWORK_API_TOKEN }}
         run: python batch/ne_master_sync.py
