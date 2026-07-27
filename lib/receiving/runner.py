@@ -26,6 +26,7 @@ STEP_NE_MAIN = "① NEロケーション・項目1"
 STEP_NE_PRICE = "② NE売価（価格再設定）"
 STEP_RAKUTEN_DELIVERY = "③ 楽天 配送方法セット"
 STEP_RAKUTEN_PRICE = "④ 楽天 販売価格"
+STEP_YAHOO_PRICE = "⑤ Yahoo 販売価格"
 
 
 def _ne_batch(step, rows, results, failed, key, on_step):
@@ -139,7 +140,43 @@ def execute(tasks, on_step=None):
         fn=lambda p: rakuten_price.set_price(p["商品管理番号"], p["sku_prices"]),
         describe=lambda p: f"{p['商品管理番号']}（{'、'.join(p['対象コード'])}）")
 
+    _yahoo_prices(tasks.get("yahoo_price") or {}, results, failed, on_step)
+
     return results, failed
+
+
+def _yahoo_prices(price_by_code, results, failed, on_step):
+    """Yahoo価格を updateItems で更新し、reservePublish で店頭反映する（設定済みのときのみ）。
+    price_by_code: {Yahoo商品コード(親): 価格}。未設定ならページ側でCSVキューにフォールバック。"""
+    if not price_by_code:
+        return
+    from lib.yahoo_api import client as yclient, items as yitems
+    target = f"{len(price_by_code)}件"
+    if on_step:
+        on_step(f"{STEP_YAHOO_PRICE} を更新中…")
+    try:
+        ok, errs = yitems.update_prices(price_by_code)
+        if errs:
+            results.append({"ステップ": STEP_YAHOO_PRICE, "対象": target, "状態": "失敗",
+                            "メッセージ": "／".join(errs[:5])})
+            failed["yahoo_price"] = price_by_code
+            return
+        perr = yitems.reserve_publish()   # 更新は自動反映されないので反映予約を1回
+        if perr:
+            results.append({"ステップ": STEP_YAHOO_PRICE, "対象": target, "状態": "失敗",
+                            "メッセージ": "更新OKだが反映予約に失敗: " + "／".join(perr[:5])})
+            failed["yahoo_price"] = price_by_code
+        else:
+            results.append({"ステップ": STEP_YAHOO_PRICE, "対象": f"{ok}件", "状態": "成功",
+                            "メッセージ": "更新＋反映予約 完了"})
+    except yclient.YahooAuthError as e:
+        results.append({"ステップ": STEP_YAHOO_PRICE, "対象": target, "状態": "失敗",
+                        "メッセージ": str(e)})
+        failed["yahoo_price"] = price_by_code
+    except Exception as e:  # noqa: BLE001
+        results.append({"ステップ": STEP_YAHOO_PRICE, "対象": target, "状態": "失敗",
+                        "メッセージ": str(e)})
+        failed["yahoo_price"] = price_by_code
 
 
 def has_auth_error(results):

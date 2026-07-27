@@ -5,7 +5,7 @@ st.set_page_config(page_title="パピー業務ツール", layout="wide")
 # ネクストエンジンAPIの認可コールバック受け口（redirect_uri=このアプリのルートURL）。
 # NEで承認すると ?uid=..&state=.. が付いて戻ってくるので、その場でトークンに交換する。
 _qp = st.query_params
-if "uid" in _qp and "state" in _qp:
+if "uid" in _qp and "state" in _qp:          # ネクストエンジンの認可コールバック
     from lib.ne_api import client as ne_client
     try:
         ne_client.exchange(_qp["uid"], _qp["state"])
@@ -13,6 +13,15 @@ if "uid" in _qp and "state" in _qp:
                    "左のメニューから「📥 入荷登録」に戻ってください。")
     except Exception as e:  # noqa: BLE001
         st.error(f"ネクストエンジンAPIの認可に失敗しました: {e}")
+    st.query_params.clear()
+elif "code" in _qp:                          # Yahoo（YConnect）の認可コールバック
+    from lib.yahoo_api import client as yahoo_client
+    try:
+        yahoo_client.exchange_code(_qp["code"])
+        st.success("✅ Yahoo APIの認可が完了しました（トークンをDriveに保存）。"
+                   "「📥 入荷登録」に戻ってください。")
+    except Exception as e:  # noqa: BLE001
+        st.error(f"Yahoo APIの認可に失敗しました: {e}")
     st.query_params.clear()
 
 st.title("パピー業務ツール")

@@ -30,6 +30,7 @@ from lib import master_store
 from lib.ne_api import client as ne_client
 from lib.pricing import calc, export as ex, masters, rakuten_price
 from lib.receiving import master as recv_master, plan as rp, runner, yahoo_queue as yq
+from lib.yahoo_api import client as yahoo_client
 
 product_folder = master_store.folder_id()
 params = dict(calc.DEFAULT_PARAMS)  # 計算パラメータは既定値固定（現場では変更しない）
@@ -221,6 +222,39 @@ with st.expander("🔐 NE API接続（管理者用）", expanded=False):
                 st.rerun()
             except Exception as e:  # noqa: BLE001
                 st.error(f"トークン取得に失敗しました: {e}")
+
+with st.expander("🔐 Yahoo API接続（管理者用）", expanded=False):
+    if not yahoo_client.is_configured():
+        st.info("Secrets に YAHOO_CLIENT_ID / YAHOO_CLIENT_SECRET / YAHOO_SELLER_ID / "
+                "YAHOO_REDIRECT_URI を設定すると、Yahooの価格も自動更新（updateItems＋反映予約）"
+                "できます。未設定の間は価格は下の『Yahoo反映待ちキュー』でCSV運用します。")
+    else:
+        _yt = yahoo_client.token_status()
+        _use_test = yahoo_client._secret("YAHOO_USE_TEST").lower() in ("true", "1", "yes")
+        if _use_test:
+            st.warning("現在【テスト環境】に接続する設定です（YAHOO_USE_TEST=true）。"
+                       "本番反映するには YAHOO_USE_TEST を外してください。")
+        if _yt:
+            st.success(f"認可済み（トークン保存: {_yt.get('saved_at', '不明')}）。"
+                       "アクセストークンは自動更新されます。")
+        else:
+            st.warning("未認可です。店舗オーナーのYahoo IDでログインして認可してください。")
+        yc1, yc2 = st.columns(2)
+        try:
+            yc1.link_button("🔑 Yahooにログインして認可する", yahoo_client.authorize_url(),
+                            use_container_width=True)
+        except yahoo_client.YahooNotConfigured:
+            yc1.caption("YAHOO_REDIRECT_URI が未設定です。")
+        if yc2.button("📶 接続テスト", use_container_width=True, key="recv_yahoo_test"):
+            try:
+                from lib.yahoo_api import items as _yi
+                st.success(f"接続OK（アクセストークン {_yi.test_connection()}）。"
+                           f"seller_id={yahoo_client.seller_id() or '未設定'} / "
+                           f"{'テスト環境' if _use_test else '本番環境'}")
+            except Exception as e:  # noqa: BLE001
+                st.error(f"接続に失敗しました: {e}")
+        st.caption("公開鍵は店舗（ストアクリエイターPro）に登録済みなら共用で問題なく、"
+                   "リフレッシュトークンは28日有効です。切れたら再認可してください。")
 
 with st.expander("🟡 Yahoo反映待ちキュー（管理者がまとめてアップ）", expanded=False):
     st.caption("入荷登録で価格・配送グループが変わった商品が貯まります。"
@@ -852,15 +886,26 @@ if plan_rows and not _plan_stale:
         group_of = {"宅配便": str(_settings.get("rakuten_group_takuhai", "")).strip(),
                     "メール便": str(_settings.get("rakuten_group_mail", "")).strip()}
         main_rows, ne_price_rows = rp.ne_rows_from_plan(plan_rows)
+        # Yahoo価格: API設定済みならAPIで自動更新（親コード単位）、未設定なら後段でCSVキューへ
+        _repriced_rows = [r for r in plan_rows if r.get("新販売価格")]
+        _yahoo_api_on = yahoo_client.is_configured()
+        yahoo_price_map = {}
+        if _repriced_rows and _yahoo_api_on:
+            _ymall = [{"商品コード": r["商品コード"], "楽天販売価格": r["新販売価格"],
+                       "Yahoo販売価格": r["新販売価格"]} for r in _repriced_rows]
+            _yr, _ = ex.yahoo_rows(_ymall, sku_table)
+            yahoo_price_map = {r["code"]: int(r["price"]) for r in _yr}
         tasks = {
             "ne_main": main_rows,
             "ne_price": ne_price_rows,
             "rakuten_delivery": [{**d, "group_id": group_of.get(d["新便種"], "")}
                                  for d in dv_rows],
             "rakuten_price": price_list,
+            "yahoo_price": yahoo_price_map,
         }
         total_units = ((1 if tasks["ne_main"] else 0) + (1 if tasks["ne_price"] else 0)
-                       + len(tasks["rakuten_delivery"]) + len(tasks["rakuten_price"]))
+                       + len(tasks["rakuten_delivery"]) + len(tasks["rakuten_price"])
+                       + (1 if tasks["yahoo_price"] else 0))
         bar = st.progress(0.0, text="更新中…")
         _done = {"n": 0}
 
@@ -876,12 +921,11 @@ if plan_rows and not _plan_stale:
         files = rp.evidence_files(plan_rows, dv_rows, code_info, sku_table)
         files["run_result.csv"] = ex.detail_csv(pd.DataFrame(results))
 
-        # Yahoo反映待ちキューへ追記（管理者が後でまとめて1枚をアップする運用）
+        # Yahoo反映待ちキューへ追記（API未設定のときのフォールバック。配送グループは常にCSV）
         try:
-            _repriced = [r for r in plan_rows if r.get("新販売価格")]
-            if _repriced:
+            if _repriced_rows and not _yahoo_api_on:
                 _mall = [{"商品コード": r["商品コード"], "楽天販売価格": r["新販売価格"],
-                          "Yahoo販売価格": r["新販売価格"]} for r in _repriced]
+                          "Yahoo販売価格": r["新販売価格"]} for r in _repriced_rows]
                 _yrows, _ = ex.yahoo_rows(_mall, sku_table)
                 yq.append_prices([{"code": r["code"], "price": r["price"]} for r in _yrows],
                                  product_folder)
@@ -946,11 +990,13 @@ if res:
         if res["url"]:
             st.link_button("📁 証跡フォルダを開く", res["url"])
 
-    # Yahooは当面CSV運用。個別DLではなく「反映待ちキュー」に貯めて管理者がまとめて反映する。
-    if any(r.get("新販売価格") for r in (st.session_state.get("recv_plan") or [])) \
-            or res.get("n_dv"):
-        st.info("🟡 Yahooの価格・配送は下の管理者用「Yahoo反映待ちキュー」に貯まりました。"
-                "管理者がまとめて1枚のCSVでストアクリエイターProへアップします。")
+    # Yahoo: 価格はAPI設定済みなら自動反映（上の結果表に⑤で出る）。未設定/配送はキューへ。
+    _has_price = any(r.get("新販売価格") for r in (st.session_state.get("recv_plan") or []))
+    if _has_price and not yahoo_client.is_configured():
+        st.info("🟡 Yahoo価格は下の「Yahoo反映待ちキュー」に貯まりました（API未設定のためCSV運用）。")
+    if res.get("n_dv"):
+        st.info("🟡 Yahoo配送グループは下の「Yahoo反映待ちキュー」に貯まりました"
+                "（配送グループは安全のためCSV運用です）。")
 
     if st.button("🧹 フォームをクリアして次の入荷へ", key="recv_clear"):
         for k in ("recv_df", "recv_plan", "recv_result", "recv_failed", "recv_agree",
