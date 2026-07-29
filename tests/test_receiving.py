@@ -198,8 +198,14 @@ def test_master_name_parse_and_latest():
 def test_price_patch_body():
     from lib.pricing import rakuten_price
     body = rakuten_price.price_patch_body({"8577": 882, "kei0018": 2783})
-    assert body == {"variants": {"8577": {"standardPrice": "882"},
-                                 "kei0018": {"standardPrice": "2783"}}}
+    # 表示価格(referencePrice)=販売価格・当店通常価格(type1)も一緒に更新する
+    assert body == {"variants": {
+        "8577": {"standardPrice": "882",
+                 "referencePrice": {"displayType": "REFERENCE_PRICE", "type": 1,
+                                    "value": "882"}},
+        "kei0018": {"standardPrice": "2783",
+                    "referencePrice": {"displayType": "REFERENCE_PRICE", "type": 1,
+                                       "value": "2783"}}}}
 
 
 def test_split_by_existence():

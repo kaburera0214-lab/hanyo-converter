@@ -155,11 +155,16 @@ def set_shipping_method_group(manage_number, group_id):
 
 
 def price_patch_body(sku_prices):
-    """指定SKUの standardPrice（販売価格）だけを更新するPATCHボディ。
-    ※CSV運用の「表示価格・二重価格文言管理番号」に相当するAPIフィールドは
-      probe_item での実物調査後に追加を判断する（当面は販売価格のみ）。"""
-    return {"variants": {str(sku): {"standardPrice": str(int(price))}
-                         for sku, price in sku_prices.items()}}
+    """指定SKUの価格を更新するPATCHボディ。
+    - standardPrice: 販売価格
+    - referencePrice: 表示価格（二重価格）。**販売価格と同額**、文言は当店通常価格(type=1)で固定。
+      当店は全SKUに二重価格が設定されており、これを外すと更新できないため必ず一緒に送る
+      （2026-07-29ユーザー確定・probe_itemで REFERENCE_PRICE/type:1 を実機確認）。"""
+    return {"variants": {str(sku): {
+        "standardPrice": str(int(price)),
+        "referencePrice": {"displayType": "REFERENCE_PRICE", "type": 1,
+                           "value": str(int(price))},
+    } for sku, price in sku_prices.items()}}
 
 
 def set_price(manage_number, sku_prices):
