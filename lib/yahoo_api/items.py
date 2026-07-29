@@ -41,7 +41,7 @@ def _post(path, data):
         raise client.YahooAuthError(
             f"Yahoo APIの認証に失敗しました（HTTP {res.status_code}）。再認可してください。")
     if res.status_code >= 400:
-        raise client.YahooError(f"Yahoo APIエラー HTTP {res.status_code}: {res.text[:500]}")
+        raise client.YahooError(f"Yahoo APIエラー HTTP {res.status_code}: {res.text[:1500]}")
     return res.text
 
 

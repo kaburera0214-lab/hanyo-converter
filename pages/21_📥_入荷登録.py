@@ -1036,6 +1036,13 @@ if res:
         st.error(f"⚠️ 一部の更新に失敗しました（成功 {n_ok}／失敗 {n_fail}／スキップ {n_skip}）")
     st.dataframe(rdf, use_container_width=True, hide_index=True)
 
+    _fails = [r for r in results if r.get("状態") == "失敗"]
+    if _fails:
+        with st.expander("❌ 失敗の詳細（メッセージ全文）", expanded=True):
+            for r in _fails:
+                st.markdown(f"**{r.get('ステップ')}**（{r.get('対象')}）")
+                st.code(str(r.get("メッセージ", "")))
+
     if runner.has_auth_error(results):
         st.error("🔐 認証切れが発生しています。上の「NE API接続」または"
                  "RMSライセンスキー（Secrets）を確認して再認可・更新後、"
