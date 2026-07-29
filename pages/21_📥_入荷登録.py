@@ -922,13 +922,14 @@ if plan_rows and not _plan_stale:
             except Exception as e:  # noqa: BLE001
                 results = [{"ステップ": "実行", "対象": "-", "状態": "失敗",
                             "メッセージ": f"実行中に想定外のエラー: {e}"}]
-            bar.empty()
             try:
                 ne_usage.flush()
             except Exception:  # noqa: BLE001
                 pass
 
             # 証跡（プラン・出力CSV・実行結果）をDriveの「価格改定履歴」へ保存。
+            # ※どの段で止まるか分かるよう進捗バーの文言を進める（barはここでは消さない）。
+            bar.progress(0.95, text="証跡CSVを生成中…")
             try:
                 files = rp.evidence_files(plan_rows, dv_rows, code_info, sku_table)
                 files["run_result.csv"] = ex.detail_csv(pd.DataFrame(results))
@@ -953,13 +954,15 @@ if plan_rows and not _plan_stale:
                 pass
 
             if files:
+                bar.progress(0.98, text="Driveに証跡を保存中…")
                 try:
-                    with st.spinner("Driveに証跡を保存中…"):
-                        run_name, run_id = masters.save_run_to_drive(
-                            files, "入荷登録", product_folder)
+                    run_name, run_id = masters.save_run_to_drive(
+                        files, "入荷登録", product_folder)
                     url = f"https://drive.google.com/drive/folders/{run_id}"
                 except Exception as e:  # noqa: BLE001
                     err = (err + " / " if err else "") + f"Drive保存失敗: {e}"
+            bar.progress(1.0, text="完了")
+            bar.empty()
         except Exception:  # noqa: BLE001（想定外を必ず捕捉して画面に出す）
             err = (err + " / " if err else "") + "想定外のエラー:\n" + _tb.format_exc()
             if not results:

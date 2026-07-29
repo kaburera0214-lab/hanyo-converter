@@ -151,16 +151,21 @@ def _yahoo_prices(price_by_code, results, failed, on_step):
     if not price_by_code:
         return
     target = f"{len(price_by_code)}件"
-    if on_step:
-        on_step(f"{STEP_YAHOO_PRICE} を更新中…")
     try:
         from lib.yahoo_api import client as yclient, items as yitems
+        if on_step:
+            on_step("⑤ Yahoo: トークン確認中…")
+        yclient.access_token()            # トークン取得/更新の段でのハングを切り分ける
+        if on_step:
+            on_step("⑤ Yahoo: 価格更新API(updateItems)を呼び出し中…")
         ok, errs = yitems.update_prices(price_by_code)
         if errs:
             results.append({"ステップ": STEP_YAHOO_PRICE, "対象": target, "状態": "失敗",
                             "メッセージ": "／".join(errs[:5])})
             failed["yahoo_price"] = price_by_code
             return
+        if on_step:
+            on_step("⑤ Yahoo: 反映予約API(reservePublish)を呼び出し中…")
         perr = yitems.reserve_publish()   # 更新は自動反映されないので反映予約を1回
         if perr:
             results.append({"ステップ": STEP_YAHOO_PRICE, "対象": target, "状態": "失敗",
