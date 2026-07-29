@@ -917,24 +917,30 @@ if plan_rows and not _plan_stale:
                 _done["n"] += 1
                 bar.progress(min(_done["n"] / max(total_units, 1), 1.0), text=message)
 
+            print(f"[recv] START yahoo_api_on={_yahoo_api_on} "
+                  f"ne_main={len(tasks['ne_main'])} ne_price={len(tasks['ne_price'])} "
+                  f"rk_price={len(tasks['rakuten_price'])} yahoo={len(tasks['yahoo_price'])}",
+                  flush=True)
             try:
                 results, failed = runner.execute(tasks, on_step=_on_step)
             except Exception as e:  # noqa: BLE001
                 results = [{"ステップ": "実行", "対象": "-", "状態": "失敗",
                             "メッセージ": f"実行中に想定外のエラー: {e}"}]
+            print(f"[recv] runner.execute DONE results={len(results)}", flush=True)
             try:
                 ne_usage.flush()
             except Exception:  # noqa: BLE001
                 pass
 
             # 証跡（プラン・出力CSV・実行結果）をDriveの「価格改定履歴」へ保存。
-            # ※どの段で止まるか分かるよう進捗バーの文言を進める（barはここでは消さない）。
             bar.progress(0.95, text="証跡CSVを生成中…")
+            print("[recv] evidence_files START", flush=True)
             try:
                 files = rp.evidence_files(plan_rows, dv_rows, code_info, sku_table)
                 files["run_result.csv"] = ex.detail_csv(pd.DataFrame(results))
             except Exception as e:  # noqa: BLE001
                 err = f"証跡CSVの生成に失敗: {e}"
+            print(f"[recv] evidence_files DONE files={len(files)}", flush=True)
 
             # Yahoo反映待ちキューへ追記（API未設定時のフォールバック。配送グループは常にCSV）
             try:
@@ -955,20 +961,24 @@ if plan_rows and not _plan_stale:
 
             if files:
                 bar.progress(0.98, text="Driveに証跡を保存中…")
+                print("[recv] save_run_to_drive START", flush=True)
                 try:
                     run_name, run_id = masters.save_run_to_drive(
                         files, "入荷登録", product_folder)
                     url = f"https://drive.google.com/drive/folders/{run_id}"
                 except Exception as e:  # noqa: BLE001
                     err = (err + " / " if err else "") + f"Drive保存失敗: {e}"
+                print(f"[recv] save_run_to_drive DONE run={run_name} err={err[:80]}", flush=True)
             bar.progress(1.0, text="完了")
             bar.empty()
         except Exception:  # noqa: BLE001（想定外を必ず捕捉して画面に出す）
             err = (err + " / " if err else "") + "想定外のエラー:\n" + _tb.format_exc()
+            print("[recv] EXCEPTION:\n" + _tb.format_exc(), flush=True)
             if not results:
                 results = [{"ステップ": "実行", "対象": "-", "状態": "失敗",
                             "メッセージ": "想定外のエラー（下の詳細を確認）"}]
 
+        print("[recv] recv_result SET, about to rerun", flush=True)
         st.session_state["recv_result"] = {"results": results, "run": run_name,
                                            "url": url, "err": err,
                                            "files": files, "n_dv": len(dv_rows)}
@@ -980,6 +990,7 @@ if plan_rows and not _plan_stale:
 
 res = st.session_state.get("recv_result")
 if res:
+    print("[recv] rendering result section", flush=True)
     results = res["results"]
     rdf = pd.DataFrame(results)
     n_ok = int((rdf["状態"] == "成功").sum()) if len(rdf) else 0
