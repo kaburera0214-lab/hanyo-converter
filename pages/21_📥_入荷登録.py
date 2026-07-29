@@ -913,13 +913,26 @@ if plan_rows and not _plan_stale:
             _done["n"] += 1
             bar.progress(min(_done["n"] / max(total_units, 1), 1.0), text=message)
 
-        results, failed = runner.execute(tasks, on_step=_on_step)
+        # 実行本体（何があっても結果は必ず表示・保存できるよう全体を保護する）
+        try:
+            results, failed = runner.execute(tasks, on_step=_on_step)
+        except Exception as e:  # noqa: BLE001
+            results = [{"ステップ": "実行", "対象": "-", "状態": "失敗",
+                        "メッセージ": f"実行中に想定外のエラー: {e}"}]
+            failed = {}
         bar.empty()
-        ne_usage.flush()   # 更新で使ったAPI回数を即座にカウンタへ反映
+        try:
+            ne_usage.flush()   # 更新で使ったAPI回数を即座にカウンタへ反映
+        except Exception:  # noqa: BLE001
+            pass
 
         # 証跡（プラン・出力CSV・実行結果）をDriveの「価格改定履歴」へ版数管理で保存。
-        files = rp.evidence_files(plan_rows, dv_rows, code_info, sku_table)
-        files["run_result.csv"] = ex.detail_csv(pd.DataFrame(results))
+        files, _ev_err = {}, ""
+        try:
+            files = rp.evidence_files(plan_rows, dv_rows, code_info, sku_table)
+            files["run_result.csv"] = ex.detail_csv(pd.DataFrame(results))
+        except Exception as e:  # noqa: BLE001
+            _ev_err = f"証跡CSVの生成に失敗: {e}"
 
         # Yahoo反映待ちキューへ追記（API未設定のときのフォールバック。配送グループは常にCSV）
         try:
@@ -936,13 +949,15 @@ if plan_rows and not _plan_stale:
                 yq.append_delivery(_ydv, product_folder)
         except Exception:  # noqa: BLE001
             pass   # キュー追記失敗は更新本体を妨げない（証跡CSVは別途残る）
-        run_name, url, err = "", "", ""
-        try:
-            with st.spinner("Driveに証跡を保存中…"):
-                run_name, run_id = masters.save_run_to_drive(files, "入荷登録", product_folder)
-            url = f"https://drive.google.com/drive/folders/{run_id}"
-        except Exception as e:  # noqa: BLE001
-            err = str(e)
+        run_name, url, err = "", "", _ev_err
+        if files:
+            try:
+                with st.spinner("Driveに証跡を保存中…"):
+                    run_name, run_id = masters.save_run_to_drive(
+                        files, "入荷登録", product_folder)
+                url = f"https://drive.google.com/drive/folders/{run_id}"
+            except Exception as e:  # noqa: BLE001
+                err = (err + " / " if err else "") + str(e)
         st.session_state["recv_result"] = {"results": results, "run": run_name,
                                            "url": url, "err": err,
                                            "files": files, "n_dv": len(dv_rows)}

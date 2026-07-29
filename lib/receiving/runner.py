@@ -150,11 +150,11 @@ def _yahoo_prices(price_by_code, results, failed, on_step):
     price_by_code: {Yahoo商品コード(親): 価格}。未設定ならページ側でCSVキューにフォールバック。"""
     if not price_by_code:
         return
-    from lib.yahoo_api import client as yclient, items as yitems
     target = f"{len(price_by_code)}件"
     if on_step:
         on_step(f"{STEP_YAHOO_PRICE} を更新中…")
     try:
+        from lib.yahoo_api import client as yclient, items as yitems
         ok, errs = yitems.update_prices(price_by_code)
         if errs:
             results.append({"ステップ": STEP_YAHOO_PRICE, "対象": target, "状態": "失敗",
@@ -169,11 +169,7 @@ def _yahoo_prices(price_by_code, results, failed, on_step):
         else:
             results.append({"ステップ": STEP_YAHOO_PRICE, "対象": f"{ok}件", "状態": "成功",
                             "メッセージ": "更新＋反映予約 完了"})
-    except yclient.YahooAuthError as e:
-        results.append({"ステップ": STEP_YAHOO_PRICE, "対象": target, "状態": "失敗",
-                        "メッセージ": str(e)})
-        failed["yahoo_price"] = price_by_code
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001（認可切れ等もここで拾う。has_auth_errorが文言で判定）
         results.append({"ステップ": STEP_YAHOO_PRICE, "対象": target, "状態": "失敗",
                         "メッセージ": str(e)})
         failed["yahoo_price"] = price_by_code
