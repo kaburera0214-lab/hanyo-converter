@@ -73,7 +73,8 @@ def update_prices(price_by_code):
     ok, errors = 0, []
     for i in range(0, len(items), MAX_ITEMS):
         chunk = items[i:i + MAX_ITEMS]
-        data = {"appid": client._secret("YAHOO_CLIENT_ID"), "seller_id": seller}
+        # 認証は Authorization: Bearer のみ（公式仕様）。appid は本文に入れない。
+        data = {"seller_id": seller}
         for n, (code, price) in enumerate(chunk, start=1):
             # 1商品 = "item_code=xxx&price=yyy"。requestsが1回percent-encodeするので
             # ここでは生の文字列を渡す（自前でquoteすると二重エンコードになり壊れる）。
@@ -92,9 +93,38 @@ def reserve_publish():
     seller = client.seller_id()
     if not seller:
         raise client.YahooNotConfigured("Secrets に YAHOO_SELLER_ID が未設定です。")
-    text = _post("/reservePublish",
-                 {"appid": client._secret("YAHOO_CLIENT_ID"), "seller_id": seller})
+    # 認証は Authorization: Bearer のみ（公式仕様）。appid は本文に入れない。
+    text = _post("/reservePublish", {"seller_id": seller})
     return _errors_from_xml(text)
+
+
+def get_stock(codes):
+    """在庫参照API(getStock)で商品を“読むだけ”実行する（切り分け用・書き込みなし）。
+    codes: 商品コードのlist。個別商品コードは "商品コード:個別コード"（コロン）で渡す。
+    返り値: (raw_xml, results, errors)。
+      raw_xml … Yahooからの応答本文そのまま（画面表示・原因特定用）
+      results … [{item_code, sub_code, quantity, is_published, ...}]（読めた分）
+      errors  … XML内のError/Messageやパース不能時の文言list
+    getStockはBearer認証のみ・seller_id＋item_code（カンマで最大1000件）。"""
+    seller = client.seller_id()
+    if not seller:
+        raise client.YahooNotConfigured("Secrets に YAHOO_SELLER_ID（ストアアカウント）が未設定です。")
+    item_code = ",".join(str(c).strip() for c in codes if str(c).strip())
+    if not item_code:
+        raise client.YahooError("参照する商品コードが空です。")
+    text = _post("/getStock", {"seller_id": seller, "item_code": item_code})
+    results, errors = [], _errors_from_xml(text)
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError:
+        return text, results, errors or [f"応答XMLを解釈できません: {text[:200]}"]
+    for res in root.iter():
+        if _strip_ns(res.tag) != "Result":
+            continue
+        row = {_strip_ns(ch.tag): (ch.text or "").strip() for ch in res}
+        if row:
+            results.append(row)
+    return text, results, errors
 
 
 def test_connection():

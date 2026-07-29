@@ -273,6 +273,31 @@ with st.expander("🔐 Yahoo API接続（管理者用）", expanded=False):
                            f"{'テスト環境' if _use_test else '本番環境'}")
             except Exception as e:  # noqa: BLE001
                 st.error(f"接続に失敗しました: {e}")
+        # 切り分け用: 在庫参照API(getStock)で1商品を“読むだけ”実行し、Yahooの生応答を見る。
+        # updateItemsの400が「認証/パラメータ」か「商品コード不在」かを分離できる。
+        st.markdown("**🔎 在庫参照で商品確認（切り分け用・書き込みなし）**")
+        _sc1, _sc2 = st.columns([3, 1])
+        _stock_code = _sc1.text_input(
+            "商品コード（個別コードは 商品コード:個別コード）", key="recv_yahoo_stock_code",
+            placeholder="例) kira0008 または kira0008:01", label_visibility="collapsed")
+        if _sc2.button("在庫参照", use_container_width=True, key="recv_yahoo_stock_btn"):
+            if not _stock_code.strip():
+                st.warning("商品コードを入力してください。")
+            else:
+                try:
+                    from lib.yahoo_api import items as _yi
+                    _raw, _rows, _errs = _yi.get_stock([_stock_code.strip()])
+                    if _rows:
+                        st.success(f"{len(_rows)}件ヒット（この商品コードは本番ストアに実在します）。")
+                        st.dataframe(_rows, use_container_width=True, hide_index=True)
+                    if _errs:
+                        st.error("Yahooからのエラー: " + " / ".join(_errs[:5]))
+                    if not _rows and not _errs:
+                        st.warning("ヒット0件・エラー無し。商品コードの指定方法を確認してください。")
+                    with st.expander("応答XML（原文）", expanded=not _rows):
+                        st.code(_raw[:3000], language="xml")
+                except Exception as e:  # noqa: BLE001
+                    st.error(f"在庫参照に失敗しました: {e}")
         st.caption("公開鍵は店舗（ストアクリエイターPro）に登録済みなら共用で問題なく、"
                    "リフレッシュトークンは28日有効です。切れたら再認可してください。")
 
