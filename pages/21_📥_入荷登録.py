@@ -892,7 +892,7 @@ if plan_rows and not _plan_stale:
             main_rows, ne_price_rows = rp.ne_rows_from_plan(plan_rows)
             # Yahoo価格: API設定済みならAPIで自動更新（親コード単位）、未設定なら後段でCSVキューへ
             _repriced_rows = [r for r in plan_rows if r.get("新販売価格")]
-            _yahoo_api_on = yahoo_client.is_configured()
+            _yahoo_api_on = yahoo_client.api_enabled()   # YAHOO_DISABLE=trueで切り分け可
             yahoo_price_map = {}
             if _repriced_rows and _yahoo_api_on:
                 _ymall = [{"商品コード": r["商品コード"], "楽天販売価格": r["新販売価格"],

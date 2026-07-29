@@ -49,6 +49,14 @@ def is_configured():
     return bool(_secret("YAHOO_CLIENT_ID")) and bool(_secret("YAHOO_CLIENT_SECRET"))
 
 
+def api_enabled():
+    """更新時にYahoo APIを使うか。YAHOO_DISABLE=true で一時的に無効化できる（切り分け用）。
+    無効時はYahoo価格の自動反映を行わず、CSVキューにフォールバックする。"""
+    if str(_secret("YAHOO_DISABLE")).lower() in ("true", "1", "yes"):
+        return False
+    return is_configured()
+
+
 def seller_id():
     return _secret("YAHOO_SELLER_ID")
 

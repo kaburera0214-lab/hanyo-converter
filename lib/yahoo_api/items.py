@@ -13,7 +13,6 @@ Yahoo!ショッピング 商品一括更新API（updateItems）＋ 全反映予�
 テスト環境は BASE を test.circus に切り替える（Secrets YAHOO_USE_TEST=true）。
 レスポンスはXML（ShoppingWebService）。成否とエラーメッセージを取り出す。
 """
-import urllib.parse
 import xml.etree.ElementTree as ET
 
 import requests
@@ -76,8 +75,9 @@ def update_prices(price_by_code):
         chunk = items[i:i + MAX_ITEMS]
         data = {"appid": client._secret("YAHOO_CLIENT_ID"), "seller_id": seller}
         for n, (code, price) in enumerate(chunk, start=1):
-            # 1商品 = "item_code=xxx&price=yyy" をpercent-encodeして itemN に入れる
-            data[f"item{n}"] = urllib.parse.quote(f"item_code={code}&price={price}", safe="")
+            # 1商品 = "item_code=xxx&price=yyy"。requestsが1回percent-encodeするので
+            # ここでは生の文字列を渡す（自前でquoteすると二重エンコードになり壊れる）。
+            data[f"item{n}"] = f"item_code={code}&price={price}"
         text = _post("/updateItems", data)
         errs = _errors_from_xml(text)
         if errs:
