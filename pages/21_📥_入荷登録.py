@@ -883,81 +883,89 @@ if plan_rows and not _plan_stale:
                         key="recv_agree")
     if st.button("🚀 更新を実行", type="primary", key="recv_run",
                  disabled=not agree or bool(blockers)):
-        group_of = {"宅配便": str(_settings.get("rakuten_group_takuhai", "")).strip(),
-                    "メール便": str(_settings.get("rakuten_group_mail", "")).strip()}
-        main_rows, ne_price_rows = rp.ne_rows_from_plan(plan_rows)
-        # Yahoo価格: API設定済みならAPIで自動更新（親コード単位）、未設定なら後段でCSVキューへ
-        _repriced_rows = [r for r in plan_rows if r.get("新販売価格")]
-        _yahoo_api_on = yahoo_client.is_configured()
-        yahoo_price_map = {}
-        if _repriced_rows and _yahoo_api_on:
-            _ymall = [{"商品コード": r["商品コード"], "楽天販売価格": r["新販売価格"],
-                       "Yahoo販売価格": r["新販売価格"]} for r in _repriced_rows]
-            _yr, _ = ex.yahoo_rows(_ymall, sku_table)
-            yahoo_price_map = {r["code"]: int(r["price"]) for r in _yr}
-        tasks = {
-            "ne_main": main_rows,
-            "ne_price": ne_price_rows,
-            "rakuten_delivery": [{**d, "group_id": group_of.get(d["新便種"], "")}
-                                 for d in dv_rows],
-            "rakuten_price": price_list,
-            "yahoo_price": yahoo_price_map,
-        }
-        total_units = ((1 if tasks["ne_main"] else 0) + (1 if tasks["ne_price"] else 0)
-                       + len(tasks["rakuten_delivery"]) + len(tasks["rakuten_price"])
-                       + (1 if tasks["yahoo_price"] else 0))
-        bar = st.progress(0.0, text="更新中…")
-        _done = {"n": 0}
-
-        def _on_step(message):
-            _done["n"] += 1
-            bar.progress(min(_done["n"] / max(total_units, 1), 1.0), text=message)
-
-        # 実行本体（何があっても結果は必ず表示・保存できるよう全体を保護する）
+        import traceback as _tb
+        results, failed, files = [], {}, {}
+        run_name, url, err = "", "", ""
         try:
-            results, failed = runner.execute(tasks, on_step=_on_step)
-        except Exception as e:  # noqa: BLE001
-            results = [{"ステップ": "実行", "対象": "-", "状態": "失敗",
-                        "メッセージ": f"実行中に想定外のエラー: {e}"}]
-            failed = {}
-        bar.empty()
-        try:
-            ne_usage.flush()   # 更新で使ったAPI回数を即座にカウンタへ反映
-        except Exception:  # noqa: BLE001
-            pass
+            group_of = {"宅配便": str(_settings.get("rakuten_group_takuhai", "")).strip(),
+                        "メール便": str(_settings.get("rakuten_group_mail", "")).strip()}
+            main_rows, ne_price_rows = rp.ne_rows_from_plan(plan_rows)
+            # Yahoo価格: API設定済みならAPIで自動更新（親コード単位）、未設定なら後段でCSVキューへ
+            _repriced_rows = [r for r in plan_rows if r.get("新販売価格")]
+            _yahoo_api_on = yahoo_client.is_configured()
+            yahoo_price_map = {}
+            if _repriced_rows and _yahoo_api_on:
+                _ymall = [{"商品コード": r["商品コード"], "楽天販売価格": r["新販売価格"],
+                           "Yahoo販売価格": r["新販売価格"]} for r in _repriced_rows]
+                _yr, _ = ex.yahoo_rows(_ymall, sku_table)
+                yahoo_price_map = {r["code"]: int(r["price"]) for r in _yr}
+            tasks = {
+                "ne_main": main_rows,
+                "ne_price": ne_price_rows,
+                "rakuten_delivery": [{**d, "group_id": group_of.get(d["新便種"], "")}
+                                     for d in dv_rows],
+                "rakuten_price": price_list,
+                "yahoo_price": yahoo_price_map,
+            }
+            total_units = ((1 if tasks["ne_main"] else 0) + (1 if tasks["ne_price"] else 0)
+                           + len(tasks["rakuten_delivery"]) + len(tasks["rakuten_price"])
+                           + (1 if tasks["yahoo_price"] else 0))
+            bar = st.progress(0.0, text="更新中…")
+            _done = {"n": 0}
 
-        # 証跡（プラン・出力CSV・実行結果）をDriveの「価格改定履歴」へ版数管理で保存。
-        files, _ev_err = {}, ""
-        try:
-            files = rp.evidence_files(plan_rows, dv_rows, code_info, sku_table)
-            files["run_result.csv"] = ex.detail_csv(pd.DataFrame(results))
-        except Exception as e:  # noqa: BLE001
-            _ev_err = f"証跡CSVの生成に失敗: {e}"
+            def _on_step(message):
+                _done["n"] += 1
+                bar.progress(min(_done["n"] / max(total_units, 1), 1.0), text=message)
 
-        # Yahoo反映待ちキューへ追記（API未設定のときのフォールバック。配送グループは常にCSV）
-        try:
-            if _repriced_rows and not _yahoo_api_on:
-                _mall = [{"商品コード": r["商品コード"], "楽天販売価格": r["新販売価格"],
-                          "Yahoo販売価格": r["新販売価格"]} for r in _repriced_rows]
-                _yrows, _ = ex.yahoo_rows(_mall, sku_table)
-                yq.append_prices([{"code": r["code"], "price": r["price"]} for r in _yrows],
-                                 product_folder)
-            if dv_rows:
-                _ydv = [{"code": str(d["商品管理番号"]).lower(),
-                         "配送グループ管理番号": ex.YAHOO_DELIVERY_VALUE.get(d["新便種"], d["新便種"])}
-                        for d in dv_rows]
-                yq.append_delivery(_ydv, product_folder)
-        except Exception:  # noqa: BLE001
-            pass   # キュー追記失敗は更新本体を妨げない（証跡CSVは別途残る）
-        run_name, url, err = "", "", _ev_err
-        if files:
             try:
-                with st.spinner("Driveに証跡を保存中…"):
-                    run_name, run_id = masters.save_run_to_drive(
-                        files, "入荷登録", product_folder)
-                url = f"https://drive.google.com/drive/folders/{run_id}"
+                results, failed = runner.execute(tasks, on_step=_on_step)
             except Exception as e:  # noqa: BLE001
-                err = (err + " / " if err else "") + str(e)
+                results = [{"ステップ": "実行", "対象": "-", "状態": "失敗",
+                            "メッセージ": f"実行中に想定外のエラー: {e}"}]
+            bar.empty()
+            try:
+                ne_usage.flush()
+            except Exception:  # noqa: BLE001
+                pass
+
+            # 証跡（プラン・出力CSV・実行結果）をDriveの「価格改定履歴」へ保存。
+            try:
+                files = rp.evidence_files(plan_rows, dv_rows, code_info, sku_table)
+                files["run_result.csv"] = ex.detail_csv(pd.DataFrame(results))
+            except Exception as e:  # noqa: BLE001
+                err = f"証跡CSVの生成に失敗: {e}"
+
+            # Yahoo反映待ちキューへ追記（API未設定時のフォールバック。配送グループは常にCSV）
+            try:
+                if _repriced_rows and not _yahoo_api_on:
+                    _mall = [{"商品コード": r["商品コード"], "楽天販売価格": r["新販売価格"],
+                              "Yahoo販売価格": r["新販売価格"]} for r in _repriced_rows]
+                    _yrows, _ = ex.yahoo_rows(_mall, sku_table)
+                    yq.append_prices([{"code": r["code"], "price": r["price"]}
+                                      for r in _yrows], product_folder)
+                if dv_rows:
+                    _ydv = [{"code": str(d["商品管理番号"]).lower(),
+                             "配送グループ管理番号":
+                                 ex.YAHOO_DELIVERY_VALUE.get(d["新便種"], d["新便種"])}
+                            for d in dv_rows]
+                    yq.append_delivery(_ydv, product_folder)
+            except Exception:  # noqa: BLE001
+                pass
+
+            if files:
+                try:
+                    with st.spinner("Driveに証跡を保存中…"):
+                        run_name, run_id = masters.save_run_to_drive(
+                            files, "入荷登録", product_folder)
+                    url = f"https://drive.google.com/drive/folders/{run_id}"
+                except Exception as e:  # noqa: BLE001
+                    err = (err + " / " if err else "") + f"Drive保存失敗: {e}"
+        except Exception:  # noqa: BLE001（想定外を必ず捕捉して画面に出す）
+            err = (err + " / " if err else "") + "想定外のエラー:\n" + _tb.format_exc()
+            if not results:
+                results = [{"ステップ": "実行", "対象": "-", "状態": "失敗",
+                            "メッセージ": "想定外のエラー（下の詳細を確認）"}]
+
         st.session_state["recv_result"] = {"results": results, "run": run_name,
                                            "url": url, "err": err,
                                            "files": files, "n_dv": len(dv_rows)}
@@ -998,8 +1006,9 @@ if res:
             st.rerun()
 
     if res["err"]:
-        st.warning(f"Driveへの証跡保存に失敗しました: {res['err']}")
-    elif res["run"]:
+        st.warning("処理中にエラーがありました（下に詳細）:")
+        st.code(str(res["err"]))
+    if res["run"]:
         st.caption(f"証跡をDriveに保存しました: **{res['run']}**"
                    "（プラン・実行結果・Yahoo用CSVを含む）")
         if res["url"]:
