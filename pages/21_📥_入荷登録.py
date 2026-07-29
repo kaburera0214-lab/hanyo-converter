@@ -35,6 +35,26 @@ from lib.yahoo_api import client as yahoo_client
 product_folder = master_store.folder_id()
 params = dict(calc.DEFAULT_PARAMS)  # 計算パラメータは既定値固定（現場では変更しない）
 
+
+def _dbg(msg):
+    """更新処理の到達点をDriveの recv_last_run.txt に追記する（強制終了・ログ非表示・表示崩れでも
+    残る唯一確実なトレース）。ハングした直前の段が最後の行になる。"""
+    import datetime
+    from lib.invoice import drive_master
+    line = f"{datetime.datetime.now().strftime('%H:%M:%S')} {msg}\n"
+    try:
+        f = drive_master.find_file("recv_last_run.txt", product_folder)
+        prev = drive_master.download_bytes(f["id"]).decode("utf-8") if f else ""
+    except Exception:  # noqa: BLE001
+        prev = ""
+    # 直近だけ残す（末尾40行）。1回の実行ぶんが追える。
+    body = ("".join((prev + line).splitlines(keepends=True)[-40:])).encode("utf-8")
+    try:
+        drive_master.upload_or_replace(body, "recv_last_run.txt", product_folder,
+                                       mimetype="text/plain")
+    except Exception:  # noqa: BLE001
+        pass
+
 FORM_ROWS = 10  # 入力フォームの初期行数（行の追加も可能）
 _FORM_COLUMNS = ["JANコード", "商品コード", "商品名", "現サイズ", "現ロケーション",
                  "資材ナンバー", "ロケーション", "配送サイズ"]
@@ -543,6 +563,20 @@ def _resolve_code(jan):
     return code
 
 
+with st.expander("🔧 前回実行のトレース（不具合調査用）", expanded=False):
+    st.caption("更新が途中で止まったとき、最後に到達した処理がDriveに残ります。"
+               "実行後にここを開いて『表示』を押すと、どの段で止まったか分かります。")
+    if st.button("🔎 前回実行の到達点を表示", key="recv_dbg_show"):
+        try:
+            from lib.invoice import drive_master as _dm
+            _tf = _dm.find_file("recv_last_run.txt", product_folder)
+            if _tf:
+                st.code(_dm.download_bytes(_tf["id"]).decode("utf-8"))
+            else:
+                st.info("まだ記録がありません（更新を1回実行してください）。")
+        except Exception as e:  # noqa: BLE001
+            st.error(f"読込に失敗: {e}")
+
 st.markdown("### ① 入荷商品の入力")
 
 with st.expander("📄 NE現状の点検（誤登録さがし・一覧ダウンロード）", expanded=False):
@@ -916,17 +950,17 @@ if plan_rows and not _plan_stale:
             def _on_step(message):
                 _done["n"] += 1
                 bar.progress(min(_done["n"] / max(total_units, 1), 1.0), text=message)
+                _dbg("runner: " + message)   # 各段の到達点をDriveに残す
 
-            print(f"[recv] START yahoo_api_on={_yahoo_api_on} "
-                  f"ne_main={len(tasks['ne_main'])} ne_price={len(tasks['ne_price'])} "
-                  f"rk_price={len(tasks['rakuten_price'])} yahoo={len(tasks['yahoo_price'])}",
-                  flush=True)
+            _dbg(f"START yahoo_api_on={_yahoo_api_on} ne_main={len(tasks['ne_main'])} "
+                 f"ne_price={len(tasks['ne_price'])} rk_price={len(tasks['rakuten_price'])} "
+                 f"yahoo={len(tasks['yahoo_price'])}")
             try:
                 results, failed = runner.execute(tasks, on_step=_on_step)
             except Exception as e:  # noqa: BLE001
                 results = [{"ステップ": "実行", "対象": "-", "状態": "失敗",
                             "メッセージ": f"実行中に想定外のエラー: {e}"}]
-            print(f"[recv] runner.execute DONE results={len(results)}", flush=True)
+            _dbg(f"runner.execute DONE results={len(results)}")
             try:
                 ne_usage.flush()
             except Exception:  # noqa: BLE001
@@ -934,13 +968,13 @@ if plan_rows and not _plan_stale:
 
             # 証跡（プラン・出力CSV・実行結果）をDriveの「価格改定履歴」へ保存。
             bar.progress(0.95, text="証跡CSVを生成中…")
-            print("[recv] evidence_files START", flush=True)
+            _dbg("evidence_files START")
             try:
                 files = rp.evidence_files(plan_rows, dv_rows, code_info, sku_table)
                 files["run_result.csv"] = ex.detail_csv(pd.DataFrame(results))
             except Exception as e:  # noqa: BLE001
                 err = f"証跡CSVの生成に失敗: {e}"
-            print(f"[recv] evidence_files DONE files={len(files)}", flush=True)
+            _dbg(f"evidence_files DONE files={len(files)}")
 
             # Yahoo反映待ちキューへ追記（API未設定時のフォールバック。配送グループは常にCSV）
             try:
@@ -961,24 +995,24 @@ if plan_rows and not _plan_stale:
 
             if files:
                 bar.progress(0.98, text="Driveに証跡を保存中…")
-                print("[recv] save_run_to_drive START", flush=True)
+                _dbg("save_run_to_drive START")
                 try:
                     run_name, run_id = masters.save_run_to_drive(
                         files, "入荷登録", product_folder)
                     url = f"https://drive.google.com/drive/folders/{run_id}"
                 except Exception as e:  # noqa: BLE001
                     err = (err + " / " if err else "") + f"Drive保存失敗: {e}"
-                print(f"[recv] save_run_to_drive DONE run={run_name} err={err[:80]}", flush=True)
+                _dbg(f"save_run_to_drive DONE run={run_name}")
             bar.progress(1.0, text="完了")
             bar.empty()
         except Exception:  # noqa: BLE001（想定外を必ず捕捉して画面に出す）
             err = (err + " / " if err else "") + "想定外のエラー:\n" + _tb.format_exc()
-            print("[recv] EXCEPTION:\n" + _tb.format_exc(), flush=True)
+            _dbg("EXCEPTION: " + _tb.format_exc().replace("\n", " | ")[:500])
             if not results:
                 results = [{"ステップ": "実行", "対象": "-", "状態": "失敗",
                             "メッセージ": "想定外のエラー（下の詳細を確認）"}]
 
-        print("[recv] recv_result SET, about to rerun", flush=True)
+        _dbg("recv_result SET, about to rerun")
         st.session_state["recv_result"] = {"results": results, "run": run_name,
                                            "url": url, "err": err,
                                            "files": files, "n_dv": len(dv_rows)}
