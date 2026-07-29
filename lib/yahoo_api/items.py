@@ -22,7 +22,8 @@ from . import client
 
 PROD_BASE = "https://circus.shopping.yahooapis.jp/ShoppingWebService/V1"
 TEST_BASE = "https://test.circus.shopping.yahooapis.jp/ShoppingWebService/V1"
-TIMEOUT = 60
+# (接続, 読み取り)秒。長時間ハングでスクリプトごと打ち切られるのを防ぐため短め。
+TIMEOUT = (10, 20)
 MAX_ITEMS = 100
 
 

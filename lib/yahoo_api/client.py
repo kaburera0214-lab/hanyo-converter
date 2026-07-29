@@ -23,7 +23,7 @@ import requests
 AUTHORIZE_URL = "https://auth.login.yahoo.co.jp/yconnect/v2/authorization"
 TOKEN_URL = "https://auth.login.yahoo.co.jp/yconnect/v2/token"
 TOKENS_NAME = "yahoo_tokens.json"    # Drive（PRODUCT_MASTER_FOLDER_ID）に保存
-TIMEOUT = 30
+TIMEOUT = (10, 20)                   # (接続, 読み取り)秒。長時間ハング防止
 _SS_KEY = "_yahoo_tokens"
 _LEEWAY = 120                        # アクセストークンの期限をこの秒数手前で更新する
 
