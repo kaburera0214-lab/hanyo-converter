@@ -298,6 +298,34 @@ with st.expander("🔐 Yahoo API接続（管理者用）", expanded=False):
                         st.code(_raw[:3000], language="xml")
                 except Exception as e:  # noqa: BLE001
                     st.error(f"在庫参照に失敗しました: {e}")
+        # 切り分け用: updateItems単体テスト（appid除去後に400が解消したかを1商品で確認）。
+        # updateItems単体では店頭反映されない（反映はreservePublishが別途必要）。
+        # 現在価格と同じ値を入れれば実質no-opでAPIだけ検証できる。
+        st.markdown("**✏️ 価格更新の単体テスト（updateItems・切り分け用）**")
+        st.caption("⚠️ 本番ストアの商品DBに価格を書き込みます（店頭反映は別途reservePublishが必要"
+                   "なので単体では店頭に出ません）。安全に試すには、その商品の**現在価格と同じ値**を"
+                   "入れてください＝実質変化なしで『400が消えたか』だけ確認できます。")
+        _uc1, _uc2, _uc3 = st.columns([2, 1, 1])
+        _upd_code = _uc1.text_input(
+            "商品コード", key="recv_yahoo_upd_code",
+            placeholder="例) kira0008", label_visibility="collapsed")
+        _upd_price = _uc2.number_input(
+            "価格", min_value=0, step=1, value=0,
+            key="recv_yahoo_upd_price", label_visibility="collapsed")
+        if _uc3.button("価格更新テスト", use_container_width=True, key="recv_yahoo_upd_btn"):
+            if not _upd_code.strip() or not _upd_price:
+                st.warning("商品コードと価格（1以上）を入力してください。")
+            else:
+                try:
+                    from lib.yahoo_api import items as _yi
+                    _ok, _errs = _yi.update_prices({_upd_code.strip(): int(_upd_price)})
+                    if _errs:
+                        st.error("updateItems エラー（応答XML内）: " + " / ".join(_errs[:5]))
+                    else:
+                        st.success(f"✅ updateItems 成功（{_ok}件）。400は解消・APIは正常です。"
+                                   "（店頭反映は通常フローのreservePublishで行われます）")
+                except Exception as e:  # noqa: BLE001（HTTP 400等はここに全文が出る）
+                    st.error(f"価格更新に失敗: {e}")
         st.caption("公開鍵は店舗（ストアクリエイターPro）に登録済みなら共用で問題なく、"
                    "リフレッシュトークンは28日有効です。切れたら再認可してください。")
 
