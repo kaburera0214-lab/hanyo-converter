@@ -164,9 +164,18 @@ def save_clients(clients):
 
 # --- Google Drive バックアップ（任意） ---
 
+# Drive HTTP1リクエストあたりのタイムアウト秒。httplib2は既定でタイムアウト無し＝
+# Drive呼び出しが無限ハングし得る（Yahoo/NEトークンのDrive読み書きが固まりStreamlitが
+# 打切られる原因）。健全な呼び出しは数秒で終わるため、上限を設けてハングを例外化する。
+DRIVE_HTTP_TIMEOUT = 30
+
+
 def _get_drive_service():
-    """既存ページと同じリフレッシュトークン方式でDriveサービスを得る。"""
+    """既存ページと同じリフレッシュトークン方式でDriveサービスを得る。
+    HTTPトランスポートにタイムアウトを設定し、Drive呼び出しの無限ハングを防ぐ。"""
     import streamlit as st
+    import google_auth_httplib2
+    import httplib2
     from google.oauth2.credentials import Credentials
     from googleapiclient.discovery import build
 
@@ -177,7 +186,10 @@ def _get_drive_service():
         client_secret=st.secrets["GOOGLE_CLIENT_SECRET"],
         token_uri="https://oauth2.googleapis.com/token",
     )
-    return build("drive", "v3", credentials=creds)
+    http = google_auth_httplib2.AuthorizedHttp(
+        creds, http=httplib2.Http(timeout=DRIVE_HTTP_TIMEOUT))
+    # static_discovery=True（既定）でディスカバリはバンドル済みを使い追加の通信をしない。
+    return build("drive", "v3", http=http)
 
 
 def backup_to_drive(file_bytes, filename, folder_id, mimetype="text/csv"):
