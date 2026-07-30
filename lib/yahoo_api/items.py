@@ -24,6 +24,8 @@ TEST_BASE = "https://test.circus.shopping.yahooapis.jp/ShoppingWebService/V1"
 # (接続, 読み取り)秒。長時間ハングでスクリプトごと打ち切られるのを防ぐため短め。
 TIMEOUT = (10, 20)
 MAX_ITEMS = 100
+# LYPプレミアム会員向け販売価格 = 通常販売価格の2%引き（ユーザー確定 2026-07-30）。
+LYP_MEMBER_RATE = 0.98
 
 
 def _base():
@@ -64,10 +66,12 @@ def _errors_from_xml(text):
 
 def update_prices(price_by_code):
     """{商品コード: 価格} を updateItems で更新する（親コード＝Yahoo商品コード単位）。
-    返り値: (成功件数, エラーlist)。
-    Yahooのpartial updateは price 更新時に sale_price も必須（未指定は it-02022 で400）。
-    価格改定は「通常の販売価格を設定」する用途なので price=sale_price（割引なし）で送る
-    ＝NE売価・楽天standardPriceと同じ意味。既存の特価があれば通常価格に揃う点に注意。"""
+    返り値: (成功件数, エラーlist)。設定するのは以下（ユーザー確定 2026-07-30）:
+      - price（通常販売価格）= 指定価格
+      - sale_price（セール価格）= price と同値。Yahooのpartial updateは price 更新時に
+        sale_price も必須（未指定は it-02022 で400）で「割引なし＝セール表示は出ない」。
+        ※既存の特価があれば通常価格に揃う（価格改定用途では意図通り）。
+      - member_price（LYPプレミアム会員向け販売価格）= priceの2%引き。"""
     items = [(str(code), int(price)) for code, price in price_by_code.items()
              if str(code).strip() and price]
     seller = client.seller_id()
@@ -79,9 +83,11 @@ def update_prices(price_by_code):
         # 認証は Authorization: Bearer のみ（公式仕様）。appid は本文に入れない。
         data = {"seller_id": seller}
         for n, (code, price) in enumerate(chunk, start=1):
-            # 1商品 = "item_code=xxx&price=yyy&sale_price=yyy"。requestsが1回
+            member = int(round(price * LYP_MEMBER_RATE))
+            # 1商品 = "item_code=X&price=Y&sale_price=Y&member_price=Z"。requestsが1回
             # percent-encodeするのでここでは生の文字列（自前quoteは二重encodeで壊れる）。
-            data[f"item{n}"] = f"item_code={code}&price={price}&sale_price={price}"
+            data[f"item{n}"] = (f"item_code={code}&price={price}"
+                                f"&sale_price={price}&member_price={member}")
         text = _post("/updateItems", data)
         errs = _errors_from_xml(text)
         if errs:
