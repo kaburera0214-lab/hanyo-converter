@@ -1001,14 +1001,33 @@ if plan_rows and not _plan_stale:
                 err = f"証跡CSVの生成に失敗: {e}"
             _dbg(f"evidence_files DONE files={len(files)}")
 
-            # Yahoo反映待ちキューへ追記（API未設定時のフォールバック。配送グループは常にCSV）
+            # Yahoo反映待ちキューへ追記（バックアップ）。価格CSVは
+            #   ・API未使用（YAHOO_DISABLE / 未設定）
+            #   ・APIを使ったが失敗（400・認証切れ・例外等）
+            # のいずれかで退避する＝APIが壊れていても価格改定を取りこぼさない安全網。
+            # 配送グループは常にCSV（editItem全項目上書きの危険回避）。
+            _yahoo_price_failed = bool(failed.get("yahoo_price"))
             try:
-                if _repriced_rows and not _yahoo_api_on:
+                if _repriced_rows and (not _yahoo_api_on or _yahoo_price_failed):
                     _mall = [{"商品コード": r["商品コード"], "楽天販売価格": r["新販売価格"],
                               "Yahoo販売価格": r["新販売価格"]} for r in _repriced_rows]
                     _yrows, _ = ex.yahoo_rows(_mall, sku_table)
                     yq.append_prices([{"code": r["code"], "price": r["price"]}
                                       for r in _yrows], product_folder)
+                    if _yahoo_price_failed:
+                        # APIは失敗したがCSVへ退避済み。壊れたAPIを再実行で叩き続け
+                        # ないよう再実行キューから外し、結果表の⑤を「CSV退避」に置換して
+                        # 過剰なアラーム（失敗扱い）を防ぐ。元エラーはメッセージに残す。
+                        failed.pop("yahoo_price", None)
+                        for _r in results:
+                            if _r.get("ステップ") == runner.STEP_YAHOO_PRICE \
+                                    and _r.get("状態") == "失敗":
+                                _r["状態"] = "CSV退避"
+                                _r["メッセージ"] = (
+                                    "Yahoo APIで反映できずCSVバックアップに退避しました"
+                                    "（下の『Yahoo反映待ちキュー』から管理者が反映）。"
+                                    "元エラー: " + str(_r.get("メッセージ", "")))
+                        _dbg("yahoo API失敗→CSVバックアップに退避")
                 if dv_rows:
                     _ydv = [{"code": str(d["商品管理番号"]).lower(),
                              "配送グループ管理番号":
@@ -1094,10 +1113,14 @@ if res:
         if res["url"]:
             st.link_button("📁 証跡フォルダを開く", res["url"])
 
-    # Yahoo: 価格はAPI設定済みなら自動反映（上の結果表に⑤で出る）。未設定/配送はキューへ。
+    # Yahoo: 価格はAPI設定済みなら自動反映（上の結果表に⑤で出る）。未設定/無効/失敗はキューへ。
     _has_price = any(r.get("新販売価格") for r in (st.session_state.get("recv_plan") or []))
-    if _has_price and not yahoo_client.is_configured():
-        st.info("🟡 Yahoo価格は下の「Yahoo反映待ちキュー」に貯まりました（API未設定のためCSV運用）。")
+    if _has_price and not yahoo_client.api_enabled():
+        _why = "API未設定" if not yahoo_client.is_configured() else "API一時無効(YAHOO_DISABLE)"
+        st.info(f"🟡 Yahoo価格は下の「Yahoo反映待ちキュー」に貯まりました（{_why}のためCSV運用）。")
+    elif any(r.get("状態") == "CSV退避" for r in results):
+        st.info("🟡 Yahoo価格はAPIで反映できなかったため「Yahoo反映待ちキュー」に退避しました"
+                "（管理者がまとめて反映してください）。壊れたAPIは再実行では叩きません。")
     if res.get("n_dv"):
         st.info("🟡 Yahoo配送グループは下の「Yahoo反映待ちキュー」に貯まりました"
                 "（配送グループは安全のためCSV運用です）。")
