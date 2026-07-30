@@ -1240,5 +1240,14 @@
     "rows": 30,
     "error": null,
     "unknown_jan": 0
+  },
+  {
+    "ts": "2026-07-30T07:55:37",
+    "func": "shipment_std",
+    "template": null,
+    "orders": 27,
+    "rows": 27,
+    "error": null,
+    "unknown_jan": 0
   }
 ]
