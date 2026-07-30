@@ -153,25 +153,20 @@ def _yahoo_prices(price_by_code, results, failed, on_step):
     target = f"{len(price_by_code)}件"
     try:
         from lib.yahoo_api import client as yclient, items as yitems
-        print("[recv][yahoo] access_token START", flush=True)
         if on_step:
             on_step("⑤ Yahoo: トークン確認中…")
-        yclient.access_token()            # トークン取得/更新の段でのハングを切り分ける
-        print("[recv][yahoo] updateItems START", flush=True)
+        yclient.access_token()            # 期限切れ間近なら自動リフレッシュ
         if on_step:
             on_step("⑤ Yahoo: 価格更新API(updateItems)を呼び出し中…")
         ok, errs = yitems.update_prices(price_by_code)
-        print(f"[recv][yahoo] updateItems DONE ok={ok} errs={errs[:2]}", flush=True)
         if errs:
             results.append({"ステップ": STEP_YAHOO_PRICE, "対象": target, "状態": "失敗",
                             "メッセージ": "／".join(errs[:5])})
             failed["yahoo_price"] = price_by_code
             return
-        print("[recv][yahoo] reservePublish START", flush=True)
         if on_step:
             on_step("⑤ Yahoo: 反映予約API(reservePublish)を呼び出し中…")
         perr = yitems.reserve_publish()   # 更新は自動反映されないので反映予約を1回
-        print(f"[recv][yahoo] reservePublish DONE perr={perr[:2]}", flush=True)
         if perr:
             results.append({"ステップ": STEP_YAHOO_PRICE, "対象": target, "状態": "失敗",
                             "メッセージ": "更新OKだが反映予約に失敗: " + "／".join(perr[:5])})

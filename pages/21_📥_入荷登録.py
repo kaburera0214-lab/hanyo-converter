@@ -35,26 +35,6 @@ from lib.yahoo_api import client as yahoo_client
 product_folder = master_store.folder_id()
 params = dict(calc.DEFAULT_PARAMS)  # 計算パラメータは既定値固定（現場では変更しない）
 
-
-def _dbg(msg):
-    """更新処理の到達点をDriveの recv_last_run.txt に追記する（強制終了・ログ非表示・表示崩れでも
-    残る唯一確実なトレース）。ハングした直前の段が最後の行になる。"""
-    import datetime
-    from lib.invoice import drive_master
-    line = f"{datetime.datetime.now().strftime('%H:%M:%S')} {msg}\n"
-    try:
-        f = drive_master.find_file("recv_last_run.txt", product_folder)
-        prev = drive_master.download_bytes(f["id"]).decode("utf-8") if f else ""
-    except Exception:  # noqa: BLE001
-        prev = ""
-    # 直近だけ残す（末尾40行）。1回の実行ぶんが追える。
-    body = ("".join((prev + line).splitlines(keepends=True)[-40:])).encode("utf-8")
-    try:
-        drive_master.upload_or_replace(body, "recv_last_run.txt", product_folder,
-                                       mimetype="text/plain")
-    except Exception:  # noqa: BLE001
-        pass
-
 FORM_ROWS = 10  # 入力フォームの初期行数（行の追加も可能）
 _FORM_COLUMNS = ["JANコード", "商品コード", "商品名", "現サイズ", "現ロケーション",
                  "資材ナンバー", "ロケーション", "配送サイズ"]
@@ -259,73 +239,11 @@ with st.expander("🔐 Yahoo API接続（管理者用）", expanded=False):
                        "アクセストークンは自動更新されます。")
         else:
             st.warning("未認可です。店舗オーナーのYahoo IDでログインして認可してください。")
-        yc1, yc2 = st.columns(2)
         try:
-            yc1.link_button("🔑 Yahooにログインして認可する", yahoo_client.authorize_url(),
-                            use_container_width=True)
+            st.link_button("🔑 Yahooにログインして認可する", yahoo_client.authorize_url(),
+                           use_container_width=True)
         except yahoo_client.YahooNotConfigured:
-            yc1.caption("YAHOO_REDIRECT_URI が未設定です。")
-        if yc2.button("📶 接続テスト", use_container_width=True, key="recv_yahoo_test"):
-            try:
-                from lib.yahoo_api import items as _yi
-                st.success(f"接続OK（アクセストークン {_yi.test_connection()}）。"
-                           f"seller_id={yahoo_client.seller_id() or '未設定'} / "
-                           f"{'テスト環境' if _use_test else '本番環境'}")
-            except Exception as e:  # noqa: BLE001
-                st.error(f"接続に失敗しました: {e}")
-        # 切り分け用: 在庫参照API(getStock)で1商品を“読むだけ”実行し、Yahooの生応答を見る。
-        # updateItemsの400が「認証/パラメータ」か「商品コード不在」かを分離できる。
-        st.markdown("**🔎 在庫参照で商品確認（切り分け用・書き込みなし）**")
-        _sc1, _sc2 = st.columns([3, 1])
-        _stock_code = _sc1.text_input(
-            "商品コード（個別コードは 商品コード:個別コード）", key="recv_yahoo_stock_code",
-            placeholder="例) kira0008 または kira0008:01", label_visibility="collapsed")
-        if _sc2.button("在庫参照", use_container_width=True, key="recv_yahoo_stock_btn"):
-            if not _stock_code.strip():
-                st.warning("商品コードを入力してください。")
-            else:
-                try:
-                    from lib.yahoo_api import items as _yi
-                    _raw, _rows, _errs = _yi.get_stock([_stock_code.strip()])
-                    if _rows:
-                        st.success(f"{len(_rows)}件ヒット（この商品コードは本番ストアに実在します）。")
-                        st.dataframe(_rows, use_container_width=True, hide_index=True)
-                    if _errs:
-                        st.error("Yahooからのエラー: " + " / ".join(_errs[:5]))
-                    if not _rows and not _errs:
-                        st.warning("ヒット0件・エラー無し。商品コードの指定方法を確認してください。")
-                    with st.expander("応答XML（原文）", expanded=not _rows):
-                        st.code(_raw[:3000], language="xml")
-                except Exception as e:  # noqa: BLE001
-                    st.error(f"在庫参照に失敗しました: {e}")
-        # 切り分け用: updateItems単体テスト（appid除去後に400が解消したかを1商品で確認）。
-        # updateItems単体では店頭反映されない（反映はreservePublishが別途必要）。
-        # 現在価格と同じ値を入れれば実質no-opでAPIだけ検証できる。
-        st.markdown("**✏️ 価格更新の単体テスト（updateItems・切り分け用）**")
-        st.caption("⚠️ 本番ストアの商品DBに価格を書き込みます（店頭反映は別途reservePublishが必要"
-                   "なので単体では店頭に出ません）。安全に試すには、その商品の**現在価格と同じ値**を"
-                   "入れてください＝実質変化なしで『400が消えたか』だけ確認できます。")
-        _uc1, _uc2, _uc3 = st.columns([2, 1, 1])
-        _upd_code = _uc1.text_input(
-            "商品コード", key="recv_yahoo_upd_code",
-            placeholder="例) kira0008", label_visibility="collapsed")
-        _upd_price = _uc2.number_input(
-            "価格", min_value=0, step=1, value=0,
-            key="recv_yahoo_upd_price", label_visibility="collapsed")
-        if _uc3.button("価格更新テスト", use_container_width=True, key="recv_yahoo_upd_btn"):
-            if not _upd_code.strip() or not _upd_price:
-                st.warning("商品コードと価格（1以上）を入力してください。")
-            else:
-                try:
-                    from lib.yahoo_api import items as _yi
-                    _ok, _errs = _yi.update_prices({_upd_code.strip(): int(_upd_price)})
-                    if _errs:
-                        st.error("updateItems エラー（応答XML内）: " + " / ".join(_errs[:5]))
-                    else:
-                        st.success(f"✅ updateItems 成功（{_ok}件）。400は解消・APIは正常です。"
-                                   "（店頭反映は通常フローのreservePublishで行われます）")
-                except Exception as e:  # noqa: BLE001（HTTP 400等はここに全文が出る）
-                    st.error(f"価格更新に失敗: {e}")
+            st.caption("YAHOO_REDIRECT_URI が未設定です。")
         st.caption("公開鍵は店舗（ストアクリエイターPro）に登録済みなら共用で問題なく、"
                    "リフレッシュトークンは28日有効です。切れたら再認可してください。")
 
@@ -615,20 +533,6 @@ def _resolve_code(jan):
         code = code_info[jan.lower()]["商品コード"]   # JAN欄に商品コードを入れても通す
     return code
 
-
-with st.expander("🔧 前回実行のトレース（不具合調査用）", expanded=False):
-    st.caption("更新が途中で止まったとき、最後に到達した処理がDriveに残ります。"
-               "実行後にここを開いて『表示』を押すと、どの段で止まったか分かります。")
-    if st.button("🔎 前回実行の到達点を表示", key="recv_dbg_show"):
-        try:
-            from lib.invoice import drive_master as _dm
-            _tf = _dm.find_file("recv_last_run.txt", product_folder)
-            if _tf:
-                st.code(_dm.download_bytes(_tf["id"]).decode("utf-8"))
-            else:
-                st.info("まだ記録がありません（更新を1回実行してください）。")
-        except Exception as e:  # noqa: BLE001
-            st.error(f"読込に失敗: {e}")
 
 st.markdown("### ① 入荷商品の入力")
 
@@ -1003,17 +907,12 @@ if plan_rows and not _plan_stale:
             def _on_step(message):
                 _done["n"] += 1
                 bar.progress(min(_done["n"] / max(total_units, 1), 1.0), text=message)
-                _dbg("runner: " + message)   # 各段の到達点をDriveに残す
 
-            _dbg(f"START yahoo_api_on={_yahoo_api_on} ne_main={len(tasks['ne_main'])} "
-                 f"ne_price={len(tasks['ne_price'])} rk_price={len(tasks['rakuten_price'])} "
-                 f"yahoo={len(tasks['yahoo_price'])}")
             try:
                 results, failed = runner.execute(tasks, on_step=_on_step)
             except Exception as e:  # noqa: BLE001
                 results = [{"ステップ": "実行", "対象": "-", "状態": "失敗",
                             "メッセージ": f"実行中に想定外のエラー: {e}"}]
-            _dbg(f"runner.execute DONE results={len(results)}")
             try:
                 ne_usage.flush()
             except Exception:  # noqa: BLE001
@@ -1021,13 +920,11 @@ if plan_rows and not _plan_stale:
 
             # 証跡（プラン・出力CSV・実行結果）をDriveの「価格改定履歴」へ保存。
             bar.progress(0.95, text="証跡CSVを生成中…")
-            _dbg("evidence_files START")
             try:
                 files = rp.evidence_files(plan_rows, dv_rows, code_info, sku_table)
                 files["run_result.csv"] = ex.detail_csv(pd.DataFrame(results))
             except Exception as e:  # noqa: BLE001
                 err = f"証跡CSVの生成に失敗: {e}"
-            _dbg(f"evidence_files DONE files={len(files)}")
 
             # Yahoo反映待ちキューへ追記（バックアップ）。価格CSVは
             #   ・API未使用（YAHOO_DISABLE / 未設定）
@@ -1055,7 +952,6 @@ if plan_rows and not _plan_stale:
                                     "Yahoo APIで反映できずCSVバックアップに退避しました"
                                     "（下の『Yahoo反映待ちキュー』から管理者が反映）。"
                                     "元エラー: " + str(_r.get("メッセージ", "")))
-                        _dbg("yahoo API失敗→CSVバックアップに退避")
                 if dv_rows:
                     _ydv = [{"code": str(d["商品管理番号"]).lower(),
                              "配送グループ管理番号":
@@ -1067,24 +963,20 @@ if plan_rows and not _plan_stale:
 
             if files:
                 bar.progress(0.98, text="Driveに証跡を保存中…")
-                _dbg("save_run_to_drive START")
                 try:
                     run_name, run_id = masters.save_run_to_drive(
                         files, "入荷登録", product_folder)
                     url = f"https://drive.google.com/drive/folders/{run_id}"
                 except Exception as e:  # noqa: BLE001
                     err = (err + " / " if err else "") + f"Drive保存失敗: {e}"
-                _dbg(f"save_run_to_drive DONE run={run_name}")
             bar.progress(1.0, text="完了")
             bar.empty()
         except Exception:  # noqa: BLE001（想定外を必ず捕捉して画面に出す）
             err = (err + " / " if err else "") + "想定外のエラー:\n" + _tb.format_exc()
-            _dbg("EXCEPTION: " + _tb.format_exc().replace("\n", " | ")[:500])
             if not results:
                 results = [{"ステップ": "実行", "対象": "-", "状態": "失敗",
                             "メッセージ": "想定外のエラー（下の詳細を確認）"}]
 
-        _dbg("recv_result SET, about to rerun")
         st.session_state["recv_result"] = {"results": results, "run": run_name,
                                            "url": url, "err": err,
                                            "files": files, "n_dv": len(dv_rows)}
@@ -1096,7 +988,6 @@ if plan_rows and not _plan_stale:
 
 res = st.session_state.get("recv_result")
 if res:
-    print("[recv] rendering result section", flush=True)
     results = res["results"]
     rdf = pd.DataFrame(results)
     n_ok = int((rdf["状態"] == "成功").sum()) if len(rdf) else 0

@@ -136,8 +136,3 @@ def get_stock(codes):
         if row:
             results.append(row)
     return text, results, errors
-
-
-def test_connection():
-    """テスト環境の疎通確認（アクセストークンが有効かを軽く確認する）。"""
-    return client.access_token()[:6] + "…"
