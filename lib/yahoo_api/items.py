@@ -100,12 +100,14 @@ def update_prices(price_by_code):
 
 
 def reserve_publish():
-    """全反映予約（更新内容を店頭へ反映する）。更新後に1回呼ぶ。"""
+    """全反映予約（更新内容を店頭へ反映する）。更新後に1回呼ぶ。
+    mode=1（反映予約・予約日時変更）が必須。reserve_time を省略すると現在時刻で予約
+    ＝実質即時反映（未指定は pm-05005「modeが指定されていません」で400）。"""
     seller = client.seller_id()
     if not seller:
         raise client.YahooNotConfigured("Secrets に YAHOO_SELLER_ID が未設定です。")
     # 認証は Authorization: Bearer のみ（公式仕様）。appid は本文に入れない。
-    text = _post("/reservePublish", {"seller_id": seller})
+    text = _post("/reservePublish", {"seller_id": seller, "mode": 1})
     return _errors_from_xml(text)
 
 
