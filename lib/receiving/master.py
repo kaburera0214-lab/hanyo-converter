@@ -71,9 +71,25 @@ def norm_locations(rows):
 
 
 def location_code(row):
-    """ロケーション行 → NEに書くロケーションコード（最下層の値）。"""
+    """ロケーション行 → NEに書くロケーションコード（最下層の値）。
+    第二・第三階層が無い単層ロケ（例: FAST）は第一階層の値を使う。"""
     l1, l2, l3 = row
-    return l3 or l2
+    return l3 or l2 or l1
+
+
+# ロケ不要棚（受発注品：入荷したらすぐ出荷するため棚に置かない）。
+# 第一階層だけで確定する単層ロケ。資材と結合して "100A-FAST" のように扱う。
+FAST_AREA = "FAST"
+
+
+def with_fast(rows):
+    """ドロップダウン用のロケ一覧に、単層のロケ不要棚 FAST を必ず含めて返す。
+    FASTは🗂編集マスタ（第二階層必須）には入れず、表示・選択時だけ注入する
+    ＝現場が常に選べて、Driveの編集マスタは汚さない。"""
+    rows = list(rows)
+    if not any(location_code(r) == FAST_AREA for r in rows):
+        rows.append((FAST_AREA, "", ""))
+    return rows
 
 
 def load_bundled_locations():

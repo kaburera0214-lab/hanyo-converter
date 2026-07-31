@@ -260,6 +260,24 @@ def test_receiving_master_locations():
     assert flat[1] == ("梱包室 ｜ CB1", "CB1")
 
 
+def test_fast_single_level_location():
+    """ロケ不要棚 FAST（単層）: 第一階層だけでコード確定・資材と結合。"""
+    from lib.receiving import master as rm
+    # 単層は第一階層の値がコードになる
+    assert rm.location_code(("FAST", "", "")) == "FAST"
+    # with_fast は必ずFASTを含め、重複しない
+    base = [("トイプー", "TA", "TA1B")]
+    wf = rm.with_fast(base)
+    assert ("FAST", "", "") in wf and len(wf) == 2
+    assert rm.with_fast(wf) == wf                       # 二重注入しない
+    # hierarchy: FASTの子は空キーのみ（＝第二階層なし）
+    tree = rm.hierarchy(wf)
+    assert [x for x in tree["FAST"] if x] == []
+    # flat_options / 資材との結合
+    assert dict((c, l) for l, c in rm.flat_options(wf)).get("FAST") == "FAST"
+    assert rp.location_code("100A", "FAST") == "100A-FAST"
+
+
 def test_bundled_locations():
     """同梱のロケ一覧（ロケ一覧.xlsx由来）が読め、最下層コードが一意であること"""
     from lib.receiving import master as rm

@@ -470,6 +470,8 @@ with st.expander("🗂 資材ナンバー・ロケーションマスタ（プル
         except Exception as e:  # noqa: BLE001
             st.error(f"Driveへの保存に失敗しました: {e}")
 
+# ロケ不要棚 FAST（単層）はドロップダウンにだけ常時注入する（編集マスタには入れない）。
+loc_rows = recv_master.with_fast(loc_rows)
 loc_tree = recv_master.hierarchy(loc_rows)                 # {第一階層: {第二階層: [第三階層…]}}
 loc_flat = recv_master.flat_options(loc_rows)              # [(表示ラベル, コード)]
 location_opts = [code for _label, code in loc_flat]        # 最下層コードの一覧
@@ -616,18 +618,24 @@ with tab_one:
         h1, h2, h3 = st.columns(3)
         lv1 = h1.selectbox("第一階層（エリア）", list(loc_tree), index=None,
                            placeholder="▼ 選択", key="recv1_l1")
-        lv2_opts = list(loc_tree.get(lv1, {})) if lv1 else []
+        _lv2_raw = loc_tree.get(lv1, {}) if lv1 else {}
+        lv2_opts = [x for x in _lv2_raw if x]           # 空キー（単層ロケ）は候補から除く
+        _single = bool(lv1) and not lv2_opts            # 第一階層だけで確定する単層ロケ（FAST等）
         lv2 = h2.selectbox("第二階層（棚・列）", lv2_opts, index=None,
-                           placeholder="▼ 選択", key="recv1_l2",
-                           disabled=not lv2_opts)
-        lv3_opts = loc_tree.get(lv1, {}).get(lv2, []) if (lv1 and lv2) else []
+                           placeholder="この階層は不要" if _single else "▼ 選択",
+                           key="recv1_l2", disabled=not lv2_opts)
+        lv3_opts = _lv2_raw.get(lv2, []) if (lv1 and lv2) else []
         lv3 = h3.selectbox("第三階層（段）", lv3_opts, index=None,
-                           placeholder="▼ 選択" if lv3_opts else "この棚は第二階層まで",
+                           placeholder=("この階層は不要" if _single
+                                        else ("▼ 選択" if lv3_opts else "この棚は第二階層まで")),
                            key="recv1_l3", disabled=not lv3_opts)
-        # 第三階層があるのに未選択のときだけ未確定。無い棚は第二階層で確定。
-        loc1 = lv3 if lv3_opts else (lv2 if lv2 else None)
-        if lv3_opts and not lv3:
-            loc1 = None
+        # 単層ロケ（FAST等）は第一階層で確定。通常は最下層（第三>第二）で確定。
+        if _single:
+            loc1 = lv1
+        else:
+            loc1 = lv3 if lv3_opts else (lv2 if lv2 else None)
+            if lv3_opts and not lv3:
+                loc1 = None
 
         s1, s3 = st.columns(2)
         mat1 = s1.selectbox("📂 資材ナンバー", material_opts, index=None,
@@ -659,7 +667,7 @@ with tab_bulk:
     f1, f2, f3 = st.columns([1, 1, 2])
     _ALL = "（すべて）"
     fl1 = f1.selectbox("絞り込み: 第一階層", [_ALL] + list(loc_tree), key="recv_flt_l1")
-    _f2_opts = list(loc_tree.get(fl1, {})) if fl1 != _ALL else []
+    _f2_opts = [x for x in loc_tree.get(fl1, {}) if x] if fl1 != _ALL else []
     fl2 = f2.selectbox("絞り込み: 第二階層", [_ALL] + _f2_opts, key="recv_flt_l2",
                        disabled=not _f2_opts)
     _filtered = [r for r in loc_rows
@@ -999,11 +1007,12 @@ if res:
         st.error(f"⚠️ 一部の更新に失敗しました（成功 {n_ok}／失敗 {n_fail}／スキップ {n_skip}）")
     st.dataframe(rdf, use_container_width=True, hide_index=True)
 
-    _fails = [r for r in results if r.get("状態") == "失敗"]
+    # 失敗＋CSV退避（Yahooが反映できずキューへ退避）の理由を全文表示する。
+    _fails = [r for r in results if r.get("状態") in ("失敗", "CSV退避")]
     if _fails:
-        with st.expander("❌ 失敗の詳細（メッセージ全文）", expanded=True):
+        with st.expander("❌ 失敗・CSV退避の詳細（メッセージ全文）", expanded=True):
             for r in _fails:
-                st.markdown(f"**{r.get('ステップ')}**（{r.get('対象')}）")
+                st.markdown(f"**{r.get('ステップ')}**（{r.get('対象')}・{r.get('状態')}）")
                 st.code(str(r.get("メッセージ", "")))
 
     if runner.has_auth_error(results):
