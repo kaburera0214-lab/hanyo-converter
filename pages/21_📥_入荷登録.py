@@ -7,7 +7,9 @@ JANをスキャン → 商品マスタから商品コード・商品名を自動
   ① NE商品マスタ: ロケーションコード（資材ナンバー-ロケーション）＋項目1（配送サイズ）… NE API
   ② 配送サイズが変わって便種（メール便⇔宅配便）も変わる場合: 楽天の配送方法セット … RMS API
   ③ サイズアップで利益NGの場合: 目標利益率価格に再設定 … NE売価（NE API）＋楽天価格（RMS API）
-     Yahooの価格・配送グループはCSVをDriveに自動保存（管理者が後でまとめて反映）
+     ＋Yahoo価格（updateItems API：price/sale_price空/member_price=2%引き→reservePublish反映）
+     Yahoo配送グループは便種変更時のみCSVをDriveに保存（updateItemsにpostage_setが無く、
+     editItemは省略項目を上書きするためCSVの項目指定が最も安全）
 判定ロジックは価格改定の「梱包サイズ変更」を流用（lib/receiving/plan.py → lib/pricing/pipeline.py）。
 """
 import pandas as pd
@@ -23,7 +25,8 @@ import datetime as _dt
 import os as _os
 _build = _dt.datetime.fromtimestamp(_os.path.getmtime(__file__)).strftime("%Y-%m-%d %H:%M")
 st.caption("JANをスキャン → 資材・ロケーション・配送サイズを選んで「🚀 更新を実行」。"
-           "ネクストエンジンと楽天は自動更新されます（Yahooの分はDriveにCSVが残ります）。"
+           "ネクストエンジン・楽天・Yahoo価格は自動更新されます"
+           "（Yahooの配送グループは便種変更時のみCSVに残ります）。"
            f"　（app更新: {_build}）")
 
 from lib import master_store
@@ -86,130 +89,27 @@ _settings = st.session_state["pricing_settings"]
 
 with st.expander("🔐 NE API接続（管理者用）", expanded=False):
     from lib.ne_api import usage as ne_usage
-    ne_usage.render(compact=True)   # 課金監視（回数はホームでも常時表示）
-    from lib.notify import chatwork as _cw
-    _cwc1, _cwc2 = st.columns([2, 1])
-    _cwc1.caption("課金アラートはChatwork「souko puppy land」にタスクで通知します"
-                  f"（{'設定済み' if _cw.is_configured() else 'Secrets CHATWORK_API_TOKEN 未設定'}）。")
-    if _cwc2.button("🔔 通知テスト", key="recv_cw_test", disabled=not _cw.is_configured()):
-        ok = _cw.create_task("[info][title]NE API通知テスト[/title]"
-                             "この通知が届けば設定は完了です（テスト送信）。[/info]")
-        st.success("Chatworkにテストタスクを作成しました。") if ok \
-            else st.error("送信に失敗しました。トークン/ルームIDを確認してください。")
-
-    with st.expander("📝 今月の使用量に予測値をセット（計測開始前の過去分）", expanded=False):
-        st.caption("使用量カウントは導入後のNE呼び出しから記録されます。導入前に実行した分を、"
-                   "予測値として今月だけ手入力できます（来月からは実測のみ）。")
-        _b1, _b2 = st.columns(2)
-        _bc = _b1.number_input("今月の呼び出し回数（予測）", 0, 100000, 200, 10, key="recv_seed_calls")
-        _bm = _b2.number_input("今月の通信量（予測・MB）", 0.0, 100000.0, 50.0, 1.0, key="recv_seed_mb")
-        if st.button("この予測値を今月にセット", key="recv_seed_btn"):
-            ne_usage.set_baseline(int(_bc), int(_bm * 1024 * 1024))
-            st.success(f"今月を 呼び出し{int(_bc):,}回・{_bm:.0f}MB で初期化しました。"
-                       "以降の実測はこれに加算されます。")
-            st.rerun()
+    ne_usage.render(compact=True)   # 課金監視（無料枠1000回/月。超過時はChatworkに自動通知）
+    st.caption("**再認可の手順**: 「🔑 NEにログインして認可する」→ NEでログイン・許可 → この画面に"
+               "戻れば完了（トークンはDriveに保存され毎回自動更新）。"
+               "**頻度**: 通常は不要。更新結果に『認証切れ・要再認可』が出たときだけ実施。")
     if not ne_client.is_configured():
         st.error("Secrets に NE_CLIENT_ID / NE_CLIENT_SECRET が未設定です。"
                  "設定するまでNEの自動更新は実行できません。")
     else:
-        # 設定確認: いまアプリが使っている client_id と redirect_uri（本番切替の確認用）
-        _cid = str(st.secrets.get("NE_CLIENT_ID", "")).strip()
-        _cid_mask = (f"{_cid[:4]}…{_cid[-4:]}（{len(_cid)}文字）"
-                     if len(_cid) > 8 else _cid)
-        st.caption(f"現在のNE_CLIENT_ID: **{_cid_mask}** ／ "
-                   f"NE_REDIRECT_URI: `{ne_client.redirect_uri() or '(未設定)'}`。"
-                   "テスト環境の旧IDは `1D78…cdfz`。本番の値に変わっているか確認してください。")
         _tok = ne_client.token_status()
         if _tok:
             st.success(f"認可済み（トークン保存: {_tok.get('saved_at', '不明')}）。"
                        "API呼び出しのたびに自動で更新されるため、通常は再認可不要です。")
         else:
             st.warning("未認可です。下のボタンからNEにログインして認可してください。")
-        c1, c2 = st.columns(2)
         try:
-            c1.link_button("🔑 NEにログインして認可する", ne_client.auth_url(),
+            st.link_button("🔑 NEにログインして認可する", ne_client.auth_url(),
                            use_container_width=True)
         except ne_client.NENotConfigured:
-            c1.caption("Secrets に NE_REDIRECT_URI が未設定のため、下の手貼り付け方式を使ってください。")
-        if c2.button("📶 接続テスト（商品マスタを1件検索）", use_container_width=True,
-                     key="recv_ne_test"):
-            try:
-                res = ne_client.call("api_v1_master_goods/search",
-                                     {"fields": "goods_id", "limit": "1"})
-                ne_usage.flush()   # この1回ぶんを即カウントへ反映
-                st.success(f"接続OK（商品マスタ {res.get('count', '?')}件）。"
-                           "使用量カウントに+1されます（ホームで確認）。")
-            except Exception as e:  # noqa: BLE001
-                st.error(f"接続に失敗しました: {e}")
+            st.caption("Secrets に NE_REDIRECT_URI が未設定のため、下の手貼り付け方式を使ってください。")
 
-        st.caption("**商品コードの存在確認**: 更新が「新規登録時必須です」で失敗する場合、"
-                   "その商品コードがNEに（同じ表記で）登録されているかを確認します。")
-        d1, d2 = st.columns([2, 1])
-        _diag = d1.text_input("商品コード（例: kawa3935）", key="recv_ne_diag_code",
-                              label_visibility="collapsed", placeholder="商品コード")
-        if d2.button("🔎 NEで探す", key="recv_ne_diag_btn", disabled=not _diag.strip()):
-            _code = _diag.strip()
-
-            def _ne_search(params):
-                params = {**params, "fields": "goods_id,goods_name"}
-                return ne_client.call("api_v1_master_goods/search", params).get("data") or []
-
-            # ① 完全一致（入力どおり／大文字／小文字）
-            hit = None
-            _err = False
-            for _label, _val in [("入力どおり", _code), ("大文字", _code.upper()),
-                                 ("小文字", _code.lower())]:
-                try:
-                    _rows = _ne_search({"goods_id-eq": _val, "limit": "1"})
-                except Exception as e:  # noqa: BLE001
-                    st.error(f"検索に失敗しました: {e}")
-                    _err = True
-                    break
-                if _rows:
-                    hit = (_label, _rows[0])
-                    break
-            # ② 完全一致でダメなら部分一致（-like）でNEの実際のコードを探す
-            like_rows = None
-            if hit is None and not _err:
-                try:
-                    like_rows = _ne_search({"goods_id-like": _code, "limit": "20"})
-                except Exception as e:  # noqa: BLE001
-                    st.error(f"部分一致検索に失敗しました: {e}")
-                    _err = True
-
-            if hit:
-                st.success(f"NEに存在します（{hit[0]}の完全一致）→ 商品コード"
-                           f"「**{hit[1].get('goods_id')}**」／{hit[1].get('goods_name', '')}。"
-                           "この表記で自動更新できます。")
-            elif like_rows:
-                _exact = [r for r in like_rows
-                          if str(r.get("goods_id", "")).strip().lower() == _code.lower()]
-                if _exact:
-                    st.success(f"部分一致で見つかりました → NEでの正確な商品コードは"
-                               f"「**{_exact[0].get('goods_id')}**」。"
-                               "更新時はこの表記を自動で使うので、そのまま実行できます。")
-                else:
-                    st.warning(f"「{_code}」に部分一致する商品コードはありますが、"
-                               "完全一致はありません。下の一覧で実際のコードを確認してください。")
-                st.caption("部分一致した商品コード（NEの実際の表記）:")
-                st.dataframe(pd.DataFrame(like_rows), use_container_width=True, hide_index=True)
-            elif not _err:
-                st.error(f"「{_code}」はNEのAPIで見つかりません（完全一致・部分一致とも）。"
-                         "接続先のNEアカウントが商品管理画面と同じか確認してください。"
-                         "下はNEのサンプルです。")
-                try:
-                    _samples = _ne_search({"limit": "8"})
-                    if _samples:
-                        st.dataframe(pd.DataFrame(_samples), use_container_width=True,
-                                     hide_index=True)
-                except Exception:  # noqa: BLE001
-                    pass
-        st.caption("⚠️ **本番環境の資格情報を使ってください**。検索で自社の商品が出ず"
-                   "「hanasakuスプーン＆フォーク（kira0096）」等のサンプルしか出ない場合は、"
-                   "NEアプリの**テスト環境**に接続しています。NEデベロッパー画面でアプリを"
-                   "審査→「販売開始」し、**本番環境のclient_id/client_secret**を取得して"
-                   "Secrets（NE_CLIENT_ID / NE_CLIENT_SECRET）を差し替え、再認可してください。")
-        st.caption("**フォールバック（手貼り付け）**: コールバックページに表示された uid / state を"
+        st.caption("**フォールバック（手貼り付け）**: 上のボタンで戻れないとき、コールバック画面の uid / state を"
                    "貼り付けてトークンを取得します（uidは短命なのですぐに実行してください）。")
         f1, f2, f3 = st.columns([2, 2, 1])
         _uid = f1.text_input("uid", key="recv_ne_uid")
@@ -248,10 +148,11 @@ with st.expander("🔐 Yahoo API接続（管理者用）", expanded=False):
                    "リフレッシュトークンは28日有効です。切れたら再認可してください。")
 
 with st.expander("🟡 Yahoo反映待ちキュー（管理者がまとめてアップ）", expanded=False):
-    st.caption("入荷登録で価格・配送グループが変わった商品が貯まります。"
-               "**下の一括CSVを1回ダウンロード → ストアクリエイターProへアップ → 「アップ済み」**で"
-               "キューを空にします（内容はDrive「Yahoo反映済み」へ自動アーカイブ）。"
-               "YahooのAPI自動反映（審査通過後）が入れば、このキューは不要になります。")
+    st.caption("**手順**: 下の一括CSVをダウンロード → ストアクリエイターPro「商品データアップロード」で"
+               "**アップロードタイプ＝『項目指定』**を選んでアップ → この画面で「アップ済み」を押して"
+               "キューを空にする（内容はDrive「Yahoo反映済み」へ自動アーカイブ）。"
+               "**頻度**: 便種変更（メール便⇔宅配便）が出たときだけ（比較的まれ）。"
+               "価格はAPIで自動反映されるので、通常ここに貯まるのは配送グループのみです。")
     _yp = yq.load_prices(product_folder)
     _yd = yq.load_delivery(product_folder)
     yc1, yc2 = st.columns(2)
@@ -287,8 +188,7 @@ with st.expander("🟡 Yahoo反映待ちキュー（管理者がまとめてア�
 
 with st.expander("⚙️ 楽天 配送方法セット管理番号（便種変更の自動修正に必要）", expanded=False):
     st.caption("番号はRMS「店舗設定→配送方法セット」の一覧で確認できます。"
-               "下の🔧調査ツールで既存商品を見て確かめるのも確実です"
-               "（例: gais0020のメール便SKUはshippingMethodGroup=\"2\"）。")
+               "**頻度**: 最初に1回設定すればOK（配送方法セットの番号を変えたときだけ更新）。")
     s1, s2, s3 = st.columns([1, 1, 1])
     g_tak = s1.text_input("「宅配便のみ」の管理番号",
                           value=str(_settings.get("rakuten_group_takuhai", "")),
@@ -305,43 +205,6 @@ with st.expander("⚙️ 楽天 配送方法セット管理番号（便種変更
             st.success("保存しました（次回から自動入力されます）。")
         except Exception as e:  # noqa: BLE001
             st.warning(f"Drive保存に失敗（この画面では有効）: {e}")
-
-with st.expander("🔧 楽天API調査（配送・価格フィールドの下調べ）", expanded=False):
-    st.caption("商品管理番号を1つ入れて実行すると、その商品の配送関連フィールドと"
-               "SKUの生データを表示します（表示価格などAPIフィールドの実物確認用）。")
-    probe_mn = st.text_input("商品管理番号（例: gais0020）", key="recv_probe_mn")
-    if st.button("🔍 調査する", key="recv_probe_btn",
-                 disabled=not (probe_mn.strip() and rakuten_price.is_configured())):
-        try:
-            st.session_state["recv_probe_result"] = rakuten_price.probe_item(probe_mn.strip())
-        except Exception as e:  # noqa: BLE001
-            st.session_state.pop("recv_probe_result", None)
-            st.error(f"取得失敗: {e}")
-    _probe = st.session_state.get("recv_probe_result")
-    if _probe:
-        item = _probe.get("item", _probe)
-        st.write("商品フィールド一覧:", sorted(item.keys()))
-
-        def _find_keys(obj, path=""):
-            hits = {}
-            if isinstance(obj, dict):
-                for k, v in obj.items():
-                    p = f"{path}.{k}" if path else str(k)
-                    if any(s in str(k).lower() for s in ("ship", "delivery", "postage", "price")):
-                        hits[p] = v
-                    hits.update(_find_keys(v, p))
-            elif isinstance(obj, list):
-                for i, v in enumerate(obj[:3]):
-                    hits.update(_find_keys(v, f"{path}[{i}]"))
-            return hits
-
-        st.write("配送・価格関連フィールド（全階層を検索）:")
-        st.json(_find_keys(item) or {"(該当なし)": "SKUの生データで確認してください"})
-        variants = item.get("variants") or {}
-        if isinstance(variants, dict) and variants:
-            first_key = next(iter(variants))
-            st.write(f"SKU 1件分の生データ（SKU管理番号: {first_key}）:")
-            st.json(variants[first_key])
 
 with st.expander("📚 NE商品マスタ（全機能共通・実行時に最新を自動取得）", expanded=False):
     st.caption("汎用マスタ変換・価格改定と同じ商品マスタ（Driveの最新版）を使います。"
@@ -434,7 +297,9 @@ with st.expander("🗂 資材ナンバー・ロケーションマスタ（プル
                "作業者は上から順に選びます。**NEに登録されるのは最下層の値**"
                "（例: トイプー／TA／TA10B → `TA10B`、梱包室／CB1／空 → `CB1`）。"
                "行の追加＝最下段の空行に入力、削除＝左端のチェック→右上のゴミ箱。"
-               "**編集したら「💾 保存」を押してください**（保存前でもこの画面のプルダウンには反映されます）。")
+               "**編集したら「💾 保存」を押してください**（保存前でもこの画面のプルダウンには反映されます）。"
+               "**頻度**: 新しい棚・資材が増えたときだけ。"
+               "※ロケ不要棚「FAST」（受発注品）は第一階層に自動で常時表示されます（ここに登録不要）。")
     if st.session_state.get("recv_master_seeded"):
         st.info("初期値をセットしました（資材ナンバー19種・ロケーション一覧）。"
                 "内容を確認して「💾 保存」でDriveに確定してください。")
@@ -878,8 +743,9 @@ if plan_rows and not _plan_stale:
                    + "、".join(price_missing)
                    + "（EC運営層へ連絡してください）")
 
-    agree = st.checkbox("上記の内容で**本番データ（ネクストエンジン・楽天）を更新**することを確認しました",
-                        key="recv_agree")
+    agree = st.checkbox(
+        "上記の内容で**本番データ（ネクストエンジン・楽天・Yahoo）を更新**することを確認しました",
+        key="recv_agree")
     if st.button("🚀 更新を実行", type="primary", key="recv_run",
                  disabled=not agree or bool(blockers)):
         import traceback as _tb
@@ -1050,8 +916,9 @@ if res:
         st.info("🟡 Yahoo価格はAPIで反映できなかったため「Yahoo反映待ちキュー」に退避しました"
                 "（管理者がまとめて反映してください）。壊れたAPIは再実行では叩きません。")
     if res.get("n_dv"):
-        st.info("🟡 Yahoo配送グループは下の「Yahoo反映待ちキュー」に貯まりました"
-                "（配送グループは安全のためCSV運用です）。")
+        st.info("🟡 便種変更があったため、**Yahoo配送グループだけ**は「Yahoo反映待ちキュー」に"
+                "貯まりました（価格は⑤でAPI自動反映済み）。配送グループはAPIに項目指定更新が"
+                "無いので、キューのCSVを『項目指定』でアップして反映してください。")
 
     if st.button("🧹 フォームをクリアして次の入荷へ", key="recv_clear"):
         for k in ("recv_df", "recv_plan", "recv_result", "recv_failed", "recv_agree",
