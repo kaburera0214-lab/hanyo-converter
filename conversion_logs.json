@@ -1330,5 +1330,14 @@
     "rows": 91,
     "error": "不明JAN: 28件",
     "unknown_jan": 28
+  },
+  {
+    "ts": "2026-08-05T03:13:26",
+    "func": "hanyo",
+    "template": null,
+    "orders": 90,
+    "rows": 91,
+    "error": "不明JAN: 28件",
+    "unknown_jan": 28
   }
 ]
