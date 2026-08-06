@@ -38,6 +38,10 @@ from lib.yahoo_api import client as yahoo_client
 product_folder = master_store.folder_id()
 params = dict(calc.DEFAULT_PARAMS)  # 計算パラメータは既定値固定（現場では変更しない）
 
+# 楽天RMSライセンスキーの管理台帳（スプレッドシート）。401時にここで更新を促す。
+RMS_KEY_SHEET_URL = ("https://docs.google.com/spreadsheets/d/"
+                     "1fbOwYFoRHZhMs8dI3PfZYZJJnz53Un-EE06QI2oRxbI/edit?gid=674402052#gid=674402052")
+
 FORM_ROWS = 10  # 入力フォームの初期行数（行の追加も可能）
 _FORM_COLUMNS = ["JANコード", "商品コード", "商品名", "現サイズ", "現ロケーション",
                  "資材ナンバー", "ロケーション", "配送サイズ"]
@@ -163,6 +167,8 @@ with st.expander("🔐 楽天RMS接続（管理者用・ライセンスキーの
         "3. **Reboot** → 実行結果の「🔁 失敗した処理だけ再実行」を押す。\n\n"
         "**頻度**: ライセンスキーの有効期限ごと（RMS仕様で定期的に失効）。"
         "`RMS_SERVICE_SECRET` は通常変わりません。")
+    st.link_button("📊 ライセンスキー管理シートを開く", RMS_KEY_SHEET_URL,
+                   use_container_width=True)
 
 with st.expander("🟡 Yahoo反映待ちキュー（管理者がまとめてアップ）", expanded=False):
     st.caption("**手順**: 下の一括CSVをダウンロード → ストアクリエイターPro「商品データアップロード」で"
@@ -902,6 +908,13 @@ if res:
         st.error("🔐 認証切れが発生しています。上の「NE API接続」または"
                  "RMSライセンスキー（Secrets）を確認して再認可・更新後、"
                  "「失敗した処理だけ再実行」を押してください。")
+        # 楽天RMSの認証エラーなら、ライセンスキー更新をシートで促す。
+        if any("RMS" in str(r.get("メッセージ", "")) for r in results
+               if r.get("状態") == "失敗"):
+            st.warning("楽天RMSのライセンスキー期限切れの可能性があります。"
+                       "下のシートで最新キーを確認し、Secrets `RMS_LICENSE_KEY` を更新して"
+                       "Rebootしてください（詳細は上の🔐楽天RMS接続パネル）。")
+            st.link_button("📊 楽天ライセンスキー管理シートを開く", RMS_KEY_SHEET_URL)
 
     failed = st.session_state.get("recv_failed") or {}
     if any(failed.values()):
