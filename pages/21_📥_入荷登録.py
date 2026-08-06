@@ -147,6 +147,23 @@ with st.expander("🔐 Yahoo API接続（管理者用）", expanded=False):
         st.caption("公開鍵は店舗（ストアクリエイターPro）に登録済みなら共用で問題なく、"
                    "リフレッシュトークンは28日有効です。切れたら再認可してください。")
 
+with st.expander("🔐 楽天RMS接続（管理者用・ライセンスキーの更新手順）", expanded=False):
+    if rakuten_price.is_configured():
+        st.success("設定済み（Secrets: RMS_SERVICE_SECRET / RMS_LICENSE_KEY）。")
+    else:
+        st.error("未設定です（Secrets: RMS_SERVICE_SECRET / RMS_LICENSE_KEY）。")
+    st.caption("楽天RMSは**ライセンスキー方式**（NE/YahooのようなOAuth再認可ではありません）ので、"
+               "この画面からの再接続はできません。`HTTP 401`（ライセンスキー期限切れ）が出たら、"
+               "以下の手順でキーを更新してください。")
+    st.markdown(
+        "**更新手順（RMS 401が出たとき）**\n"
+        "1. RMS「店舗設定 → 2 WEB APIサービス（R-Login/API利用）」で"
+        "**licenseKeyを発行（更新）**する。\n"
+        "2. Streamlit Cloud の **Secrets `RMS_LICENSE_KEY`** を新しい値に差し替える。\n"
+        "3. **Reboot** → 実行結果の「🔁 失敗した処理だけ再実行」を押す。\n\n"
+        "**頻度**: ライセンスキーの有効期限ごと（RMS仕様で定期的に失効）。"
+        "`RMS_SERVICE_SECRET` は通常変わりません。")
+
 with st.expander("🟡 Yahoo反映待ちキュー（管理者がまとめてアップ）", expanded=False):
     st.caption("**手順**: 下の一括CSVをダウンロード → ストアクリエイターPro「商品データアップロード」で"
                "**アップロードタイプ＝『項目指定』**を選んでアップ → この画面で「アップ済み」を押して"
