@@ -20,21 +20,40 @@ PRICE_PENDING = "yahoo_pending_prices.csv"
 DELIVERY_PENDING = "yahoo_pending_delivery.csv"
 ARCHIVE_FOLDER = "Yahoo反映済み"
 _ENCODING = "cp932"   # Yahooストアクリエイターは Shift-JIS 系
+# キューCSVの読込は毎rerunで発生する（表示用のexpander内）。この秒数はセッションに
+# キャッシュしてDrive往復を省く（体感速度向上）。書き込み(_save)時はキャッシュ破棄で整合。
+_QUEUE_TTL = 60
+_QUEUE_CK = "_yahoo_queue_ck"
 
 
-def _load(name, folder_id):
+def _load(name, folder_id, use_cache=True):
+    import time
+    import streamlit as st
+    ck = st.session_state.get(_QUEUE_CK) or {}
+    ent = ck.get(name)
+    if use_cache and ent and ent.get("folder") == folder_id \
+            and (time.time() - ent["at"]) < _QUEUE_TTL:
+        return ent["df"]
     f = drive_master.find_file(name, folder_id)
     if not f:
-        return pd.DataFrame()
-    try:
-        return csv_import.read_csv_auto(drive_master.download_bytes(f["id"]))
-    except Exception:  # noqa: BLE001
-        return pd.DataFrame()
+        df = pd.DataFrame()
+    else:
+        try:
+            df = csv_import.read_csv_auto(drive_master.download_bytes(f["id"]))
+        except Exception:  # noqa: BLE001
+            df = pd.DataFrame()
+    ck[name] = {"folder": folder_id, "at": time.time(), "df": df}
+    st.session_state[_QUEUE_CK] = ck
+    return df
 
 
 def _save(df, name, folder_id):
     data = df.to_csv(index=False, lineterminator="\r\n").encode(_ENCODING, errors="replace")
     drive_master.upload_or_replace(data, name, folder_id, mimetype="text/csv")
+    import streamlit as st
+    ck = st.session_state.get(_QUEUE_CK) or {}
+    ck.pop(name, None)                    # 書き込んだので次回読込はDriveから取り直す
+    st.session_state[_QUEUE_CK] = ck
 
 
 def _now():
@@ -64,7 +83,7 @@ def _append(rows, name, columns, value_col, folder_id):
     if not rows:
         return len(load_prices(folder_id) if name == PRICE_PENDING
                    else load_delivery(folder_id))
-    cur = _load(name, folder_id)
+    cur = _load(name, folder_id, use_cache=False)   # 読み書きは最新を読む
     merged = {}
     if not cur.empty and "code" in cur.columns:
         for _, r in cur.iterrows():
@@ -81,7 +100,7 @@ def _append(rows, name, columns, value_col, folder_id):
 
 
 def _clear(name, columns, label, folder_id):
-    cur = _load(name, folder_id)
+    cur = _load(name, folder_id, use_cache=False)   # 読み書きは最新を読む
     if cur.empty:
         return 0
     arch_id = drive_master.get_or_create_folder(ARCHIVE_FOLDER, folder_id)

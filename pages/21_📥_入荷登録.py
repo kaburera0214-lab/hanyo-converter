@@ -259,6 +259,7 @@ with st.expander("📚 NE商品マスタ（全機能共通・実行時に最新�
             if not jan_ok:
                 st.warning("JANコード列が空でした。フィールド名（goods_jan_code）を確認します。")
             st.session_state.pop("_master_store", None)   # 次回load_masterで読み直す
+            master_store.invalidate_latest()              # 最新版チェックTTLも破棄
         except Exception as e:  # noqa: BLE001
             bar.empty()
             st.error(f"NEマスタの取得に失敗しました: {e}")
@@ -424,6 +425,16 @@ def _resolve_code(jan):
     return code
 
 
+_hist = st.session_state.get("recv_history") or []
+with st.expander(f"🧾 実行履歴（このセッション {len(_hist)}件）— どこまで実行したかの確認用",
+                 expanded=False):
+    if _hist:
+        st.caption("このセッションで「更新を実行」した記録です（新しい順）。"
+                   "全期間の証跡はDrive「価格改定履歴」に残ります。")
+        st.dataframe(pd.DataFrame(_hist), use_container_width=True, hide_index=True)
+    else:
+        st.caption("まだ実行はありません。「更新を実行」するとここに記録されます。")
+
 st.markdown("### ① 入荷商品の入力")
 
 with st.expander("📄 NE現状の点検（誤登録さがし・一覧ダウンロード）", expanded=False):
@@ -489,7 +500,25 @@ tab_one, tab_bulk = st.tabs(["📱 1商品ずつ", "📋 複数商品まとめ�
 single_rows = []
 with tab_one:
     st.caption("JANをスキャン（Enterで確定）→ **▼のプルダウンを3つ選ぶ** → 下の「🧮 チェック」へ。")
-    jan1 = _cell(st.text_input("JAN（スキャン→Enter）", key="recv1_jan"))
+    # クリア時に nonce を +1 して全ウィジェットを新品にする（＝JAN・プルダウンを確実に空へ）。
+    _n1 = st.session_state.setdefault("recv1_nonce", 0)
+
+    def _k1(base):
+        return f"recv1_{base}_{_n1}"
+
+    jan1 = _cell(st.text_input("JAN（スキャン→Enter）", key=_k1("jan")))
+    # 初期表示・クリア後は JAN 入力へフォーカス（スキャンをすぐ始められるように）。
+    if st.session_state.pop("_focus_jan", False) or not st.session_state.get("_recv_focused"):
+        st.session_state["_recv_focused"] = True
+        import streamlit.components.v1 as _components
+        _components.html(
+            '<script>'
+            'const d=window.parent.document;'
+            'const t=setInterval(()=>{'
+            'const e=d.querySelectorAll(\'input[aria-label="JAN（スキャン→Enter）"]\');'
+            'if(e.length){e[e.length-1].focus();clearInterval(t);}},60);'
+            'setTimeout(()=>clearInterval(t),3000);'
+            '</script>', height=0)
     code1 = _resolve_code(jan1)
     if jan1 and not code1:
         st.error(f"⚠️ マスタに無いJANです: {jan1}")
@@ -505,18 +534,18 @@ with tab_one:
         st.markdown("**📍 ロケーション（上から順に選択）**")
         h1, h2, h3 = st.columns(3)
         lv1 = h1.selectbox("第一階層（エリア）", list(loc_tree), index=None,
-                           placeholder="▼ 選択", key="recv1_l1")
+                           placeholder="▼ 選択", key=_k1("l1"))
         _lv2_raw = loc_tree.get(lv1, {}) if lv1 else {}
         lv2_opts = [x for x in _lv2_raw if x]           # 空キー（単層ロケ）は候補から除く
         _single = bool(lv1) and not lv2_opts            # 第一階層だけで確定する単層ロケ（FAST等）
         lv2 = h2.selectbox("第二階層（棚・列）", lv2_opts, index=None,
                            placeholder="この階層は不要" if _single else "▼ 選択",
-                           key="recv1_l2", disabled=not lv2_opts)
+                           key=_k1("l2"), disabled=not lv2_opts)
         lv3_opts = _lv2_raw.get(lv2, []) if (lv1 and lv2) else []
         lv3 = h3.selectbox("第三階層（段）", lv3_opts, index=None,
                            placeholder=("この階層は不要" if _single
                                         else ("▼ 選択" if lv3_opts else "この棚は第二階層まで")),
-                           key="recv1_l3", disabled=not lv3_opts)
+                           key=_k1("l3"), disabled=not lv3_opts)
         # 単層ロケ（FAST等）は第一階層で確定。通常は最下層（第三>第二）で確定。
         if _single:
             loc1 = lv1
@@ -527,15 +556,15 @@ with tab_one:
 
         s1, s3 = st.columns(2)
         mat1 = s1.selectbox("📂 資材ナンバー", material_opts, index=None,
-                            placeholder="▼ タップして選択", key="recv1_mat")
+                            placeholder="▼ タップして選択", key=_k1("mat"))
         # 資材ナンバーが変わったら配送サイズを自動セット（60A→60・MB系→nekop・ND/STはセットなし）
-        if st.session_state.get("recv1_mat_prev") != mat1:
-            st.session_state["recv1_mat_prev"] = mat1
+        if st.session_state.get(_k1("mat_prev")) != mat1:
+            st.session_state[_k1("mat_prev")] = mat1
             _ds1 = rp.default_size(mat1, size_opts) if mat1 else None
             if _ds1:
-                st.session_state["recv1_size"] = _ds1
+                st.session_state[_k1("size")] = _ds1
         size1 = s3.selectbox("📦 配送サイズ（項目1・自動セット／変更可）", size_opts, index=None,
-                             placeholder="▼ タップして選択", key="recv1_size")
+                             placeholder="▼ タップして選択", key=_k1("size"))
         if mat1 and loc1 and size1:
             single_rows = [{"商品コード": code1, "資材ナンバー": mat1,
                             "ロケーション": loc1, "配送サイズ": size1}]
@@ -878,6 +907,18 @@ if plan_rows and not _plan_stale:
                                            "url": url, "err": err,
                                            "files": files, "n_dv": len(dv_rows)}
         st.session_state["recv_failed"] = failed
+        # 実行履歴に1件追記（どこまで実行したかの確認用。セッション内で保持）。
+        _codes = [str(r.get("商品コード", "")) for r in plan_rows if r.get("商品コード")]
+        _nok = sum(1 for r in results if r.get("状態") == "成功")
+        _nng = sum(1 for r in results if r.get("状態") in ("失敗", "CSV退避"))
+        _hist = st.session_state.setdefault("recv_history", [])
+        _hist.insert(0, {
+            "時刻": _dt.datetime.now().strftime("%m/%d %H:%M"),
+            "商品": "、".join(dict.fromkeys(_codes)) or "-",
+            "結果": f"成功{_nok}・要確認{_nng}" if _nng else f"成功{_nok}",
+            "証跡": run_name or "-",
+        })
+        del st.session_state["recv_history"][50:]   # 直近50件だけ保持
         st.rerun()
 
 
@@ -951,8 +992,11 @@ if res:
                 "無いので、キューのCSVを『項目指定』でアップして反映してください。")
 
     if st.button("🧹 フォームをクリアして次の入荷へ", key="recv_clear"):
-        for k in ("recv_df", "recv_plan", "recv_result", "recv_failed", "recv_agree",
-                  "recv1_jan", "recv1_mat", "recv1_loc", "recv1_size"):
+        for k in ("recv_df", "recv_plan", "recv_plan_key", "recv_result",
+                  "recv_failed", "recv_agree"):
             st.session_state.pop(k, None)
+        # nonce+1 で 1商品ずつ・まとめて表の全ウィジェットを新品化（JAN・プルダウンが確実に空に）
         st.session_state["recv_nonce"] = st.session_state.get("recv_nonce", 0) + 1
+        st.session_state["recv1_nonce"] = st.session_state.get("recv1_nonce", 0) + 1
+        st.session_state["_focus_jan"] = True   # クリア後もJAN入力にフォーカス
         st.rerun()

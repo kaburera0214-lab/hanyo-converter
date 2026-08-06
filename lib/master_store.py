@@ -78,10 +78,34 @@ def _latest_master(folder):
     return (best[1], best[2]) if best else (None, None)
 
 
+# 最新版チェック（Drive一覧問い合わせ）の間隔。Streamlitは操作のたびに全再実行するため、
+# この秒数の間はrerunでもDriveを叩かずセッションの結果を使い回す（＝体感速度を上げる）。
+# 手動アップ(save_master)や「読み直し」時はキャッシュを破棄するので即時反映は保たれる。
+_LATEST_TTL = 90
+_LATEST_CK = "_master_latest_ck"
+
+
+def invalidate_latest():
+    """最新版チェックのTTLキャッシュを破棄する（アップロード・強制読み直し時に呼ぶ）。"""
+    st.session_state.pop(_LATEST_CK, None)
+
+
+def _latest_master_cached(folder):
+    """_latest_master を _LATEST_TTL 秒だけセッションにキャッシュして返す。"""
+    import time
+    c = st.session_state.get(_LATEST_CK)
+    now = time.time()
+    if c and c.get("folder") == folder and (now - c["at"]) < _LATEST_TTL:
+        return c["result"]
+    result = _latest_master(folder)
+    st.session_state[_LATEST_CK] = {"folder": folder, "at": now, "result": result}
+    return result
+
+
 def latest_file():
     """Drive上の最新マスタ（手動/API自動を横断）のメタ情報。無ければNone。表示用。"""
     try:
-        f, _origin = _latest_master(folder_id())
+        f, _origin = _latest_master_cached(folder_id())
         return f
     except Exception:  # noqa: BLE001
         return None
@@ -94,7 +118,7 @@ def load_master():
     返り値: (df, meta文字列) ／ 失敗時: (None, 理由)
     """
     try:
-        f, origin = _latest_master(folder_id())
+        f, origin = _latest_master_cached(folder_id())
     except Exception as e:  # noqa: BLE001
         return None, f"Driveに接続できません: {e}"
     if not f:
@@ -126,6 +150,7 @@ def save_master(file_bytes):
         raise ValueError(f"「商品コード」列が見つかりません / 実際の列: {list(df.columns)[:15]}")
     name = drive_master.upload_versioned(file_bytes, "master", folder_id())
     st.session_state.pop(_SS_KEY, None)  # 次のload_masterで新版を読み直す
+    invalidate_latest()                  # 最新版チェックのTTLも破棄（即時反映）
     return df, name
 
 
