@@ -9,7 +9,11 @@ def now_jst():
     return datetime.now(JST)
 
 st.set_page_config(page_title="回答管理", layout="wide")
+
+from lib.qa.thread_ui import inject_qa_styles, render_thread, render_text_block
+
 st.title("✅ 回答・管理（パピー用）")
+inject_qa_styles()
 
 st_autorefresh(interval=60000, key="auto_refresh")
 
@@ -258,9 +262,10 @@ else:
         emoji = STATUS_EMOJI.get(q["ステータス"], "⚪")
         label = f"{emoji} {q['タイトル']}　（{q['ステータス']}）　{q['質問日時'][:10] if q['質問日時'] else ''}"
         with st.expander(label):
-            st.markdown(f"**質問内容：** {q['質問本文']}")
+            # 生テキストをMarkdown解釈させない（「---」で見出し化して文字サイズが崩れるため）
+            render_text_block(q["質問本文"], label="質問内容")
             if q["画像URL"]:
-                st.markdown("**画像：**")
+                st.caption("画像")
                 urls = q["画像URL"].split("\n")
                 cols = st.columns(min(len(urls), 3))
                 for i, url in enumerate(urls):
@@ -274,20 +279,26 @@ else:
                             st.image(img_url, use_container_width=True)
                             st.caption(f"[拡大表示]({url})")
             if q["タグ"]:
-                st.markdown(f"**タグ：** {', '.join(q['タグ'])}")
+                st.caption(f"タグ：{'・'.join(q['タグ'])}")
             st.divider()
 
             if is_editing:
                 st.warning("現在インハナさんが編集中です。編集完了後に対応してください。")
 
             elif q["ステータス"] == "再質問":
-                # 会話ログ表示
-                if q["会話ログ"]:
-                    st.markdown("**会話の流れ：**")
-                    conv_height = max(200, q["会話ログ"].count("\n") * 22 + 100)
-                    log_html = q["会話ログ"].replace("\n", "<br>")
-                    st.markdown(f'<div style="background:#fff;border:1px solid #dee2e6;border-radius:6px;padding:12px;line-height:1.7;font-size:0.9em;">{log_html}</div>', unsafe_allow_html=True)
-                st.error(f"**追加質問：** {q['追加質問']}")
+                # 会話の流れ（最新の追加質問はスレッド末尾に「未対応」で表示されるので、
+                # ここで追加質問を再掲しない＝二重表示をやめる）
+                st.caption("会話の流れ")
+                render_thread(
+                    q["会話ログ"],
+                    highlight_last=True,
+                    fallback_q=q["質問本文"],
+                    fallback_a=q["回答本文"],
+                )
+                if q["追加質問"] and not q["会話ログ"]:
+                    # 会話ログが無い古いデータ用のフォールバック
+                    render_text_block(q["追加質問"], label="追加質問")
+                st.caption("↑ スレッド末尾の「未対応」が今回の追加質問です。下の欄に回答してください。")
                 st.divider()
 
                 # 追加質問への回答（高さは固定150px）
@@ -393,20 +404,18 @@ else:
                 if not is_answer_editing:
                     # 会話ログがあれば全会話を表示、なければ通常の回答表示
                     if q["会話ログ"]:
-                        st.markdown("**会話の流れ：**")
-                        log_html = q["会話ログ"].replace("\n", "<br>")
-                        st.markdown(f'<div style="background:#fff;border:1px solid #dee2e6;border-radius:6px;padding:12px;line-height:1.7;font-size:0.9em;">{log_html}</div>', unsafe_allow_html=True)
+                        st.caption("会話の流れ")
+                        render_thread(q["会話ログ"])
                     else:
-                        st.markdown("**回答内容：**")
-                        st.text_area("", value=answer_text, height=answer_height, key=f"view_{q['id']}", label_visibility="collapsed")
+                        render_text_block(answer_text, label="回答内容")
                     if is_done:
                         st.success("✅ 完了")
                     else:
                         st.info("🟠 回答済み（インハナさんの確認待ち）")
                     if q["判断理由カテゴリ"]:
-                        st.markdown(f"**判断理由：** {', '.join(q['判断理由カテゴリ'])}")
+                        st.caption(f"判断理由：{'・'.join(q['判断理由カテゴリ'])}")
                     if q["判断理由詳細"]:
-                        st.markdown(f"**詳細：** {q['判断理由詳細']}")
+                        render_text_block(q["判断理由詳細"], label="判断理由の詳細")
                     col_btn1, col_btn2, col_btn3 = st.columns(3)
                     with col_btn1:
                         if st.button("✏️ 回答を修正する", key=f"start_edit_ans_{q['id']}"):

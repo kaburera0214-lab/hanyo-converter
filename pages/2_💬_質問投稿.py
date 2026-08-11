@@ -305,7 +305,11 @@ def get_answered_questions():
 
 # ── 新規投稿フォーム ─────────────────────────────────────────────────
 st.set_page_config(page_title="質問を送る", layout="centered")
+
+from lib.qa.thread_ui import inject_qa_styles, render_text_block, text_to_html
+
 st.title("📝 質問を送る（インハナさん用）")
+inject_qa_styles()
 
 st.info("""**記入ルール**
 - タイトルは「大カテゴリ＋中カテゴリ」の粒度で（例：CS・保険証券の発行タイミングについて）
@@ -390,12 +394,11 @@ elif step == "similar":
 
         for i, q in enumerate(similar):
             with st.expander(f"**{q['タイトル'] or '（タイトルなし）'}**　タグ：{'・'.join(q['タグ'])}", expanded=False):
-                st.markdown("**質問内容：**")
-                st.markdown(q["質問本文"][:400] + ("…" if len(q["質問本文"]) > 400 else ""))
+                body = q["質問本文"][:400] + ("…" if len(q["質問本文"]) > 400 else "")
+                render_text_block(body, label="質問内容")
                 if q["回答本文"]:
-                    st.markdown("**回答：**")
-                    ans_html = q["回答本文"][:400].replace("\n", "<br>") + ("…" if len(q["回答本文"]) > 400 else "")
-                    st.markdown(f'<div style="background:#fff;border:1px solid #dee2e6;border-radius:6px;padding:10px;line-height:1.7;">{ans_html}</div>', unsafe_allow_html=True)
+                    answer = q["回答本文"][:400] + ("…" if len(q["回答本文"]) > 400 else "")
+                    render_text_block(answer, label="回答")
                 else:
                     st.caption("（回答なし）")
     else:
@@ -437,8 +440,10 @@ elif step == "preview":
     with col_orig:
         st.markdown("**原文**")
         st.text_input("タイトル（原文）", value=st.session_state["orig_title"], key="orig_t", label_visibility="visible")
-        orig_html = orig_content.replace("\n", "<br>")
-        st.markdown(f'<div style="background:#fff;border:1px solid #dee2e6;border-radius:6px;padding:12px;line-height:1.7;font-size:0.9em;min-height:{content_height}px;">{orig_html}</div>', unsafe_allow_html=True)
+        st.markdown(
+            f'<div class="qa-panel" style="min-height:{content_height}px;">{text_to_html(orig_content)}</div>',
+            unsafe_allow_html=True,
+        )
 
     with col_rewrite:
         st.markdown("**AIリライト（必要なら編集してください）**")
@@ -485,8 +490,8 @@ else:
 
         with st.expander(label, expanded=is_editing):
             if not is_editing:
-                st.markdown(f"**質問内容：** {q['質問本文']}")
-                st.markdown(f"**タグ：** {', '.join(q['タグ'])}")
+                render_text_block(q["質問本文"], label="質問内容")
+                st.caption(f"タグ：{'・'.join(q['タグ'])}")
                 if st.button("✏️ 編集する", key=f"start_edit_{q['id']}"):
                     st.session_state["editing_id"] = q["id"]
                     try:
