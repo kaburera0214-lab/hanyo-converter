@@ -5,7 +5,7 @@
 """
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -71,6 +71,28 @@ def test_retag():
     print("OK retag")
 
 
+def test_undo_window():
+    done_at = datetime(2026, 8, 12, 9, 0, tzinfo=h.JST)
+    hist = "\n".join([
+        "[2026-08-11 11:30] パピー：回答",
+        "[2026-08-12 09:00] インハナ：完了",
+    ])
+    assert h.last_action_at(hist, "完了") == done_at
+    # 完了直後 → 取消できる
+    left = h.undo_remaining(hist, now=done_at + timedelta(minutes=30))
+    assert left is not None and int(left.total_seconds() // 60) == 150
+    # 期限ちょうど・過ぎたあと → 取消不可
+    assert h.undo_remaining(hist, now=done_at + timedelta(hours=h.UNDO_WINDOW_HOURS)) is None
+    assert h.undo_remaining(hist, now=done_at + timedelta(days=1)) is None
+    # 完了行が無い古いデータ → 取消不可
+    assert h.undo_remaining("[2026-08-11 11:30] パピー：回答", now=done_at) is None
+    assert h.undo_remaining("", now=done_at) is None
+    # 完了→取消→再完了。最後の完了が基準になる
+    redone = hist + "\n[2026-08-12 09:10] インハナ：完了取消\n[2026-08-12 15:00] インハナ：完了"
+    assert h.last_action_at(redone, "完了") == datetime(2026, 8, 12, 15, 0, tzinfo=h.JST)
+    print("OK undo window")
+
+
 def test_retag_empty():
     assert h.retag_history("") == ("", 0)
     assert h.retag_history(None) == ("", 0)
@@ -82,5 +104,6 @@ if __name__ == "__main__":
     test_append()
     test_trim()
     test_retag()
+    test_undo_window()
     test_retag_empty()
     print("\nすべて通過")

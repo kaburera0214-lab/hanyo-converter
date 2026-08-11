@@ -36,6 +36,10 @@ HISTORY_LINE_RE = re.compile(r"^\[(?P<ts>[^\]]*)\]\s*(?P<actor>[^：:]+)[：:]\s
 MAX_LINES = 30
 MAX_CHARS = 1900  # Notionのrich_textは2000文字上限
 
+# 「完了を取り消す」を出しておく時間。誤操作のリカバリ用なので短くする。
+# ナレッジとして確定させるため、これを過ぎた質問は完了のまま戻せない。
+UNDO_WINDOW_HOURS = 3
+
 
 def now_jst():
     return datetime.now(JST)
@@ -70,6 +74,33 @@ def append_history(existing_history, action, actor=None, at=None):
     lines = existing.split("\n") if existing else []
     lines.append(history_entry(action, actor=actor, at=at))
     return trim_history(lines)
+
+
+def last_action_at(existing_history, action):
+    """履歴から指定アクションの最後の日時を返す。無ければ None。"""
+    found = None
+    for line in (existing_history or "").split("\n"):
+        m = HISTORY_LINE_RE.match(line)
+        if not m or m.group("action") != action:
+            continue
+        try:
+            found = datetime.strptime(m.group("ts").strip(), "%Y-%m-%d %H:%M").replace(tzinfo=JST)
+        except ValueError:
+            continue
+    return found
+
+
+def undo_remaining(existing_history, action="完了", hours=UNDO_WINDOW_HOURS, now=None):
+    """取消ボタンを出しておく残り時間を返す。取消不可なら None。
+
+    履歴に該当アクションが無い（＝履歴が残る前の古いデータ）場合も
+    期限切れ扱いにして None を返す。
+    """
+    at = last_action_at(existing_history, action)
+    if at is None:
+        return None
+    remaining = (at + timedelta(hours=hours)) - (now or now_jst())
+    return remaining if remaining.total_seconds() > 0 else None
 
 
 def retag_history(existing_history):

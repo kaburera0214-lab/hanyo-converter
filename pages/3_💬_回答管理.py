@@ -10,7 +10,7 @@ def now_jst():
 
 st.set_page_config(page_title="回答管理", layout="wide")
 
-from lib.qa.history import append_history, retag_history
+from lib.qa.history import append_history, retag_history, undo_remaining
 from lib.qa.thread_ui import inject_qa_styles, render_thread, render_text_block
 
 st.title("✅ 回答・管理（パピー用）")
@@ -397,8 +397,14 @@ else:
                         render_thread(q["会話ログ"])
                     else:
                         render_text_block(answer_text, label="回答内容")
+                    # 完了＝ナレッジとして確定。追加質問はできず、取消も一定時間内だけ
+                    undo_left = undo_remaining(q["編集履歴"]) if is_done else None
                     if is_done:
                         st.success("✅ 完了")
+                        st.caption(
+                            "完了した質問への追加質問はできません。"
+                            "続きがある場合は「📝 質問を送る」から新規で起票してください。"
+                        )
                     else:
                         st.info("🟠 回答済み（インハナさんの確認待ち）")
                     if q["判断理由カテゴリ"]:
@@ -411,21 +417,26 @@ else:
                             st.session_state[edit_key] = "auth"
                             st.rerun()
                     with col_btn2:
-                        if st.button("💬 追加質問する", key=f"start_followup_{q['id']}"):
-                            st.session_state[edit_key] = "followup"
-                            st.rerun()
+                        if not is_done:
+                            if st.button("💬 追加質問する", key=f"start_followup_{q['id']}"):
+                                st.session_state[edit_key] = "followup"
+                                st.rerun()
                     with col_btn3:
                         if is_done:
-                            if st.button("↩️ 完了を取り消す", key=f"undone_{q['id']}"):
-                                new_history = append_history(q["編集履歴"], "完了取消")
-                                Client(auth=NOTION_API_KEY).pages.update(
-                                    page_id=q["id"],
-                                    properties={
-                                        "ステータス": {"select": {"name": "回答済"}},
-                                        "編集履歴": {"rich_text": [{"text": {"content": new_history}}]},
-                                    }
-                                )
-                                st.rerun()
+                            # 誤操作のリカバリ用。完了からUNDO_WINDOW_HOURS時間で消える
+                            if undo_left:
+                                if st.button("↩️ 完了を取り消す", key=f"undone_{q['id']}"):
+                                    new_history = append_history(q["編集履歴"], "完了取消")
+                                    Client(auth=NOTION_API_KEY).pages.update(
+                                        page_id=q["id"],
+                                        properties={
+                                            "ステータス": {"select": {"name": "回答済"}},
+                                            "編集履歴": {"rich_text": [{"text": {"content": new_history}}]},
+                                        }
+                                    )
+                                    st.rerun()
+                                mins = int(undo_left.total_seconds() // 60)
+                                st.caption(f"取消できるのはあと{mins // 60}時間{mins % 60}分です")
                         else:
                             if st.button("✅ 完了にする", key=f"done_{q['id']}", type="primary"):
                                 new_history = append_history(q["編集履歴"], "完了")
