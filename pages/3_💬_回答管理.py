@@ -10,6 +10,7 @@ def now_jst():
 
 st.set_page_config(page_title="回答管理", layout="wide")
 
+from lib.qa.history import append_history, retag_history
 from lib.qa.thread_ui import inject_qa_styles, render_thread, render_text_block
 
 st.title("✅ 回答・管理（パピー用）")
@@ -107,18 +108,6 @@ def get_current_status(page_id):
     except Exception:
         return None
 
-def append_history(existing_history, actor, action):
-    """履歴に1行追記（日本時間）。action例：回答 / 回答修正 / 追加回答 / 完了"""
-    timestamp = now_jst().strftime("%Y-%m-%d %H:%M")
-    new_entry = f"[{timestamp}] {actor}：{action}"
-    lines = existing_history.strip().split("\n") if existing_history.strip() else []
-    lines.append(new_entry)
-    lines = lines[-30:]
-    result = "\n".join(lines)
-    while len(result) > 1900 and len(lines) > 1:
-        lines = lines[1:]
-        result = "\n".join(lines)
-    return result
 
 def generate_draft(question, questions):
     if not ANTHROPIC_API_KEY:
@@ -315,7 +304,7 @@ else:
                         new_log = q["会話ログ"] + f"\n\n【追加A｜{timestamp}】{add_answer.strip()}"
                         if len(new_log) > 1900:
                             new_log = "（古い会話を省略）\n" + new_log[-1800:]
-                        new_history = append_history(q["編集履歴"], "パピー", "追加回答")
+                        new_history = append_history(q["編集履歴"], "追加回答")
                         c = Client(auth=NOTION_API_KEY)
                         c.pages.update(
                             page_id=q["id"],
@@ -375,7 +364,7 @@ else:
                     elif not 回答本文.strip():
                         st.error("回答内容を入力してください")
                     else:
-                        new_history = append_history(q["編集履歴"], "パピー", "回答")
+                        new_history = append_history(q["編集履歴"], "回答")
                         c = Client(auth=NOTION_API_KEY)
                         c.pages.update(
                             page_id=q["id"],
@@ -428,7 +417,7 @@ else:
                     with col_btn3:
                         if is_done:
                             if st.button("↩️ 完了を取り消す", key=f"undone_{q['id']}"):
-                                new_history = append_history(q["編集履歴"], "パピー", "完了取消")
+                                new_history = append_history(q["編集履歴"], "完了取消")
                                 Client(auth=NOTION_API_KEY).pages.update(
                                     page_id=q["id"],
                                     properties={
@@ -439,7 +428,7 @@ else:
                                 st.rerun()
                         else:
                             if st.button("✅ 完了にする", key=f"done_{q['id']}", type="primary"):
-                                new_history = append_history(q["編集履歴"], "パピー", "完了")
+                                new_history = append_history(q["編集履歴"], "完了")
                                 Client(auth=NOTION_API_KEY).pages.update(
                                     page_id=q["id"],
                                     properties={
@@ -470,7 +459,7 @@ else:
                                 new_log = existing_log + f"\n\n【追加Q｜{timestamp}】{follow_up.strip()}"
                                 if len(new_log) > 1900:
                                     new_log = "（古い会話を省略）\n" + new_log[-1800:]
-                                new_history = append_history(q["編集履歴"], "パピー", "追加質問")
+                                new_history = append_history(q["編集履歴"], "追加質問")
                                 Client(auth=NOTION_API_KEY).pages.update(
                                     page_id=q["id"],
                                     properties={
@@ -517,7 +506,7 @@ else:
                             if not new_answer.strip():
                                 st.error("回答内容を入力してください")
                             else:
-                                new_history = append_history(q["編集履歴"], editor_name, "回答修正")
+                                new_history = append_history(q["編集履歴"], "回答修正", actor=editor_name)
                                 c = Client(auth=NOTION_API_KEY)
                                 c.pages.update(
                                     page_id=q["id"],
@@ -538,3 +527,41 @@ else:
                     if q["編集履歴"]:
                         with st.expander("📋 履歴"):
                             st.text(q["編集履歴"])
+
+# ── メンテナンス：編集履歴の記録者を過去分まで実態に合わせる ──────────
+# 以前はこのページからの操作をすべて「パピー」で記録していたため、実際は
+# インハナさんの操作である「追加質問」「完了」がパピー名で残っている。
+# 何度実行しても結果は同じ（対象が無くなれば「修正不要」と出るだけ）。
+# expanderではなくcheckboxにしているのは、60秒ごとの自動リロードで閉じないようにするため。
+if st.checkbox("🛠 メンテナンス：編集履歴の記録者を実態に合わせる（過去分）"):
+    retag_targets = []
+    for q in questions:
+        fixed_history, changed_lines = retag_history(q["編集履歴"])
+        if changed_lines:
+            retag_targets.append((q, fixed_history, changed_lines))
+
+    if not retag_targets:
+        st.success("修正が必要な履歴はありません。")
+    else:
+        st.caption(
+            f"{len(retag_targets)}件の質問に修正対象があります"
+            f"（計{sum(t[2] for t in retag_targets)}行）。内容を確認して反映してください。"
+        )
+        for q, fixed_history, changed_lines in retag_targets:
+            st.markdown(f"**#{q['番号']} {q['タイトル']}**（{changed_lines}行）")
+            diff = [
+                f"- {before}\n+ {after}"
+                for before, after in zip(q["編集履歴"].split("\n"), fixed_history.split("\n"))
+                if before != after
+            ]
+            st.code("\n".join(diff), language="diff")
+
+        if st.button("💾 上記のとおり履歴を修正する", type="primary"):
+            c = Client(auth=NOTION_API_KEY)
+            for q, fixed_history, _ in retag_targets:
+                c.pages.update(
+                    page_id=q["id"],
+                    properties={"編集履歴": {"rich_text": [{"text": {"content": fixed_history}}]}},
+                )
+            st.success(f"{len(retag_targets)}件の履歴を修正しました。")
+            st.rerun()

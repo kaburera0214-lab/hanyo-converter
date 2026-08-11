@@ -306,6 +306,7 @@ def get_answered_questions():
 # ── 新規投稿フォーム ─────────────────────────────────────────────────
 st.set_page_config(page_title="質問を送る", layout="centered")
 
+from lib.qa.history import append_history
 from lib.qa.thread_ui import inject_qa_styles, render_text_block, text_to_html
 
 st.title("📝 質問を送る（インハナさん用）")
@@ -319,7 +320,7 @@ st.info("""**記入ルール**
 def submit_question(タイトル, 質問本文, タグ, 画像ファイル):
     """Notionへ質問を保存し、画像をDriveにアップロードする"""
     client = Client(auth=NOTION_API_KEY)
-    history = f"[{now_jst().strftime('%Y-%m-%d %H:%M')}] インハナ：質問投稿"
+    history = append_history("", "質問投稿")
     props = {
         "質問タイトル": {"title": [{"text": {"content": タイトル}}]},
         "質問本文": {"rich_text": [{"text": {"content": 質問本文}}]},
@@ -532,9 +533,7 @@ else:
                         # バリデーションエラーでも保存操作なのでロックは維持。解除は上のボタンで。
                     else:
                         try:
-                            prev_hist = q.get("編集履歴", "")
-                            entry = f"[{now_jst().strftime('%Y-%m-%d %H:%M')}] インハナ：質問編集"
-                            new_hist = (prev_hist + "\n" + entry).strip() if prev_hist else entry
+                            new_hist = append_history(q.get("編集履歴", ""), "質問編集")
                             Client(auth=NOTION_API_KEY).pages.update(
                                 page_id=q["id"],
                                 properties={
