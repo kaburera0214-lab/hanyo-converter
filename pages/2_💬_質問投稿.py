@@ -177,8 +177,10 @@ def search_similar_questions(title, content):
         p = page.get("properties", {})
         if not p:
             continue
-        status = p.get("ステータス", {}).get("select", {})
-        if not status or status.get("name") != "回答済":
+        # 回答済・完了の両方をナレッジ対象にする（回答管理のAIドラフト生成と同じ基準）。
+        # 「完了」は確定したナレッジなので、ここで除外すると一番参照したい事例が出てこない。
+        status = (p.get("ステータス", {}).get("select") or {}).get("name")
+        if status not in ("回答済", "完了"):
             continue
         title_prop = p.get("質問タイトル", {}).get("title", [])
         q_title = title_prop[0]["plain_text"] if title_prop else ""
