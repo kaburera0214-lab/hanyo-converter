@@ -501,6 +501,11 @@ def set_ne_cd_by_company(db_ids, company, cd, overwrite=False):
     return False
 
 
+def delete_master_row(db_ids, page_id):
+    """取引先マスタの1件を削除（Notion上はアーカイブ）。"""
+    _client().pages.update(page_id=page_id, archived=True)
+
+
 def update_master_fields(db_ids, page_id, **fields):
     """
     取引先マスタ1行の指定項目だけを更新する（MF勘定科目の取込などで使用）。

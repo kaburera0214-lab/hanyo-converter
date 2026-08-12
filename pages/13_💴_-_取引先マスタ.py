@@ -6,6 +6,8 @@
 初回はpayable_master_seed.csv（122社）を自動投入。突合の名寄せ精度を上げるため、
 NE仕入先cdと別名をここで紐付ける。
 """
+import inspect
+
 import streamlit as st
 import pandas as pd
 
@@ -56,60 +58,114 @@ rows = st.session_state["pm_rows"]
 st.markdown("### ➕ 新規取引先を登録")
 st.caption("楽天振込CSV・MF買掛未払CSVは、口座情報や勘定科目が揃っていないと出力できません。"
            "登録時に用途を選ぶと、必要な項目が未入力なら保存できないようにします。")
-with st.expander("新しい取引先を追加する", expanded=False):
-    n_name = st.text_input("会社名 *", key="pm_new_name")
-    u1, u2 = st.columns(2)
-    use_furikomi = u1.checkbox("銀行振込する（楽天振込CSVの対象）", value=True, key="pm_new_use_f")
-    use_mf = u2.checkbox("MF会計に計上する（買掛未払CSV）", value=True, key="pm_new_use_mf")
+# 入力欄は原則1行1項目（縦並び）。必須/任意はラベルの色で区別する。
+_HAS_NEW_OPT = "accept_new_options" in inspect.signature(st.selectbox).parameters
 
-    b1, b2, b3 = st.columns(3)
-    n_kubun = b1.selectbox("支払区分", ["銀行振込", "カード払い"], key="pm_new_kubun")
-    n_houhou = b2.selectbox("支払方法" + (" *" if use_furikomi else ""),
-                            ["振込", "口座振替", "現金", "支払", ""], key="pm_new_houhou")
-    n_kamoku = b3.text_input("科目（仕入／業務委託／荷造運賃 など）", key="pm_new_kamoku")
-    d1, d2, d3 = st.columns(3)
-    n_payday = d1.text_input("支払日（末日／27日／都度 など）", key="pm_new_payday")
-    n_alias = d2.text_input("別名（請求書の表記ゆれ。;区切り）", key="pm_new_alias")
-    n_necd = d3.text_input("NE仕入先cd（例 n001）", key="pm_new_necd")
+
+def _lbl(name, required=False):
+    return f"**{name}** " + (":red[**必須**]" if required else ":gray[任意]")
+
+
+def _master_values(field):
+    """登録済みマスタにあるその項目の値（候補プルダウン用）。"""
+    seen = []
+    for r in rows:
+        v = str(r.get(field, "") or "").strip()
+        if v and v not in seen:
+            seen.append(v)
+    return sorted(seen)
+
+
+def _combo(label, field, key, *, required=False, default="", extra=(), help=None):
+    """
+    既存マスタの値から選べて、新しい値も直接入力できる入力欄。
+    Streamlitが accept_new_options に未対応の場合は「新しい値を入力」に切り替える方式。
+    """
+    opts = list(dict.fromkeys([*extra, *_master_values(field)]))
+    if default and default not in opts:
+        opts.insert(0, default)
+    if _HAS_NEW_OPT:
+        v = st.selectbox(_lbl(label, required), opts,
+                         index=opts.index(default) if default in opts else None,
+                         key=key, help=help, accept_new_options=True,
+                         placeholder="選択、または新しい値を直接入力")
+        return str(v or "").strip()
+    NEW = "＋ 新しい値を入力"
+    pick = st.selectbox(_lbl(label, required), [NEW] + opts,
+                        index=(opts.index(default) + 1) if default in opts else 0,
+                        key=key, help=help)
+    if pick == NEW:
+        return st.text_input(f"↳ {label}（新しい値）", key=f"{key}_new").strip()
+    return pick
+
+
+_new_msg = st.session_state.pop("pm_new_msg", None)
+if _new_msg:
+    st.success(_new_msg)
+with st.expander("新しい取引先を追加する", expanded=False):
+    st.markdown(":red[**必須**] は未入力だと登録できません。:gray[任意] は後からでも入力できます。")
+    n_name = st.text_input(_lbl("会社名", True), key="pm_new_name",
+                           placeholder="請求書に出てくる名称（例：野中製作所）")
+
+    st.markdown("**この取引先の用途**（チェックした用途の項目が必須になります）")
+    use_furikomi = st.checkbox("銀行振込する（楽天振込CSVの対象）", value=True, key="pm_new_use_f")
+    use_mf = st.checkbox("MF会計に計上する（買掛未払CSV）", value=True, key="pm_new_use_mf")
+
+    st.divider()
+    st.markdown("#### 支払条件")
+    n_kubun = st.selectbox(_lbl("支払区分"), ["銀行振込", "カード払い"], key="pm_new_kubun")
+    n_houhou = _combo("支払方法", "支払方法", "pm_new_houhou", required=use_furikomi,
+                      default="振込" if use_furikomi else "",
+                      extra=["振込", "口座振替", "現金", "支払"])
+    n_kamoku = _combo("科目", "科目", "pm_new_kamoku",
+                      help="仕入／業務委託／荷造運賃 など。ダッシュボードの分類に使います")
+    n_payday = _combo("支払日", "支払日", "pm_new_payday", extra=["末日", "27日", "都度"])
+    n_alias = st.text_input(_lbl("別名（請求書の表記ゆれ。;区切り）"), key="pm_new_alias")
+    n_necd = st.text_input(_lbl("NE仕入先cd"), key="pm_new_necd",
+                           placeholder="例：n001（発注データとの突合キー）")
 
     if use_furikomi:
-        st.markdown("**振込先口座**（楽天振込CSVに必要）")
-        k1, k2, k3 = st.columns(3)
-        n_bank_no = k1.text_input("銀行番号（4桁） *", key="pm_new_bankno")
-        n_branch_no = k2.text_input("支店番号（3桁） *", key="pm_new_branchno")
-        n_shumoku = k3.selectbox("預金種目 *", ["普通", "当座"], key="pm_new_shumoku")
-        k4, k5 = st.columns(2)
-        n_acc = k4.text_input("口座番号 *", key="pm_new_acc")
-        n_holder = k5.text_input("受取人口座名 *", key="pm_new_holder",
-                                 help="楽天CSVにそのまま出ます（例：カ）ノナカ　セイサクシヨ）")
-        # 番号から銀行名・支店名を自動解決して確認できるようにする
+        st.divider()
+        st.markdown("#### 振込先口座 :blue[（楽天振込CSVに必要）]")
+        n_bank_no = st.text_input(_lbl("銀行番号（4桁）", True), key="pm_new_bankno")
+        n_branch_no = st.text_input(_lbl("支店番号（3桁）", True), key="pm_new_branchno")
+        # 番号から銀行名・支店名を自動解決して、打ち間違いをその場で気づけるようにする
         n_bank = BM.bank_name(n_bank_no) if n_bank_no.strip() else ""
         n_branch = BM.branch_name(n_bank_no, n_branch_no) if n_branch_no.strip() else ""
         if n_bank or n_branch:
             st.info(f"🏦 {n_bank or '（銀行名不明）'} {n_branch or ''}")
         elif n_bank_no.strip():
             st.warning("銀行番号・支店番号から金融機関を特定できません。番号をご確認ください。")
+        n_shumoku = st.selectbox(_lbl("預金種目", True), ["普通", "当座"], key="pm_new_shumoku")
+        n_acc = st.text_input(_lbl("口座番号", True), key="pm_new_acc")
+        n_holder = st.text_input(_lbl("受取人口座名", True), key="pm_new_holder",
+                                 placeholder="例：カ）ノナカ　セイサクシヨ",
+                                 help="楽天CSVにこのまま出力されます")
     else:
         n_bank_no = n_branch_no = n_acc = n_holder = n_bank = n_branch = ""
         n_shumoku = ""
 
     if use_mf:
-        st.markdown("**MF会計の仕訳**（買掛未払CSVに必要）")
-        m1, m2, m3 = st.columns(3)
-        n_kari = m1.text_input("借方勘定科目 *", key="pm_new_kari",
-                               help="仕入高／業務委託料／荷造運賃 など")
-        n_kari_h = m2.text_input("借方補助科目", key="pm_new_karih")
-        n_kari_t = m3.text_input("借方税区分 *", value="課税仕入 10%", key="pm_new_karit")
-        m4, m5, m6 = st.columns(3)
-        n_kashi = m4.text_input("貸方勘定科目 *", value="買掛金", key="pm_new_kashi",
-                                help="仕入なら買掛金、経費なら未払金")
-        n_kashi_h = m5.text_input("貸方補助科目", key="pm_new_kashih")
-        n_kashi_t = m6.text_input("貸方税区分 *", value="対象外", key="pm_new_kashit")
-        n_tekiyo = st.text_input("摘要（空欄なら会社名を使います）", key="pm_new_tekiyo")
+        st.divider()
+        st.markdown("#### MF会計の仕訳 :blue[（買掛未払CSVに必要）]")
+        n_kari = _combo("借方勘定科目", "借方勘定科目", "pm_new_kari", required=True,
+                        help="仕入高／業務委託料／荷造運賃 など")
+        n_kari_h = _combo("借方補助科目", "借方補助科目", "pm_new_karih")
+        n_kari_t = _combo("借方税区分", "借方税区分", "pm_new_karit", required=True,
+                          default="課税仕入 10%", extra=["課税仕入 10%", "課税仕入 8%", "対象外"])
+        n_kashi = _combo("貸方勘定科目", "貸方勘定科目", "pm_new_kashi", required=True,
+                         default="買掛金", extra=["買掛金", "未払金"],
+                         help="仕入なら買掛金、経費なら未払金")
+        n_kashi_h = _combo("貸方補助科目", "貸方補助科目", "pm_new_kashih")
+        n_kashi_t = _combo("貸方税区分", "貸方税区分", "pm_new_kashit", required=True,
+                           default="対象外", extra=["対象外", "課税仕入 10%"])
+        n_tekiyo = st.text_input(_lbl("摘要"), key="pm_new_tekiyo",
+                                 placeholder="空欄なら会社名を使います")
     else:
         n_kari = n_kari_h = n_kari_t = n_kashi = n_kashi_h = n_kashi_t = n_tekiyo = ""
 
-    n_biko = st.text_input("備考", key="pm_new_biko")
+    st.divider()
+    n_biko = st.text_input(_lbl("備考"), key="pm_new_biko")
 
     if st.button("➕ この内容で登録する", type="primary", key="pm_new_save"):
         errors = []
@@ -153,7 +209,11 @@ with st.expander("新しい取引先を追加する", expanded=False):
                 st.session_state.pop("pm_rows", None)
                 st.session_state["payable_master_nonce"] = \
                     st.session_state.get("payable_master_nonce", 0) + 1
-                st.success(f"『{rec['会社名']}』を登録しました。")
+                # 入力欄を空に戻す(続けて登録できるように)
+                for k in [k for k in list(st.session_state.keys())
+                          if str(k).startswith("pm_new_")]:
+                    del st.session_state[k]
+                st.session_state["pm_new_msg"] = f"『{rec['会社名']}』を登録しました。"
                 st.rerun()
             except Exception as e:  # noqa: BLE001
                 st.error(f"登録に失敗しました: {e}")
@@ -227,6 +287,42 @@ else:
         st.session_state["payable_master_nonce"] = st.session_state.get("payable_master_nonce", 0) + 1
         st.success(f"新規{created}件・更新{updated}件を保存しました。")
         st.rerun()
+
+# ── 削除 ─────────────────────────────────────────────
+st.markdown("### 🗑️ 取引先を削除")
+_del_msg = st.session_state.pop("pm_del_msg", None)
+if _del_msg:
+    st.success(_del_msg)
+with st.expander("登録済みの取引先を削除する", expanded=False):
+    _names = [r["会社名"] for r in rows if r.get("id")]
+    dels = st.multiselect("削除する取引先（複数選べます）", _names, key="pm_del_sel")
+    if dels:
+        _targets = [r for r in rows if r["会社名"] in dels and r.get("id")]
+        st.dataframe(pd.DataFrame([{
+            "会社名": r["会社名"], "科目": r.get("科目", ""), "支払方法": r.get("支払方法", ""),
+            "銀行": f"{r.get('銀行','')} {r.get('支店','')}", "口座番号": r.get("口座番号", ""),
+            "借方勘定科目": r.get("借方勘定科目", ""), "NE仕入先cd": r.get("NE仕入先cd", ""),
+        } for r in _targets]), use_container_width=True)
+        st.warning("⚠️ 削除すると元に戻せません。過去の請求書レコードは残りますが、"
+                   "この取引先とのマスタ照合（口座・勘定科目・突合の名寄せ）が外れます。"
+                   "一時的に振込対象から外したいだけなら、『除外フラグ』に ✓ を入れてください。")
+        ok_del = st.checkbox("内容を確認しました", key="pm_del_ok")
+        if st.button(f"🗑️ 選択した{len(_targets)}社を削除する", type="primary",
+                     disabled=not ok_del, key="pm_del_btn"):
+            n = 0
+            for r in _targets:
+                try:
+                    N.delete_master_row(db_ids, r["id"])
+                    n += 1
+                except Exception as e:  # noqa: BLE001
+                    st.error(f"{r['会社名']} の削除に失敗: {e}")
+            st.session_state.pop("pm_rows", None)
+            st.session_state.pop("pm_del_sel", None)
+            st.session_state.pop("pm_del_ok", None)
+            st.session_state["payable_master_nonce"] = \
+                st.session_state.get("payable_master_nonce", 0) + 1
+            st.session_state["pm_del_msg"] = f"{n}社を削除しました。"
+            st.rerun()
 
 st.markdown("---")
 st.markdown("### 📗 MFクラウド会計の勘定科目を取り込む")
