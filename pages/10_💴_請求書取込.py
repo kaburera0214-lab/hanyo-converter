@@ -73,6 +73,23 @@ def _account_mismatch(m, data):
     return False, ""
 
 
+def _ne_link_note(m):
+    """
+    マスタ照合できても、突合(NE発注データ)と結びつくとは限らない。
+    突合は『NE仕入先cd』か『名称の一致』で辿るため、その状況をここで見せる。
+    """
+    if not m:
+        return ""
+    cd = str(m.get("NE仕入先cd", "") or "").strip()
+    if cd:
+        return f"🔗 NE仕入先cd: {cd}（突合ページで発注データと紐づきます）"
+    if str(m.get("科目", "")) == "仕入":
+        return ("🔗 NE仕入先cd: 未設定 — 突合は会社名の一致で行います。"
+                "NE側の表記が違うと『発注なし』になるため、その場合は突合ページの"
+                "『NE仕入先とマスタの紐付け』で結びつけてください。")
+    return "🔗 NE仕入先cd: 未設定（科目が仕入以外のため、通常はNE発注なしで問題ありません）"
+
+
 def _preview(fname, idx):
     """アップロードファイルのプレビュー。端末依存を避けるためPDFは画像化して表示。"""
     fb = st.session_state.get("payable_filebytes", {}).get(fname)
@@ -253,6 +270,7 @@ else:
                 if m:
                     st.success(f"マスタ照合: {m['会社名']}（{m.get('銀行','')} {m.get('支店','')} "
                                f"{m.get('預金種目','')} {m.get('口座番号','')}）")
+                    st.caption(_ne_link_note(m))
                 e1, e2, e3 = st.columns(3)
                 eex = e1.number_input("当月税抜額", value=int(inv.get('当月税抜額') or 0),
                                       step=1, key=f"regex_{inv['id']}")
@@ -412,6 +430,7 @@ def _render_file(idx, data):
             extra = "（複数口座中のマスタ口座に一致）" if data.get("複数口座") and not mism else ""
             st.success(f"マスタ照合: {m['会社名']}（{m.get('銀行','')} {m.get('支店','')} "
                        f"{m.get('預金種目','')} {m.get('口座番号','')}）{extra}")
+            st.caption(_ne_link_note(m))
     else:
         st.warning("⚠️ 会社名の不一致の可能性、または新規取引先の可能性があります。"
                    "（上の候補から選ぶか、会社名を修正してください。新規なら「取引先マスタ」で登録）")

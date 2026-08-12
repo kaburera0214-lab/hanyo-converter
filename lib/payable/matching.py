@@ -38,6 +38,47 @@ def normalize_name(s):
     return s.lower()
 
 
+def name_keys(s):
+    """
+    会社名から突合キーの候補を複数作る（カッコ内の別称も拾うため）。
+
+    normalize_name はカッコ内を補足とみなして捨てるため、
+    NE仕入先名『株式会社 加藤製本（クルーシャル）』のように
+    **カッコの中が請求元の屋号**というケースを取りこぼしていた。
+    そこで
+      - カッコ内を捨てた本体   : 加藤製本
+      - カッコ記号だけ外した全体: 加藤製本クルーシャル
+      - カッコの中身そのもの   : クルーシャル
+    の3系統をキーにして、どれかが一致すれば同一取引先とみなす。
+    """
+    if not s:
+        return set()
+    t = unicodedata.normalize("NFKC", str(s)).strip()
+    t = re.sub(r"【.*?】", "", t)
+    keys = {normalize_name(t), normalize_name(re.sub(r"[（()）]", " ", t))}
+    for inner in re.findall(r"[（(]([^（()）]*)[)）]", t):
+        k = normalize_name(inner)
+        # 『（A）』『（一般）』のような短い注記は誤紐付けの元になるので採用しない
+        if len(k) >= 3 and not k.isdigit():
+            keys.add(k)
+    keys.discard("")
+    return keys
+
+
+def company_keys(master_row, extra=None):
+    """マスタ1行（会社名＋別名）と追加表記から、突合キー集合を作る。"""
+    keys = set()
+    if isinstance(master_row, dict):
+        keys |= name_keys(master_row.get("会社名", ""))
+        for alias in re.split(r"[;,、/／]", master_row.get("別名", "") or ""):
+            if alias.strip():
+                keys |= name_keys(alias)
+    for e in (extra or []):
+        keys |= name_keys(e)
+    keys.discard("")
+    return keys
+
+
 def find_candidates(name, master_rows, limit=6, threshold=0.4):
     """
     会社名(name)に部分一致・類似する取引先候補を返す(マスタ未登録時の補正用)。
@@ -45,23 +86,23 @@ def find_candidates(name, master_rows, limit=6, threshold=0.4):
     戻り値: [会社名,...] スコア降順。
     """
     import difflib
-    nn = normalize_name(name)
-    if not nn or not master_rows:
+    nks = name_keys(name)
+    if not nks or not master_rows:
         return []
     scored = []
     for mst in master_rows:
         if not isinstance(mst, dict):
             continue  # 想定外の型(列名文字列等)は無視
-        names = [str(mst.get("会社名", "") or "")]
-        names += [a for a in re.split(r"[;,、/／]", str(mst.get("別名", "") or "")) if a.strip()]
         best = 0.0
-        for cn in names:
-            ncn = normalize_name(cn)
+        for ncn in company_keys(mst):
             if not ncn:
                 continue
-            if nn in ncn or ncn in nn:
-                best = max(best, 0.9)
-            best = max(best, difflib.SequenceMatcher(None, nn, ncn).ratio())
+            for nn in nks:
+                if nn == ncn:
+                    best = 1.0
+                elif nn in ncn or ncn in nn:
+                    best = max(best, 0.9)
+                best = max(best, difflib.SequenceMatcher(None, nn, ncn).ratio())
         if best >= threshold:
             scored.append((best, mst.get("会社名", "")))
     scored.sort(key=lambda x: x[0], reverse=True)
@@ -170,7 +211,8 @@ def aggregate_ne(rows, year, month):
         key = cd or ("name:" + normalize_name(name))
         a = agg.setdefault(key, {
             "仕入先cd": cd, "合算額": 0, "送料": 0, "件数": 0,
-            "仕入先名": name, "正規名": normalize_name(name), "伝票": [],
+            "仕入先名": name, "正規名": normalize_name(name),
+            "名候補": name_keys(name), "伝票": [],
         })
         a["合算額"] += amt
         a["送料"] += soryo
@@ -191,19 +233,62 @@ def build_master_lookup(master_rows):
       "by_norm": {正規化会社名/別名: master_row},
     }
     """
-    by_cd, by_norm = {}, {}
+    by_cd = {}
+    ranked = {}  # 正規化キー -> (優先度, master_row) 小さいほど優先
+
+    def _put(key, row, prio):
+        if not key:
+            return
+        cur = ranked.get(key)
+        if cur is None or prio < cur[0]:
+            ranked[key] = (prio, row)
+
     for m in master_rows:
+        if not isinstance(m, dict):
+            continue
         name = m.get("会社名", "")
         cd = (m.get("NE仕入先cd", "") or "").strip()
         if cd:
             by_cd[cd] = m
+        # 『野中製作所』と『野中製作所(コンテナ30％)』は正規化すると同じキーになる。
+        # 注記なしの本体行を優先しないと、口座の入っていない補助行を引いてしまう。
         if name:
-            by_norm[normalize_name(name)] = m
+            _put(normalize_name(name), m, 0 if not re.search(r"[（(]", str(name)) else 1)
         for alias in re.split(r"[;,、/／]", m.get("別名", "") or ""):
             alias = alias.strip()
             if alias:
-                by_norm[normalize_name(alias)] = m
-    return {"by_cd": by_cd, "by_norm": by_norm}
+                _put(normalize_name(alias), m, 2)
+        for k in company_keys(m):
+            _put(k, m, 3)  # カッコ内別称などの派生キーは最後
+    return {"by_cd": by_cd, "by_norm": {k: v[1] for k, v in ranked.items()}}
+
+
+def find_ne_candidates(company, ne_agg, master_row=None, limit=5, threshold=0.45):
+    """
+    NE発注データの中から、この取引先らしい仕入先の候補を返す（未紐付けの手当て用）。
+    戻り値: [(仕入先cd, 仕入先名, スコア), ...] スコア降順。
+    """
+    import difflib
+    keys = company_keys(master_row, extra=[company])
+    if not keys or not ne_agg:
+        return []
+    out = []
+    for key, v in ne_agg.items():
+        nk = v.get("名候補") or name_keys(v.get("仕入先名", ""))
+        best = 0.0
+        for a in keys:
+            for b in nk:
+                if not a or not b:
+                    continue
+                if a == b:
+                    best = 1.0
+                elif a in b or b in a:
+                    best = max(best, 0.85)
+                best = max(best, difflib.SequenceMatcher(None, a, b).ratio())
+        if best >= threshold:
+            out.append((v.get("仕入先cd", "") or key, v.get("仕入先名", ""), best))
+    out.sort(key=lambda x: x[2], reverse=True)
+    return out[:limit]
 
 
 def match_invoice(company, amount, master_lookup, ne_agg, tolerance=0):
@@ -223,7 +308,7 @@ def match_invoice(company, amount, master_lookup, ne_agg, tolerance=0):
     result = {
         "状態": "マスタ未登録", "会社名": company, "NE合算額": None, "NE送料": 0,
         "NE合計": None, "差額": None, "NE件数": 0, "NE仕入先cd": "", "突合詳細": "",
-        "NE伝票": [],
+        "NE伝票": [], "NE仕入先名": "", "紐付け方法": "",
     }
     if not m:
         result["突合詳細"] = "会社名がマスタに見つかりません(別名登録で解決可)"
@@ -235,24 +320,27 @@ def match_invoice(company, amount, master_lookup, ne_agg, tolerance=0):
     # NE合算を引く: 仕入先cd優先。無ければ名称で照合する。
     # 名称はマスタの会社名だけでなく、別名(旧名称・請求書表記ゆれ)と
     # 請求書上の表記そのものも許容(NE側が旧名称のままでも拾えるように)。
-    accept_norms = {normalize_name(m.get("会社名", "")), norm}
-    for alias in re.split(r"[;,、/／]", m.get("別名", "") or ""):
-        alias = alias.strip()
-        if alias:
-            accept_norms.add(normalize_name(alias))
-    accept_norms.discard("")
+    # さらに name_keys でカッコ内の別称も突合キーにする
+    # (例: NE『株式会社 加藤製本（クルーシャル）』⇔ マスタ『クルーシャル』)。
+    accept_norms = company_keys(m, extra=[company])
     ne = None
     if cd and cd in ne_agg:
         ne = ne_agg[cd]
+        result["紐付け方法"] = "仕入先cd"
     else:
         for v in ne_agg.values():
-            if v.get("正規名") in accept_norms or (cd and v.get("仕入先cd") == cd):
+            nk = v.get("名候補") or name_keys(v.get("仕入先名", ""))
+            if (nk & accept_norms) or (cd and v.get("仕入先cd") == cd):
                 ne = v
+                result["紐付け方法"] = "名称"
                 break
     if ne is None:
         result["状態"] = "発注なし"
         result["突合詳細"] = "対象月のNE発注が見つかりません"
         return result
+    result["NE仕入先名"] = ne.get("仕入先名", "")
+    if not cd and ne.get("仕入先cd"):
+        result["NE仕入先cd"] = ne["仕入先cd"]  # 名称一致で判明したcd(マスタ登録用)
 
     soryo = int(ne.get("送料", 0))
     ne_total = int(ne["合算額"]) + soryo  # 発注金額＋送料で突合

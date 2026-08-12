@@ -66,6 +66,65 @@ if not invoices:
 master_rows = N.load_master(db_ids)
 look = matching.build_master_lookup(master_rows)
 
+
+def _drop_master_cache():
+    """マスタを更新したら、取込ページ側のキャッシュも作り直させる。"""
+    st.session_state["payable_master_nonce"] = \
+        st.session_state.get("payable_master_nonce", 0) + 1
+
+
+def _master_of(company):
+    return look["by_norm"].get(matching.normalize_name(company))
+
+
+def _ne_owner(v):
+    """NE仕入先1件に対応するマスタ行を返す(仕入先cd優先→名称キー)。"""
+    cd = (v.get("仕入先cd", "") or "").strip()
+    if cd and cd in look["by_cd"]:
+        return look["by_cd"][cd]
+    for k in (v.get("名候補") or matching.name_keys(v.get("仕入先名", ""))):
+        m = look["by_norm"].get(k)
+        if m:
+            return m
+    return None
+
+
+# ── NE仕入先とマスタの紐付け状況 ─────────────────────────────
+# 突合は「請求書 → マスタ会社名 → NE仕入先」の順に辿る。マスタのNE仕入先cdが
+# 空でも名称で拾えるようにしてあるが、名称が全く違う取引先はここで手当てする。
+_unlinked = [(k, v) for k, v in ne_agg.items() if _ne_owner(v) is None]
+with st.expander(f"🔗 NE仕入先とマスタの紐付け（未紐付け {len(_unlinked)} / 全{len(ne_agg)}社）",
+                 expanded=bool(_unlinked)):
+    st.caption("マスタに結びつかないNE仕入先の一覧です。ここで取引先を選んで紐づけると、"
+               "マスタの『NE仕入先cd』に保存され、次回以降は確実に突合されます。")
+    if not _unlinked:
+        st.success("対象月のNE仕入先はすべて取引先マスタに紐付いています。")
+    for k, v in _unlinked:
+        cd = (v.get("仕入先cd", "") or "").strip()
+        cA, cB = st.columns([3, 2])
+        cA.markdown(f"**{v.get('仕入先名','')}**　`{cd or '(cdなし)'}`　"
+                    f"発注 {int(v.get('合算額', 0)):,}円＋送料 {int(v.get('送料', 0)):,}円 "
+                    f"／ {v.get('件数', 0)}件")
+        try:
+            cands = matching.find_candidates(v.get("仕入先名", ""), list(master_rows))
+        except Exception:  # noqa: BLE001
+            cands = []
+        opts = ["（紐づけない）"] + cands + [m.get("会社名", "") for m in master_rows
+                                        if m.get("会社名") and m.get("会社名") not in cands]
+        pick = cB.selectbox("紐づける取引先", opts, key=f"link_sel_{k}",
+                            label_visibility="collapsed")
+        if cB.button("🔗 このマスタに紐づける", key=f"link_btn_{k}",
+                     disabled=(pick == "（紐づけない）" or not cd), use_container_width=True):
+            try:
+                N.set_ne_cd_by_company(db_ids, pick, cd, overwrite=True)
+                _drop_master_cache()
+                st.success(f"『{pick}』に仕入先cd {cd} を登録しました。突合を再実行してください。")
+                st.rerun()
+            except Exception as e:  # noqa: BLE001
+                st.error(f"紐付けに失敗しました: {e}")
+        if not cd:
+            cB.caption("※ NE側に仕入先cdが無いため、名称一致でのみ突合されます。")
+
 def _parse_extax_breakdown(s):
     """税内訳 '10%:税抜68489/税6849, 8%:…' から税抜合計を復元。無ければNone。"""
     import re
@@ -109,11 +168,21 @@ if st.button("🔁 突合を実行/再計算", type="primary", key="match_run"):
     # ステータスのプルダウン既定値を再適用するため、既存のウィジェット状態をリセット
     for _k in [k for k in list(st.session_state.keys()) if str(k).startswith("match_st_")]:
         del st.session_state[_k]
+    linked = []  # 名称一致で判明した仕入先cdをマスタへ保存(次回から確実に紐づく)
     for inv in invoices:
         if inv.get("突合状態") in ("対象外", "口座振替"):
             continue  # 突合しない指定・口座振替はスキップ(保持はする)
         r = matching.match_invoice(inv["会社名"], _extax(inv), look, ne_agg, tolerance=tol)
         denpyo = ",".join(str(d) for d in r.get("NE伝票", []))
+        # 名称で拾えた＝マスタのNE仕入先cdが空。判明したcdをマスタに登録しておく。
+        if r.get("紐付け方法") == "名称" and r.get("NE仕入先cd"):
+            mrow = _master_of(inv["会社名"])
+            if mrow and not str(mrow.get("NE仕入先cd", "") or "").strip():
+                try:
+                    if N.set_ne_cd_by_company(db_ids, mrow.get("会社名", ""), r["NE仕入先cd"]):
+                        linked.append(f"{mrow.get('会社名','')}→{r['NE仕入先cd']}")
+                except Exception:  # noqa: BLE001
+                    pass
         try:
             N.update_invoice_fields(
                 db_ids, inv["id"],
@@ -129,6 +198,10 @@ if st.button("🔁 突合を実行/再計算", type="primary", key="match_run"):
             inv["NE発注番号"] = denpyo
         except Exception as e:  # noqa: BLE001
             st.error(f"{inv['会社名']} の更新に失敗: {e}")
+    if linked:
+        _drop_master_cache()
+        st.info(f"🔗 {len(linked)}社のNE仕入先cdをマスタに自動登録しました："
+                + "、".join(linked))
     st.toast("突合を更新しました")
 
 
@@ -163,6 +236,21 @@ def _ne_total(i):
 def _kamoku(inv):
     mm = look["by_norm"].get(matching.normalize_name(inv["会社名"]))
     return str(mm.get("科目", "")) if mm else ""
+
+
+def _ne_link_label(inv):
+    """この請求書がどのNE仕入先と結びついているかを表示用に返す。"""
+    m = _master_of(inv["会社名"])
+    cd = str((m or {}).get("NE仕入先cd", "") or "").strip()
+    if cd and cd in ne_agg:
+        return f"{ne_agg[cd].get('仕入先名','')}（{cd}）"
+    if cd:
+        return f"cd {cd}（対象月の発注なし）"
+    for k in matching.company_keys(m, extra=[inv["会社名"]]):
+        for v in ne_agg.values():
+            if k in (v.get("名候補") or set()):
+                return f"{v.get('仕入先名','')}（{v.get('仕入先cd','') or '名称一致'}）"
+    return "未紐付け"
 
 
 def _shiire_no_order(inv):
@@ -267,6 +355,36 @@ for inv in visible:
         if _shiire_no_order(inv):
             st.error("🔴 科目『仕入』なのに発注なし。締め日の跨ぎ（月初/末日のズレ）の可能性。"
                      "NEの発注日・前後月をご確認ください。")
+        # 発注なし＝NE仕入先と結びついていない可能性。似た仕入先を候補提示して紐付け。
+        if stt == "発注なし":
+            _mrow = _master_of(inv["会社名"])
+            try:
+                _nec = matching.find_ne_candidates(inv["会社名"], ne_agg, _mrow)
+            except Exception:  # noqa: BLE001
+                _nec = []
+            if _nec:
+                st.warning("NE発注データに、名前の似た仕入先があります。"
+                           "同じ取引先ならここで紐づけると突合されます。")
+                _lab = {f"{nm}（{c}）／ {int(ne_agg.get(c, {}).get('合算額', 0)):,}円": c
+                        for c, nm, _s in _nec if c}
+                if _lab and _mrow:
+                    lc1, lc2 = st.columns([3, 1])
+                    sel = lc1.selectbox("NE仕入先の候補", ["（紐づけない）"] + list(_lab),
+                                        key=f"nolink_sel_{inv['id']}")
+                    if lc2.button("🔗 紐づける", key=f"nolink_btn_{inv['id']}",
+                                  disabled=(sel == "（紐づけない）"), use_container_width=True):
+                        try:
+                            N.set_ne_cd_by_company(db_ids, _mrow.get("会社名", ""),
+                                                   _lab[sel], overwrite=True)
+                            _drop_master_cache()
+                            st.success(f"『{_mrow.get('会社名','')}』に仕入先cd {_lab[sel]} を"
+                                       "登録しました。『突合を実行/再計算』を押してください。")
+                            st.rerun()
+                        except Exception as e:  # noqa: BLE001
+                            st.error(f"紐付けに失敗しました: {e}")
+                elif not _mrow:
+                    st.caption("※ この会社名がマスタに見つからないため紐付けできません。"
+                               "先に会社名の修正（取込ページ）またはマスタ登録をしてください。")
         if fbmap.get(inv.get("ファイルリンク", "")):
             if st.toggle("📄 プレビュー表示", key=f"match_prev_{inv['id']}"):
                 for _img in extract.render_preview_images(
@@ -284,7 +402,8 @@ for inv in visible:
             f"**突合**\n\n"
             f"- NE発注額(税抜): {yen(inv.get('NE合算額'))} ＋ 送料: {yen(inv.get('NE送料'))} "
             f"= NE合計: **{yen(_ne_total(inv))}** 円\n"
-            f"- 差額: **{yen(diff)}** 円")
+            f"- 差額: **{yen(diff)}** 円\n"
+            f"- 紐付けNE仕入先: {_ne_link_label(inv)}")
         denpyo = [d for d in str(inv.get("NE発注番号", "")).split(",") if d.strip()]
         if denpyo:
             links = "　".join(

@@ -443,6 +443,33 @@ def add_alias_by_company(db_ids, company, alias):
     return False
 
 
+def set_ne_cd_by_company(db_ids, company, cd, overwrite=False):
+    """
+    会社名(company)のマスタ行に NE仕入先cd を登録する（突合の紐付け固定用）。
+    既に別のcdが入っている場合は overwrite=True のときだけ上書きする。
+    登録・更新したら True。
+    """
+    from .matching import normalize_name
+    cd = str(cd or "").strip()
+    if not cd:
+        return False
+    target = normalize_name(company)
+    for row in _query_all(db_ids["支払_取引先マスタ"]):
+        p = row["properties"]
+        name = _read_title(p.get("会社名"))
+        if normalize_name(name) != target:
+            continue
+        cur = (_read_rt(p.get("NE仕入先cd")) or "").strip()
+        if cur == cd:
+            return False
+        if cur and not overwrite:
+            return False
+        _client().pages.update(page_id=row["id"], properties={
+            "NE仕入先cd": {"rich_text": _rt(cd)}})
+        return True
+    return False
+
+
 def upsert_master_row(db_ids, r):
     """マスタ1行を保存。idがあれば更新、無ければ新規。"""
     client = _client()
