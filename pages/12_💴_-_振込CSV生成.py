@@ -16,7 +16,8 @@ require_role("payable")  # 認証ゲート（AUTH_ENABLED=false なら素通り�
 st.title("💴 振込CSV生成（楽天銀行 総合振込）")
 st.caption("『確認済』の請求書から楽天銀行インポート用CSVを作成します。")
 
-from lib.payable import app_init, matching, rakuten_csv, mf_csv, notion_payable as N
+from lib.payable import (app_init, matching, rakuten_csv, mf_csv,
+                         business_day as BD, notion_payable as N)
 
 try:
     db_ids = app_init.init_payable()
@@ -25,11 +26,16 @@ except Exception as e:
     st.stop()
 
 c1, c2, c3 = st.columns([1, 1, 1])
-target_ym = c1.text_input("対象月（例 2026-05）", value=st.session_state.get("payable_target_ym", ""),
-                          key="csv_ym")
+target_ym = c1.text_input("対象月（例 2026-05）",
+                          value=(st.session_state.get("payable_target_ym")
+                                 or BD.default_target_ym()),
+                          key="csv_ym", help="既定は前月（作業月の1つ前）です。")
 st.session_state["payable_target_ym"] = target_ym
-exec_date = c2.text_input("振込実行日（MMDD 例 0430）", value=st.session_state.get("payable_exec", ""),
-                          key="csv_exec")
+exec_date = c2.text_input("振込実行日（MMDD 例 0430）",
+                          value=(st.session_state.get("payable_exec")
+                                 or BD.default_exec_mmdd()),
+                          key="csv_exec",
+                          help="既定は作業日の当月末日。土日祝・年末年始は前営業日に繰り上げます。")
 st.session_state["payable_exec"] = exec_date
 if c3.button("🔄 再読込", key="csv_reload"):
     st.session_state.pop("csv_invoices", None)

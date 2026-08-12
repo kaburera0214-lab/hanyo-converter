@@ -16,7 +16,8 @@ require_role("payable")  # 認証ゲート（AUTH_ENABLED=false なら素通り�
 st.title("💴 請求書取込（買掛）")
 st.caption("請求書PDF/画像をAIで読み取り、口座マスタと照合して登録します。")
 
-from lib.payable import app_init, extract, matching, bank_master as BM, notion_payable as N
+from lib.payable import (app_init, extract, matching, bank_master as BM,
+                         business_day as BD, notion_payable as N)
 
 try:
     db_ids = app_init.init_payable()
@@ -108,8 +109,10 @@ def _preview(fname, idx):
 
 # 対象月
 c1, c2 = st.columns([1, 3])
-target_ym = c1.text_input("対象月（例 2026-05）", value=st.session_state.get("payable_target_ym", ""),
-                          key="payable_ym_in")
+target_ym = c1.text_input("対象月（例 2026-05）",
+                          value=(st.session_state.get("payable_target_ym")
+                                 or BD.default_target_ym()),
+                          key="payable_ym_in", help="既定は前月（作業月の1つ前）です。")
 st.session_state["payable_target_ym"] = target_ym
 
 st.markdown("### 1. 請求書をアップロード")

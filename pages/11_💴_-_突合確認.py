@@ -16,7 +16,8 @@ require_role("payable")  # 認証ゲート（AUTH_ENABLED=false なら素通り�
 st.title("💴 突合確認（発注データとの照合）")
 st.caption("ネクストエンジン発注データと請求書を会社名＋金額で突合します。")
 
-from lib.payable import app_init, matching, extract, notion_payable as N
+from lib.payable import (app_init, matching, extract, business_day as BD,
+                         notion_payable as N)
 
 try:
     db_ids = app_init.init_payable()
@@ -25,8 +26,10 @@ except Exception as e:
     st.stop()
 
 c1, c2, c3 = st.columns([1, 1, 1])
-target_ym = c1.text_input("対象月（例 2026-05）", value=st.session_state.get("payable_target_ym", ""),
-                          key="match_ym")
+target_ym = c1.text_input("対象月（例 2026-05）",
+                          value=(st.session_state.get("payable_target_ym")
+                                 or BD.default_target_ym()),
+                          key="match_ym", help="既定は前月（作業月の1つ前）です。")
 st.session_state["payable_target_ym"] = target_ym
 tol = c2.number_input("許容誤差（円）", min_value=0, value=10, step=1, key="match_tol",
                       help="請求額とNE合算額の差がこの範囲内なら『一致』とみなします"
