@@ -28,10 +28,12 @@ c1, c2, c3 = st.columns([1, 1, 1])
 target_ym = c1.text_input("対象月（例 2026-05）", value=st.session_state.get("payable_target_ym", ""),
                           key="match_ym")
 st.session_state["payable_target_ym"] = target_ym
-tol = c2.number_input("許容誤差（円）", min_value=0, value=0, step=1, key="match_tol",
-                      help="請求額とNE合算額の差がこの範囲内なら『一致』とみなします。")
+tol = c2.number_input("許容誤差（円）", min_value=0, value=10, step=1, key="match_tol",
+                      help="請求額とNE合算額の差がこの範囲内なら『一致』とみなします"
+                           "（税抜の端数ズレを吸収するため既定10円）。")
 if c3.button("🔄 請求書を再読込", key="match_reload"):
     st.session_state.pop("match_invoices", None)
+    st.session_state.pop("match_prev_ym", None)  # 前月の不一致も取り直す
 
 try:
     y, m = (int(target_ym.split("-")[0]), int(target_ym.split("-")[1])) if "-" in target_ym else (None, None)
@@ -169,6 +171,7 @@ if st.button("🔁 突合を実行/再計算", type="primary", key="match_run"):
     for _k in [k for k in list(st.session_state.keys()) if str(k).startswith("match_st_")]:
         del st.session_state[_k]
     linked = []  # 名称一致で判明した仕入先cdをマスタへ保存(次回から確実に紐づく)
+    auto_confirmed = []  # 請求 < 発注 で自動的に確認済にしたもの
     for inv in invoices:
         if inv.get("突合状態") in ("対象外", "口座振替"):
             continue  # 突合しない指定・口座振替はスキップ(保持はする)
@@ -183,13 +186,20 @@ if st.button("🔁 突合を実行/再計算", type="primary", key="match_run"):
                         linked.append(f"{mrow.get('会社名','')}→{r['NE仕入先cd']}")
                 except Exception:  # noqa: BLE001
                     pass
+        # 請求が発注より少ない(差額マイナス)＝払い過ぎにならないので自動で確認済にする
+        auto_ok = (r["状態"] == "金額不一致" and (r.get("差額") or 0) < 0
+                   and inv.get("ステータス") == "読取済")
         try:
             N.update_invoice_fields(
                 db_ids, inv["id"],
                 突合状態=r["状態"],
                 NE合算額=r["NE合算額"], NE送料=r.get("NE送料", 0),
                 差額=r["差額"], NE発注番号=denpyo,
+                **({"ステータス": "確認済"} if auto_ok else {}),
             )
+            if auto_ok:
+                inv["ステータス"] = "確認済"
+                auto_confirmed.append(f"{inv['会社名']}（{r['差額']:+,}円）")
             inv["突合状態"] = r["状態"]
             inv["NE合算額"] = r["NE合算額"]
             inv["NE送料"] = r.get("NE送料", 0)
@@ -202,6 +212,9 @@ if st.button("🔁 突合を実行/再計算", type="primary", key="match_run"):
         _drop_master_cache()
         st.info(f"🔗 {len(linked)}社のNE仕入先cdをマスタに自動登録しました："
                 + "、".join(linked))
+    if auto_confirmed:
+        st.info(f"✅ 請求額が発注額より少ないため、{len(auto_confirmed)}社を自動で『確認済』に"
+                "しました（払い過ぎにならないため）： " + "、".join(auto_confirmed))
     st.toast("突合を更新しました")
 
 
@@ -336,6 +349,37 @@ with st.expander("📄 プレビュー用に請求書ファイルを読み込む
         st.caption(f"{len(st.session_state['match_filebytes'])}件を読み込みました。")
 fbmap = st.session_state.get("match_filebytes", {})
 
+
+# ── 前月の金額不一致（月またぎのズレを見つけやすくする） ──────────
+def _prev_ym(ym):
+    try:
+        y, m = int(ym.split("-")[0]), int(ym.split("-")[1])
+    except (ValueError, IndexError):
+        return ""
+    return f"{y - 1}-12" if m == 1 else f"{y}-{m - 1:02d}"
+
+
+_pym = _prev_ym(target_ym)
+if _pym and st.session_state.get("match_prev_ym") != _pym:
+    try:
+        _prev_rows = N.load_invoices(db_ids, target_ym=_pym)
+    except Exception:  # noqa: BLE001
+        _prev_rows = []
+    st.session_state["match_prev_ym"] = _pym
+    st.session_state["match_prev_diff"] = {
+        matching.normalize_name(r["会社名"]): r for r in _prev_rows
+        if r.get("突合状態") == "金額不一致"}
+prev_diff = st.session_state.get("match_prev_diff", {})
+
+
+def _prev_note(inv):
+    """前月に金額不一致だった取引先は、その差額を見出しに出す。"""
+    p = prev_diff.get(matching.normalize_name(inv["会社名"]))
+    if not p:
+        return ""
+    return f"　|　🔁前月不一致 {yen(p.get('差額'))}円"
+
+
 NE_URL = "https://main.next-engine.com/userg5210?dnum={}"
 _ICON = {"一致": "✅", "金額不一致": "⚠️", "発注なし": "🟠", "マスタ未登録": "🟡", "未突合": "⬜"}
 _STAT = ["読取済", "確認済"]  # 簡素化: 読取済→確認済の2段(確認済=振込CSV対象)
@@ -350,8 +394,11 @@ for inv in visible:
     icon = "🔴" if _shiire_no_order(inv) else _ICON.get(stt, "")
     diff = inv.get("差額")
     head = (f"{icon} {inv['会社名']}　|　突合 {stt}"
-            f"（差額 {yen(diff)}円）　|　ステータス: {inv['ステータス']}")
-    with st.expander(head, expanded=(stt != "一致")):
+            f"（差額 {yen(diff)}円）　|　ステータス: {inv['ステータス']}"
+            f"{_prev_note(inv)}")
+    # 確認済＝作業が終わった行なので閉じておく（残りの作業に集中できるように）
+    _open = (stt != "一致") and inv["ステータス"] != "確認済"
+    with st.expander(head, expanded=_open):
         if _shiire_no_order(inv):
             st.error("🔴 科目『仕入』なのに発注なし。締め日の跨ぎ（月初/末日のズレ）の可能性。"
                      "NEの発注日・前後月をご確認ください。")
@@ -426,7 +473,9 @@ for inv in visible:
         oc1, oc2, oc3 = st.columns([2, 1, 1])
         # 既定値: 一致(緑・アコーディオンが閉じるもの)は『確認済』、要確認(開くもの)は現状のまま。
         # selectboxはセッションに値が残るとindexが効かないため、明示的に初期化する。
-        default_stat = ("確認済" if (stt == "一致" and inv["ステータス"] == "読取済")
+        # 一致、または請求が発注より少ない(差額マイナス)なら既定を『確認済』にする
+        _auto = (stt == "一致") or (stt == "金額不一致" and (diff or 0) < 0)
+        default_stat = ("確認済" if (_auto and inv["ステータス"] == "読取済")
                         else inv["ステータス"])
         skey = f"match_st_{inv['id']}"
         if skey not in st.session_state:

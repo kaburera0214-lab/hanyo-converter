@@ -160,12 +160,17 @@ else:
             or "payable_registered" not in st.session_state):
         st.session_state["payable_registered"] = N.load_invoices(db_ids, target_ym=target_ym)
         st.session_state["payable_reg_ym"] = target_ym
-    regs = st.session_state["payable_registered"]
+    # 『確認済』(突合確認ページで承認済み)は、この画面ではもう触らないので出さない
+    _all_regs = st.session_state["payable_registered"]
+    regs = [r for r in _all_regs if r.get("ステータス") != "確認済"]
+    _n_done = len(_all_regs) - len(regs)
     if not regs:
-        rc2.caption(f"対象月 {target_ym} の登録済みデータはありません。")
+        rc2.caption(f"対象月 {target_ym} の登録済みデータはありません。"
+                    + (f"（確認済 {_n_done}件は非表示）" if _n_done else ""))
     else:
-        rc2.caption(f"対象月 {target_ym}：{len(regs)}件　各行を開くと読取内容の確認・修正・"
-                    "ステータス更新ができます。")
+        rc2.caption(f"対象月 {target_ym}：{len(regs)}件"
+                    + (f"（確認済 {_n_done}件は非表示）" if _n_done else "")
+                    + "　各行を開くと読取内容の確認・修正・ステータス更新ができます。")
 
         _FREE = ("読取済", "保留")  # この2つは確認なしで削除可
         _STAT2 = ["保留", "読取済", "確認済"]
@@ -453,12 +458,30 @@ def _render_file(idx, data):
         status=reg_status, taikai=True, match_state="未突合"))
 
 
-# 同一フォルダのファイルは1つのアコーディオンにまとめる(判定は各ファイル個別)
+def _relative_paths(names):
+    """
+    全ファイルが同じ上位フォルダ配下なら、その共通部分を取り除いた相対パスを返す。
+    ZIP直下が月次フォルダ1つ(例 202607/)だけのとき、全ファイルが1つの
+    アコーディオンにまとまってしまうのを防ぐ。
+    """
+    parts = [str(n).split("/") for n in names]
+    if not parts:
+        return {}
+    common = 0
+    while all(len(p) > common + 1 for p in parts) and len({p[common] for p in parts}) == 1:
+        common += 1
+    return {n: "/".join(p[common:]) for n, p in zip(names, parts)}
+
+
+# 取引先フォルダ単位で1つのアコーディオンにまとめる(判定は各ファイル個別)。
+# 共通の親フォルダしか無い場合はファイルごとに分ける。
 from collections import OrderedDict
+_rel = _relative_paths([d.get("_file", f"file{i}") for i, d in enumerate(results)])
 _groups = OrderedDict()
 for idx, data in enumerate(results):
     fn = data.get("_file", f"file{idx}")
-    folder = fn.rsplit("/", 1)[0] if "/" in fn else None
+    rel = _rel.get(fn, fn)
+    folder = rel.rsplit("/", 1)[0] if "/" in rel else None
     gkey = ("folder", folder) if folder else ("single", idx)
     _groups.setdefault(gkey, []).append((idx, data))
 
