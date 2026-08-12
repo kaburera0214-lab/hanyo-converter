@@ -10,7 +10,7 @@ import json
 
 # スキーマ(列)を変更したらこの版数を上げる。app_initがセッションキャッシュを
 # 無視して ensure_databases(不足列の自動追加) を再実行する。
-SCHEMA_VERSION = "2026-07-11a"
+SCHEMA_VERSION = "2026-08-12a"
 
 DB_SCHEMAS = {
     "支払_取引先マスタ": {
@@ -40,6 +40,15 @@ DB_SCHEMAS = {
         "除外フラグ": {"checkbox": {}},
         "ルール": {"rich_text": {}},
         "備考": {"rich_text": {}},
+        # MFクラウド会計 仕訳インポート用(買掛未払CSV・総合振込仕訳帳CSV)
+        "借方勘定科目": {"rich_text": {}},
+        "借方補助科目": {"rich_text": {}},
+        "借方税区分": {"rich_text": {}},
+        "貸方勘定科目": {"rich_text": {}},
+        "貸方補助科目": {"rich_text": {}},
+        "貸方税区分": {"rich_text": {}},
+        "摘要": {"rich_text": {}},
+        "MF並び順": {"number": {}},
     },
     "支払_請求書": {
         "レコード名": {"title": {}},
@@ -216,7 +225,13 @@ def _query_all(db_id):
 # ============================================================
 MASTER_FIELDS = ["会社名", "別名", "NE仕入先cd", "支払区分", "科目", "支払方法", "支払日",
                  "銀行", "支店", "銀行番号", "支店番号", "預金種目", "口座番号", "受取人口座名",
-                 "顧客番号", "固定額", "除外フラグ", "ルール", "支払元銀行", "備考"]
+                 "顧客番号", "固定額", "除外フラグ", "ルール", "支払元銀行", "備考",
+                 "借方勘定科目", "借方補助科目", "借方税区分",
+                 "貸方勘定科目", "貸方補助科目", "貸方税区分", "摘要", "MF並び順"]
+
+# MFクラウド会計の仕訳に使う列(取引先マスタ)。買掛未払CSV・総合振込仕訳帳CSVで参照。
+MF_FIELDS = ["借方勘定科目", "借方補助科目", "借方税区分",
+             "貸方勘定科目", "貸方補助科目", "貸方税区分", "摘要", "MF並び順"]
 
 
 def load_master(db_ids):
@@ -246,6 +261,14 @@ def load_master(db_ids):
             "除外フラグ": "✓" if _read_check(p.get("除外フラグ")) else "",
             "ルール": _read_rt(p.get("ルール")),
             "備考": _read_rt(p.get("備考")),
+            "借方勘定科目": _read_rt(p.get("借方勘定科目")),
+            "借方補助科目": _read_rt(p.get("借方補助科目")),
+            "借方税区分": _read_rt(p.get("借方税区分")),
+            "貸方勘定科目": _read_rt(p.get("貸方勘定科目")),
+            "貸方補助科目": _read_rt(p.get("貸方補助科目")),
+            "貸方税区分": _read_rt(p.get("貸方税区分")),
+            "摘要": _read_rt(p.get("摘要")),
+            "MF並び順": _read_num(p.get("MF並び順")) or "",
         })
     rows.sort(key=lambda r: r["会社名"])
     return rows
@@ -279,6 +302,14 @@ def _master_props(r):
         "除外フラグ": {"checkbox": str(r.get("除外フラグ", "")).strip() in ("✓", "1", "True", "true", "○")},
         "ルール": {"rich_text": _rt(r.get("ルール", ""))},
         "備考": {"rich_text": _rt(r.get("備考", ""))},
+        "借方勘定科目": {"rich_text": _rt(r.get("借方勘定科目", ""))},
+        "借方補助科目": {"rich_text": _rt(r.get("借方補助科目", ""))},
+        "借方税区分": {"rich_text": _rt(r.get("借方税区分", ""))},
+        "貸方勘定科目": {"rich_text": _rt(r.get("貸方勘定科目", ""))},
+        "貸方補助科目": {"rich_text": _rt(r.get("貸方補助科目", ""))},
+        "貸方税区分": {"rich_text": _rt(r.get("貸方税区分", ""))},
+        "摘要": {"rich_text": _rt(r.get("摘要", ""))},
+        "MF並び順": {"number": num(r.get("MF並び順", ""))},
     }
 
 
@@ -318,7 +349,7 @@ def _seed_create(db_ids, seed_rows):
 # マージ対象のデータ列(id/表示用の除外フラグ表記を除く実データ)
 _MERGE_FIELDS = ["別名", "NE仕入先cd", "科目", "支払方法", "支払日", "銀行", "支店",
                  "銀行番号", "支店番号", "預金種目", "口座番号", "受取人口座名",
-                 "顧客番号", "固定額", "除外フラグ", "ルール", "支払元銀行", "備考"]
+                 "顧客番号", "固定額", "除外フラグ", "ルール", "支払元銀行", "備考"] + MF_FIELDS
 
 
 def dedupe_master(db_ids):
@@ -468,6 +499,32 @@ def set_ne_cd_by_company(db_ids, company, cd, overwrite=False):
             "NE仕入先cd": {"rich_text": _rt(cd)}})
         return True
     return False
+
+
+def update_master_fields(db_ids, page_id, **fields):
+    """
+    取引先マスタ1行の指定項目だけを更新する（MF勘定科目の取込などで使用）。
+    値の型は DB_SCHEMAS の定義（rich_text / number / checkbox）に合わせる。
+    """
+    schema = DB_SCHEMAS["支払_取引先マスタ"]
+    props = {}
+    for k, v in fields.items():
+        kind = schema.get(k)
+        if not kind:
+            continue
+        if "number" in kind:
+            try:
+                props[k] = {"number": (float(str(v).replace(",", ""))
+                                       if str(v).strip() != "" else None)}
+            except (ValueError, TypeError):
+                props[k] = {"number": None}
+        elif "checkbox" in kind:
+            props[k] = {"checkbox": bool(v)}
+        else:
+            props[k] = {"rich_text": _rt("" if v is None else str(v))}
+    if props:
+        _client().pages.update(page_id=page_id, properties=props)
+    return bool(props)
 
 
 def upsert_master_row(db_ids, r):

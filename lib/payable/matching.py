@@ -234,6 +234,7 @@ def build_master_lookup(master_rows):
     }
     """
     by_cd = {}
+    by_exact = {}  # 会社名そのもの(完全一致用)
     ranked = {}  # 正規化キー -> (優先度, master_row) 小さいほど優先
 
     def _put(key, row, prio):
@@ -253,6 +254,7 @@ def build_master_lookup(master_rows):
         # 『野中製作所』と『野中製作所(コンテナ30％)』は正規化すると同じキーになる。
         # 注記なしの本体行を優先しないと、口座の入っていない補助行を引いてしまう。
         if name:
+            by_exact.setdefault(str(name).strip(), m)
             _put(normalize_name(name), m, 0 if not re.search(r"[（(]", str(name)) else 1)
         for alias in re.split(r"[;,、/／]", m.get("別名", "") or ""):
             alias = alias.strip()
@@ -260,7 +262,20 @@ def build_master_lookup(master_rows):
                 _put(normalize_name(alias), m, 2)
         for k in company_keys(m):
             _put(k, m, 3)  # カッコ内別称などの派生キーは最後
-    return {"by_cd": by_cd, "by_norm": {k: v[1] for k, v in ranked.items()}}
+    return {"by_cd": by_cd, "by_exact": by_exact,
+            "by_norm": {k: v[1] for k, v in ranked.items()}}
+
+
+def lookup_master(master_lookup, name):
+    """
+    会社名からマスタ行を引く。会社名の完全一致を最優先し、無ければ正規化キー。
+    『野中製作所』と『野中製作所(コンテナ30％)』のように正規化すると同じになる
+    取引先を取り違えないための入口。
+    """
+    if not name:
+        return None
+    return (master_lookup.get("by_exact", {}).get(str(name).strip())
+            or master_lookup["by_norm"].get(normalize_name(name)))
 
 
 def find_ne_candidates(company, ne_agg, master_row=None, limit=5, threshold=0.45):

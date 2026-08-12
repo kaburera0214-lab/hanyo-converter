@@ -16,7 +16,7 @@ require_role("payable")  # 認証ゲート（AUTH_ENABLED=false なら素通り�
 st.title("💴 取引先マスタ（買掛）")
 st.caption("振込先口座・支払条件・名寄せ（NE仕入先cd／別名）を管理します。")
 
-from lib.payable import app_init, notion_payable as N
+from lib.payable import app_init, matching, mf_csv, notion_payable as N
 
 try:
     db_ids = app_init.init_payable()
@@ -63,7 +63,10 @@ if df.empty:
 else:
     edit_cols = ["id", "会社名", "別名", "NE仕入先cd", "支払区分", "科目", "支払方法",
                  "支払日", "銀行", "支店", "銀行番号", "支店番号", "預金種目", "口座番号",
-                 "受取人口座名", "顧客番号", "固定額", "除外フラグ", "ルール", "支払元銀行", "備考"]
+                 "受取人口座名", "顧客番号", "固定額", "除外フラグ", "ルール", "支払元銀行", "備考",
+                 # MFクラウド会計 仕訳用（買掛未払CSV・総合振込仕訳帳CSV）
+                 "借方勘定科目", "借方補助科目", "借方税区分",
+                 "貸方勘定科目", "貸方補助科目", "貸方税区分", "摘要", "MF並び順"]
     for c in edit_cols:
         if c not in df.columns:
             df[c] = ""
@@ -81,6 +84,10 @@ else:
                 "ルール", help="『100万超で振込』のように書くと、ダッシュボードで該当月にアラート"),
             "預金種目": st.column_config.SelectboxColumn("預金種目", options=["", "普通", "当座"]),
             "除外フラグ": st.column_config.TextColumn("除外", help="✓で振込CSV対象外"),
+            "摘要": st.column_config.TextColumn(
+                "摘要（MF仕訳）", help="MFの仕訳に出す摘要。空ならこの会社名を使います"),
+            "MF並び順": st.column_config.NumberColumn(
+                "MF並び順", help="MF買掛未払CSVの行の並び順（経理シートの順番）"),
         },
     )
 
@@ -114,6 +121,93 @@ else:
         st.rerun()
 
 st.markdown("---")
+st.markdown("### 📗 MFクラウド会計の勘定科目を取り込む")
+st.caption("経理シートの『[マスタ]買掛未払.csv』を読み込み、摘要（＝取引先名）で突き合わせて、"
+           "借方/貸方の勘定科目・補助科目・税区分・並び順をマスタに登録します。"
+           "これが入っていないと『買掛未払CSV』を作れません。")
+with st.expander("CSVを読み込んで取り込む", expanded=False):
+    mfup = st.file_uploader("[マスタ]買掛未払.csv", type=["csv"], key="pm_mfup")
+    if mfup is not None:
+        try:
+            st.session_state["pm_mf_rows"] = mf_csv.read_mf_master_csv(mfup.getvalue())
+        except Exception as e:  # noqa: BLE001
+            st.error(f"CSVを読めませんでした: {e}")
+    mf_rows = st.session_state.get("pm_mf_rows") or []
+    if mf_rows:
+        look = matching.build_master_lookup(rows)
+        # 『野中製作所』と『野中製作所(コンテナ30％)』は正規化すると同じキーになるため、
+        # 会社名の完全一致を最優先で引く（別行の設定を上書きしない）。
+        pairs = [(m, matching.lookup_master(look, m["摘要"])) for m in mf_rows]
+        matched = [(m, t) for m, t in pairs if t]
+        unmatched = [m for m, t in pairs if not t]
+        conf = [m for m, t in matched if str(m.get("借方勘定科目", "")).strip()]
+        st.write(f"CSV {len(mf_rows)}行／マスタ一致 **{len(matched)}件**"
+                 f"（うち勘定科目あり {len(conf)}件）／未一致 **{len(unmatched)}件**")
+        st.dataframe(pd.DataFrame([{
+            "摘要(CSV)": m["摘要"], "マスタ会社名": t["会社名"],
+            "借方": f"{m.get('借方勘定科目','')} / {m.get('借方補助科目','')}",
+            "税区分": m.get("借方税区分", ""),
+            "貸方": f"{m.get('貸方勘定科目','')} / {m.get('貸方補助科目','')}",
+            "並び順": m["MF並び順"],
+        } for m, t in matched]), use_container_width=True, height=260)
+
+        # 未一致は候補から手動で紐付け（選ぶと摘要を別名として登録）
+        manual = {}
+        if unmatched:
+            st.markdown("**未一致（表記が違う／マスタ未登録）**")
+            for m in unmatched:
+                u1, u2 = st.columns([2, 3])
+                u1.write(f"・{m['摘要']}")
+                try:
+                    cands = matching.find_candidates(m["摘要"], list(rows))
+                except Exception:  # noqa: BLE001
+                    cands = []
+                opts = ["（取り込まない）"] + cands + [r["会社名"] for r in rows
+                                                if r["会社名"] not in cands]
+                pick = u2.selectbox(f"紐づける取引先（{m['摘要']}）", opts,
+                                    key=f"pm_mfmap_{m['MF並び順']}", label_visibility="collapsed")
+                if pick != "（取り込まない）":
+                    manual[m["MF並び順"]] = pick
+            st.caption("※ 選んで取り込むと、CSVの摘要が『別名』に登録され次回から自動で一致します。"
+                       "マスタに無い取引先は先に上の表で登録してください。")
+
+        if st.button("📗 マスタに取り込む", type="primary", key="pm_mfimport"):
+            done = skipped = 0
+            for m, t in pairs:
+                tgt = t
+                if tgt is None:
+                    pick = manual.get(m["MF並び順"])
+                    if not pick:
+                        skipped += 1
+                        continue
+                    tgt = matching.lookup_master(look, pick)
+                    if not tgt:
+                        skipped += 1
+                        continue
+                try:
+                    N.update_master_fields(
+                        db_ids, tgt["id"],
+                        借方勘定科目=m.get("借方勘定科目", ""),
+                        借方補助科目=m.get("借方補助科目", ""),
+                        借方税区分=m.get("借方税区分", ""),
+                        貸方勘定科目=m.get("貸方勘定科目", ""),
+                        貸方補助科目=m.get("貸方補助科目", ""),
+                        貸方税区分=m.get("貸方税区分", ""),
+                        摘要=m.get("摘要", ""), MF並び順=m.get("MF並び順", ""))
+                    if t is None:  # 手動で紐づけたものは表記ゆれを別名に学習させる
+                        try:
+                            N.add_alias_by_company(db_ids, tgt["会社名"], m["摘要"])
+                        except Exception:  # noqa: BLE001
+                            pass
+                    done += 1
+                except Exception as e:  # noqa: BLE001
+                    st.error(f"{m['摘要']} の取り込みに失敗: {e}")
+            st.session_state.pop("pm_rows", None)
+            st.session_state["payable_master_nonce"] = \
+                st.session_state.get("payable_master_nonce", 0) + 1
+            st.success(f"{done}件を取り込みました（未紐付けのため見送り {skipped}件）。")
+            st.rerun()
+
 with st.expander("ℹ️ 使い方とseedについて", expanded=False):
     st.markdown(
         "- 初回アクセス時に `payable_master_seed.csv`（122社）を自動投入します。\n"
