@@ -11,7 +11,7 @@ def now_jst():
 st.set_page_config(page_title="回答管理", layout="wide")
 
 from lib.qa.history import append_history, retag_history, undo_remaining
-from lib.qa.thread_ui import inject_qa_styles, render_thread, render_text_block
+from lib.qa.thread_ui import inject_qa_styles, question_no, render_text_block, render_thread
 
 st.title("✅ 回答・管理（パピー用）")
 inject_qa_styles()
@@ -249,7 +249,10 @@ else:
     for q in display_questions:
         is_editing = q["ステータス"] == "編集中"
         emoji = STATUS_EMOJI.get(q["ステータス"], "⚪")
-        label = f"{emoji} {q['タイトル']}　（{q['ステータス']}）　{q['質問日時'][:10] if q['質問日時'] else ''}"
+        label = (
+            f"{emoji} {question_no(q['番号'])} {q['タイトル']}　（{q['ステータス']}）　"
+            f"{q['質問日時'][:10] if q['質問日時'] else ''}"
+        )
         with st.expander(label):
             # 生テキストをMarkdown解釈させない（「---」で見出し化して文字サイズが崩れるため）
             render_text_block(q["質問本文"], label="質問内容")
@@ -559,7 +562,7 @@ if st.checkbox("🛠 メンテナンス：編集履歴の記録者を実態に�
             f"（計{sum(t[2] for t in retag_targets)}行）。内容を確認して反映してください。"
         )
         for q, fixed_history, changed_lines in retag_targets:
-            st.markdown(f"**#{q['番号']} {q['タイトル']}**（{changed_lines}行）")
+            st.markdown(f"**{question_no(q['番号'])} {q['タイトル']}**（{changed_lines}行）")
             diff = [
                 f"- {before}\n+ {after}"
                 for before, after in zip(q["編集履歴"].split("\n"), fixed_history.split("\n"))

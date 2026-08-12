@@ -216,6 +216,11 @@ def render_thread(log, *, highlight_last=False, fallback_q="", fallback_a=""):
     st.markdown("".join(parts), unsafe_allow_html=True)
 
 
+def question_no(number):
+    """質問番号の表示形。Notionのユニークid（DB内で一意・削除しても再利用されない）。"""
+    return f"#{number}" if number else "（番号なし）"
+
+
 def render_text_block(text, label=None):
     """質問本文などのプレーンテキストを、Markdown解釈させずに枠内表示する。
 

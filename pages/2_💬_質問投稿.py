@@ -192,6 +192,7 @@ def search_similar_questions(title, content):
         if q_title or q_body:
             candidates.append({
                 "id": page["id"],
+                "番号": (p.get("ID", {}).get("unique_id") or {}).get("number"),
                 "タイトル": q_title,
                 "質問本文": q_body,
                 "回答本文": a_body,
@@ -269,6 +270,7 @@ def get_editable_questions():
         p = page["properties"]
         questions.append({
             "id": page["id"],
+            "番号": (p.get("ID", {}).get("unique_id") or {}).get("number"),
             "タイトル": p["質問タイトル"]["title"][0]["plain_text"] if p.get("質問タイトル", {}).get("title") else "",
             "質問本文": get_text(p.get("質問本文", {})),
             "タグ": [s["name"] for s in p.get("タグ", {}).get("multi_select", [])],
@@ -309,7 +311,7 @@ def get_answered_questions():
 st.set_page_config(page_title="質問を送る", layout="centered")
 
 from lib.qa.history import append_history
-from lib.qa.thread_ui import inject_qa_styles, render_text_block, text_to_html
+from lib.qa.thread_ui import inject_qa_styles, question_no, render_text_block, text_to_html
 
 st.title("📝 質問を送る（インハナさん用）")
 inject_qa_styles()
@@ -347,7 +349,7 @@ def submit_question(タイトル, 質問本文, タグ, 画像ファイル):
             page_id=page_id,
             properties={"画像URL": {"rich_text": [{"text": {"content": "\n".join(画像URLs)}}]}}
         )
-    return len(画像URLs)
+    return unique_num, len(画像URLs)
 
 # ── ステップ管理 ──────────────────────────────────────────────────────
 step = st.session_state.get("post_step", "input")  # input / similar / preview
@@ -396,7 +398,8 @@ elif step == "similar":
         st.caption("以下の回答で解決する場合は投稿不要です。解決しない場合は「新規質問として投稿する」へ進んでください。")
 
         for i, q in enumerate(similar):
-            with st.expander(f"**{q['タイトル'] or '（タイトルなし）'}**　タグ：{'・'.join(q['タグ'])}", expanded=False):
+            label = f"**{question_no(q['番号'])} {q['タイトル'] or '（タイトルなし）'}**　タグ：{'・'.join(q['タグ'])}"
+            with st.expander(label, expanded=False):
                 body = q["質問本文"][:400] + ("…" if len(q["質問本文"]) > 400 else "")
                 render_text_block(body, label="質問内容")
                 if q["回答本文"]:
@@ -462,12 +465,12 @@ elif step == "preview":
     with col2:
         if st.button("✅ この内容で送信する", type="primary"):
             with st.spinner("送信中..."):
-                img_count = submit_question(
+                new_num, img_count = submit_question(
                     final_title, final_content,
                     st.session_state["post_tags"],
                     st.session_state.get("post_images")
                 )
-            msg = "質問を送信しました！"
+            msg = f"質問 {question_no(new_num)} を送信しました！"
             if img_count:
                 msg += f"（画像 {img_count}枚アップロード済）"
             st.success(msg)
@@ -489,7 +492,7 @@ else:
     for q in edit_questions:
         is_editing = (editing_id == q["id"])
         status_label = "🟡 編集中" if q["ステータス"] == "編集中" else ""
-        label = f"{q['タイトル']}　{q['質問日時'][:10] if q['質問日時'] else ''}　{status_label}"
+        label = f"{question_no(q['番号'])} {q['タイトル']}　{q['質問日時'][:10] if q['質問日時'] else ''}　{status_label}"
 
         with st.expander(label, expanded=is_editing):
             if not is_editing:
