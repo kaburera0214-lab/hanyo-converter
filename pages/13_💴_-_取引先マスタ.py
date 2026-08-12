@@ -16,7 +16,7 @@ require_role("payable")  # 認証ゲート（AUTH_ENABLED=false なら素通り�
 st.title("💴 取引先マスタ（買掛）")
 st.caption("振込先口座・支払条件・名寄せ（NE仕入先cd／別名）を管理します。")
 
-from lib.payable import app_init, matching, mf_csv, notion_payable as N
+from lib.payable import app_init, matching, mf_csv, bank_master as BM, notion_payable as N
 
 try:
     db_ids = app_init.init_payable()
@@ -52,7 +52,114 @@ if "pm_rows" not in st.session_state:
     st.session_state["pm_rows"] = N.load_master(db_ids)
 rows = st.session_state["pm_rows"]
 
+# ── 新規登録（用途に応じて必須項目をチェック） ──────────────
+st.markdown("### ➕ 新規取引先を登録")
+st.caption("楽天振込CSV・MF買掛未払CSVは、口座情報や勘定科目が揃っていないと出力できません。"
+           "登録時に用途を選ぶと、必要な項目が未入力なら保存できないようにします。")
+with st.expander("新しい取引先を追加する", expanded=False):
+    n_name = st.text_input("会社名 *", key="pm_new_name")
+    u1, u2 = st.columns(2)
+    use_furikomi = u1.checkbox("銀行振込する（楽天振込CSVの対象）", value=True, key="pm_new_use_f")
+    use_mf = u2.checkbox("MF会計に計上する（買掛未払CSV）", value=True, key="pm_new_use_mf")
+
+    b1, b2, b3 = st.columns(3)
+    n_kubun = b1.selectbox("支払区分", ["銀行振込", "カード払い"], key="pm_new_kubun")
+    n_houhou = b2.selectbox("支払方法" + (" *" if use_furikomi else ""),
+                            ["振込", "口座振替", "現金", "支払", ""], key="pm_new_houhou")
+    n_kamoku = b3.text_input("科目（仕入／業務委託／荷造運賃 など）", key="pm_new_kamoku")
+    d1, d2, d3 = st.columns(3)
+    n_payday = d1.text_input("支払日（末日／27日／都度 など）", key="pm_new_payday")
+    n_alias = d2.text_input("別名（請求書の表記ゆれ。;区切り）", key="pm_new_alias")
+    n_necd = d3.text_input("NE仕入先cd（例 n001）", key="pm_new_necd")
+
+    if use_furikomi:
+        st.markdown("**振込先口座**（楽天振込CSVに必要）")
+        k1, k2, k3 = st.columns(3)
+        n_bank_no = k1.text_input("銀行番号（4桁） *", key="pm_new_bankno")
+        n_branch_no = k2.text_input("支店番号（3桁） *", key="pm_new_branchno")
+        n_shumoku = k3.selectbox("預金種目 *", ["普通", "当座"], key="pm_new_shumoku")
+        k4, k5 = st.columns(2)
+        n_acc = k4.text_input("口座番号 *", key="pm_new_acc")
+        n_holder = k5.text_input("受取人口座名 *", key="pm_new_holder",
+                                 help="楽天CSVにそのまま出ます（例：カ）ノナカ　セイサクシヨ）")
+        # 番号から銀行名・支店名を自動解決して確認できるようにする
+        n_bank = BM.bank_name(n_bank_no) if n_bank_no.strip() else ""
+        n_branch = BM.branch_name(n_bank_no, n_branch_no) if n_branch_no.strip() else ""
+        if n_bank or n_branch:
+            st.info(f"🏦 {n_bank or '（銀行名不明）'} {n_branch or ''}")
+        elif n_bank_no.strip():
+            st.warning("銀行番号・支店番号から金融機関を特定できません。番号をご確認ください。")
+    else:
+        n_bank_no = n_branch_no = n_acc = n_holder = n_bank = n_branch = ""
+        n_shumoku = ""
+
+    if use_mf:
+        st.markdown("**MF会計の仕訳**（買掛未払CSVに必要）")
+        m1, m2, m3 = st.columns(3)
+        n_kari = m1.text_input("借方勘定科目 *", key="pm_new_kari",
+                               help="仕入高／業務委託料／荷造運賃 など")
+        n_kari_h = m2.text_input("借方補助科目", key="pm_new_karih")
+        n_kari_t = m3.text_input("借方税区分 *", value="課税仕入 10%", key="pm_new_karit")
+        m4, m5, m6 = st.columns(3)
+        n_kashi = m4.text_input("貸方勘定科目 *", value="買掛金", key="pm_new_kashi",
+                                help="仕入なら買掛金、経費なら未払金")
+        n_kashi_h = m5.text_input("貸方補助科目", key="pm_new_kashih")
+        n_kashi_t = m6.text_input("貸方税区分 *", value="対象外", key="pm_new_kashit")
+        n_tekiyo = st.text_input("摘要（空欄なら会社名を使います）", key="pm_new_tekiyo")
+    else:
+        n_kari = n_kari_h = n_kari_t = n_kashi = n_kashi_h = n_kashi_t = n_tekiyo = ""
+
+    n_biko = st.text_input("備考", key="pm_new_biko")
+
+    if st.button("➕ この内容で登録する", type="primary", key="pm_new_save"):
+        errors = []
+        if not n_name.strip():
+            errors.append("会社名")
+        if use_furikomi:
+            if not str(n_houhou).strip():
+                errors.append("支払方法")
+            for label, v in [("銀行番号", n_bank_no), ("支店番号", n_branch_no),
+                             ("口座番号", n_acc), ("受取人口座名", n_holder)]:
+                if not str(v).strip():
+                    errors.append(label)
+        if use_mf:
+            for label, v in [("借方勘定科目", n_kari), ("借方税区分", n_kari_t),
+                             ("貸方勘定科目", n_kashi), ("貸方税区分", n_kashi_t)]:
+                if not str(v).strip():
+                    errors.append(label)
+        dup = matching.lookup_master(matching.build_master_lookup(rows), n_name) \
+            if n_name.strip() else None
+        if errors:
+            st.error("次の必須項目が未入力です： " + "、".join(errors))
+        elif dup:
+            st.error(f"『{dup['会社名']}』として既に登録されています。"
+                     "表記ゆれなら、その行の『別名』に追記してください。")
+        else:
+            rec = {
+                "会社名": n_name.strip(), "別名": n_alias.strip(), "NE仕入先cd": n_necd.strip(),
+                "支払区分": n_kubun, "科目": n_kamoku.strip(), "支払方法": str(n_houhou).strip(),
+                "支払日": n_payday.strip(),
+                "銀行": n_bank, "支店": n_branch,
+                "銀行番号": n_bank_no.strip(), "支店番号": n_branch_no.strip(),
+                "預金種目": n_shumoku, "口座番号": n_acc.strip(),
+                "受取人口座名": n_holder.strip(), "備考": n_biko.strip(),
+                "借方勘定科目": n_kari.strip(), "借方補助科目": n_kari_h.strip(),
+                "借方税区分": n_kari_t.strip(), "貸方勘定科目": n_kashi.strip(),
+                "貸方補助科目": n_kashi_h.strip(), "貸方税区分": n_kashi_t.strip(),
+                "摘要": (n_tekiyo.strip() or n_name.strip()) if use_mf else "",
+            }
+            try:
+                N.upsert_master_row(db_ids, rec)
+                st.session_state.pop("pm_rows", None)
+                st.session_state["payable_master_nonce"] = \
+                    st.session_state.get("payable_master_nonce", 0) + 1
+                st.success(f"『{rec['会社名']}』を登録しました。")
+                st.rerun()
+            except Exception as e:  # noqa: BLE001
+                st.error(f"登録に失敗しました: {e}")
+
 st.markdown(f"### 登録済み {len(rows)}社")
+st.caption("既存の内容はここで直接編集できます（新規追加は上の登録フォームから）。")
 kw = st.text_input("会社名で絞り込み（空欄で全件）", key="pm_kw").strip()
 view = [r for r in rows if not kw or kw in r["会社名"]]
 
@@ -71,8 +178,9 @@ else:
         if c not in df.columns:
             df[c] = ""
     df = df[edit_cols]
+    # 新規行はここでは追加しない（必須項目チェックのため上の登録フォームに集約）
     edited = st.data_editor(
-        df, use_container_width=True, num_rows="dynamic", key="pm_editor",
+        df, use_container_width=True, num_rows="fixed", key="pm_editor",
         column_config={
             "id": st.column_config.TextColumn("id", disabled=True, width="small"),
             "別名": st.column_config.TextColumn("別名（請求書表記ゆれ。;区切り）"),

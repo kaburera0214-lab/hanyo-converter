@@ -100,6 +100,7 @@ if st.button("📥 楽天CSVを生成してダウンロード", type="primary", 
         st.warning(f"振込履歴の保存に失敗（CSVは生成済）: {e}")
     st.session_state["csv_payload"] = (csv_name, csv_bytes)
     st.session_state["csv_autodl"] = True
+    st.session_state["csv_done_ym"] = target_ym  # この対象月の振込CSVを作った印
     st.rerun()
 
 if st.session_state.pop("csv_autodl", False):
@@ -125,8 +126,15 @@ if st.session_state.get("csv_payload"):
 
 # ============================================================
 # MFクラウド会計 仕訳インポート用CSV
+# 振込CSVを作った後の続きの作業のため、楽天CSV生成後にだけ表示する。
 # ============================================================
 st.markdown("---")
+if st.session_state.get("csv_done_ym") != target_ym:
+    st.caption("📗 MFクラウド会計用CSV（買掛未払）は、上の楽天CSVを生成すると続けて作成できます。")
+    # 振込対象がない月（全件が口座振替など）でも詰まらないよう、逃げ道だけ用意する
+    if not st.checkbox("楽天CSVを作らずに買掛未払CSVだけ作る", key="mf_kk_alone"):
+        st.stop()
+
 st.header("📗 MFクラウド会計用CSV")
 st.markdown("### ① 買掛未払CSV（当月発生分の計上）")
 st.caption("対象月の請求書を取引先ごとに合算し、借方（仕入高など）／貸方（買掛金・未払金）の"
