@@ -36,13 +36,21 @@ def test_append():
     print("OK append")
 
 
-def test_trim():
-    lines = [f"[2026-08-11 14:05] パピー：回答{i}" for i in range(40)]
-    trimmed = h.trim_history(lines)
-    assert len(trimmed.split("\n")) == h.MAX_LINES
-    assert "回答39" in trimmed and "回答0" not in trimmed
-    assert len(trimmed) <= h.MAX_CHARS
-    print("OK trim")
+def test_履歴は間引かれない():
+    """以前は30行で古い行を捨てていた。証跡なので全部残す。"""
+    lines = [f"[2026-08-11 14:05] パピー：回答{i}" for i in range(200)]
+    kept = h.trim_history(lines)
+    assert len(kept.split("\n")) == 200, len(kept.split("\n"))
+    assert "回答0" in kept and "回答199" in kept
+    print("OK 履歴は間引かれない")
+
+
+def test_追記を繰り返しても古い行が残る():
+    hist = ""
+    for i in range(60):
+        hist = h.append_history(hist, "追加回答", at=AT)
+    assert len(hist.split("\n")) == 60
+    print("OK 追記を繰り返しても古い行が残る")
 
 
 def test_retag():

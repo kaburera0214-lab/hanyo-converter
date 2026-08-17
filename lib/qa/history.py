@@ -15,6 +15,8 @@
 import re
 from datetime import datetime, timedelta, timezone
 
+from lib.qa import notion_text
+
 JST = timezone(timedelta(hours=9))
 
 INHANA = "インハナ"
@@ -33,8 +35,11 @@ ACTOR_BY_ACTION = {
 
 HISTORY_LINE_RE = re.compile(r"^\[(?P<ts>[^\]]*)\]\s*(?P<actor>[^：:]+)[：:]\s*(?P<action>.+?)\s*$")
 
-MAX_LINES = 30
-MAX_CHARS = 1900  # Notionのrich_textは2000文字上限
+# 履歴は消さない。以前は30行・1900文字で古い行から捨てていたが、
+# 「誰がいつ何をしたか」は運用の証跡なので、上書きも間引きもしない方針にした。
+# 保存側（lib/qa/notion_text）がrich_textを分割するので長さの制約は無い。
+# ここに残しているのは、17万文字という現実には到達しない最後の安全弁だけ。
+MAX_CHARS = notion_text.MAX_CHARS
 
 # 「完了を取り消す」を出しておく時間。誤操作のリカバリ用なので短くする。
 # ナレッジとして確定させるため、これを過ぎた質問は完了のまま戻せない。
@@ -56,8 +61,13 @@ def history_entry(action, actor=None, at=None):
 
 
 def trim_history(lines):
-    """行数・文字数の上限に収める（古い行から捨てる）。"""
-    lines = list(lines)[-MAX_LINES:]
+    """履歴を1本の文字列にする。行は捨てない。
+
+    名前に trim が残っているのは呼び出し側との互換のため。実際に落とすのは
+    MAX_CHARS（17万文字）を超えたときだけで、これは1行30文字換算で5000行を
+    超える計算になるので運用では起こらない。
+    """
+    lines = list(lines)
     result = "\n".join(lines)
     while len(result) > MAX_CHARS and len(lines) > 1:
         lines = lines[1:]
