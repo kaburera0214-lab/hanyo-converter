@@ -29,6 +29,8 @@ SPEAKER = {"Q": "インハナさん", "追加Q": "インハナさん", "A": "パ
 KIND_LABEL = {"Q": "最初の質問", "A": "回答", "追加Q": "追加質問", "追加A": "追加回答"}
 # 重複判定の対象にする最小文字数（「以上です。」のような短文は消さない）
 DEDUPE_MIN_LEN = 8
+# これ以下の行数の引用は畳まずそのまま見せる（開く手間の方が重くなるため）
+QUOTE_FOLD_MIN_LINES = 2
 
 # 旧仕様（1900文字で先頭を捨てる）が残した印。この行より後ろは、
 # マーカーごと切られて話者が分からなくなった会話の断片。
@@ -182,12 +184,17 @@ def split_preamble(preamble):
 
 
 def _quote_html(text):
+    """引用（貼り付けられた過去のやり取り）を描く。
+
+    短い引用まで畳むと、開く手間の方が中身より重くなる。行数が少ないものは
+    そのまま薄字で見せて、長いものだけ畳む。
+    """
     lines = [l for l in text.split("\n") if l.strip()]
+    body = f'<div class="qa-quote-body">{text_to_html(text)}</div>'
+    if len(lines) <= QUOTE_FOLD_MIN_LINES:
+        return f'<div class="qa-quote qa-quote-open">{body}</div>'
     summary = f"引用・過去のやり取り（{len(lines)}行）を表示"
-    return (
-        f'<details class="qa-quote"><summary>{summary}</summary>'
-        f'<div class="qa-quote-body">{text_to_html(text)}</div></details>'
-    )
+    return f'<details class="qa-quote"><summary>{summary}</summary>{body}</details>'
 
 
 def render_thread(log, *, highlight_last=False, fallback_q="", fallback_a=""):

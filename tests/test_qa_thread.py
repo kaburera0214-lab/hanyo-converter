@@ -94,15 +94,6 @@ def test_escape_and_link():
     print("OK escape")
 
 
-if __name__ == "__main__":
-    test_parse()
-    test_separator_block_is_quoted()
-    test_repeat_is_folded()
-    test_short_line_survives()
-    test_escape_and_link()
-    print("\nすべて通過")
-
-
 # ── 先頭が切られた会話ログ（旧仕様の残骸）の扱い ──────────────────────
 # 1900文字上限で先頭を捨てていたため、話者マーカーごと消えて本文だけが
 # preamble に残る質問が7件ある。中央寄せの注記に流れ込んで会話に見えなくなっていた。
@@ -155,3 +146,42 @@ def test_前置きが無ければ両方空():
     # 省略マークの直後にマーカーが続く場合（断片が0字）
     assert tu.split_preamble("（古い会話を省略）") == (tu.OMITTED_NOTE, "")
     print("OK 前置きが無ければ両方空")
+
+
+def test_短い引用は畳まない():
+    """1〜2行の引用は開く手間の方が重いので、そのまま薄字で見せる。"""
+    html = tu._quote_html("＞下記フォルダのデータを反映しました。")
+    assert "<details" not in html, html
+    assert "qa-quote-open" in html
+    assert "下記フォルダのデータを反映しました" in html
+    print("OK 短い引用は畳まない")
+
+
+def test_長い引用は畳む():
+    long_quote = "\n".join(f"引用の{i}行目です" for i in range(6))
+    html = tu._quote_html(long_quote)
+    assert "<details" in html
+    assert "引用・過去のやり取り（6行）を表示" in html
+    print("OK 長い引用は畳む")
+
+
+def test_境界は2行まで畳まない():
+    two = tu._quote_html("1行目のながい引用文\n2行目のながい引用文")
+    three = tu._quote_html("1行目のながい引用文\n2行目のながい引用文\n3行目のながい引用文")
+    assert "<details" not in two
+    assert "<details" in three
+    print("OK 境界は2行まで畳まない")
+
+
+if __name__ == "__main__":
+    fails = 0
+    for name, fn in sorted(globals().items()):
+        if name.startswith("test_") and callable(fn):
+            try:
+                fn()
+            except AssertionError as e:
+                fails += 1
+                print(f"NG   {name}: {e}")
+    print("---")
+    print("全部通りました" if not fails else f"{fails}件 失敗")
+    sys.exit(1 if fails else 0)
