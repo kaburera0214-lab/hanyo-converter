@@ -97,16 +97,41 @@ with st.expander("🔐 NE API接続（管理者用）", expanded=False):
     st.caption("**再認可の手順**: 「🔑 NEにログインして認可する」→ NEでログイン・許可 → この画面に"
                "戻れば完了（トークンはDriveに保存され毎回自動更新）。"
                "**頻度**: 通常は不要。更新結果に『認証切れ・要再認可』が出たときだけ実施。")
+    st.caption("NEのトークンは **アクセス1日・リフレッシュ3日** で切れる仕様のため、"
+               "毎日の延命バッチ（GitHub Actions `ne-keepalive-daily`）が軽いAPIを1回呼んで"
+               "期限を更新し続けています。これが3日以上動かないと失効し、再認可が必要になります。")
     if not ne_client.is_configured():
         st.error("Secrets に NE_CLIENT_ID / NE_CLIENT_SECRET が未設定です。"
                  "設定するまでNEの自動更新は実行できません。")
     else:
-        _tok = ne_client.token_status()
-        if _tok:
-            st.success(f"認可済み（トークン保存: {_tok.get('saved_at', '不明')}）。"
-                       "API呼び出しのたびに自動で更新されるため、通常は再認可不要です。")
-        else:
+        _h = ne_client.health()
+        _rest = _h["remaining_hours"]
+        _rest_txt = f"あと約{_rest:.0f}時間" if _rest is not None else "残り不明"
+        if _h["state"] == "none":
             st.warning("未認可です。下のボタンからNEにログインして認可してください。")
+        elif _h["state"] == "dead":
+            st.error(f"⛔ トークンが失効しています（最終更新: {_h['saved_at']}）。"
+                     "下のボタンから再認可してください。")
+        elif _h["state"] == "warn":
+            st.warning(f"🟡 期限が近づいています（{_rest_txt}／最終更新: {_h['saved_at']}）。"
+                       "延命バッチが止まっている可能性があります（GitHub Actionsを確認）。")
+        else:
+            st.success(f"認可済み（最終更新: {_h['saved_at']}・{_rest_txt}）。"
+                       "毎日の延命バッチとAPI呼び出しで自動更新されるため、通常は再認可不要です。")
+
+        # 延命バッチが生きているか（Driveの実行記録）。ここが古ければ自動更新が止まっている。
+        try:
+            from lib.ne_api import keepalive as ne_keepalive
+            _ks = ne_keepalive.load_state()
+            if _ks.get("last_ok"):
+                st.caption(f"🔄 延命バッチ 最終成功: {_ks['last_ok']}"
+                           + (f"／直近の失敗: {_ks.get('last_error', '')}"
+                              if _ks.get("last_result") not in ("ok", None) else ""))
+            else:
+                st.caption("🔄 延命バッチの実行記録がまだありません"
+                           "（GitHub Actions `ne-keepalive-daily` を手動実行すると記録されます）。")
+        except Exception:  # noqa: BLE001
+            pass
         try:
             st.link_button("🔑 NEにログインして認可する", ne_client.auth_url(),
                            use_container_width=True)
@@ -946,9 +971,23 @@ if res:
                 st.code(str(r.get("メッセージ", "")))
 
     if runner.has_auth_error(results):
-        st.error("🔐 認証切れが発生しています。上の「NE API接続」または"
-                 "RMSライセンスキー（Secrets）を確認して再認可・更新後、"
+        st.error("🔐 認証切れが発生しています。下の手順で再認可してから"
                  "「失敗した処理だけ再実行」を押してください。")
+        # NEの認証切れは現場スタッフでもその場で直せるよう、ボタンと手順をここに出す
+        # （管理者用expanderを開かせない）。ログイン後は入力内容が残ったまま戻れる。
+        if any("NE API" in str(r.get("メッセージ", "")) for r in results
+               if r.get("状態") == "失敗"):
+            st.markdown("**ネクストエンジンの再認可（1分で終わります）**\n"
+                        "1. 下のボタンを押す\n"
+                        "2. ネクストエンジンにログイン（いつものID・パスワード）して許可する\n"
+                        "3. ホーム画面に戻ったら、左メニューの「📥 入荷登録」に戻る\n"
+                        "4. 「🔁 失敗した処理だけ再実行」を押す（入力した内容は残っています）")
+            try:
+                st.link_button("🔑 ネクストエンジンにログインして再認可する",
+                               ne_client.auth_url(), type="primary",
+                               use_container_width=True)
+            except ne_client.NENotConfigured:
+                st.caption("（NE_REDIRECT_URI未設定のため、上の🔐パネルの手貼り付け方式を使ってください）")
         # 楽天RMSの認証エラーなら、ライセンスキー更新をシートで促す。
         if any("RMS" in str(r.get("メッセージ", "")) for r in results
                if r.get("状態") == "失敗"):

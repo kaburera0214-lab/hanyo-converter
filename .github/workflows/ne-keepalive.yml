@@ -1,0 +1,41 @@
+name: ne-keepalive-daily
+
+# NEのrefresh_tokenは発行から3日で切れる（access_tokenは1日）。
+# 入荷登録は不定期・マスタ同期は週次なので、放置すると必ず認証切れになる。
+# 軽いAPIを1日2回呼んでトークンを転がし続ける（1回でも足りるが、実行が飛んでも
+# 3日以内に必ず成功するよう余裕をとる）。消費はNE APIの月60回（無料枠1000回）。
+
+on:
+  schedule:
+    - cron: "0 20 * * *"   # 毎日 20:00 UTC = 翌05:00 JST
+    - cron: "0 8 * * *"    # 毎日 08:00 UTC =   17:00 JST
+  workflow_dispatch: {}     # 手動実行も可（再認可の直後に動作確認する用）
+
+concurrency:
+  group: ne-keepalive
+  cancel-in-progress: false
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # libの依存のみ（streamlitはシムで置換するため不要）
+      - run: pip install requests google-api-python-client google-auth
+
+      - name: Keep NE tokens alive
+        env:
+          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          NE_CLIENT_ID: ${{ secrets.NE_CLIENT_ID }}
+          NE_CLIENT_SECRET: ${{ secrets.NE_CLIENT_SECRET }}
+          CHATWORK_API_TOKEN: ${{ secrets.CHATWORK_API_TOKEN }}
+          APP_URL: ${{ secrets.APP_URL }}
+        run: python batch/ne_keepalive.py

@@ -5,7 +5,7 @@
 
 GitHub Actions（.github/workflows/ne-master-sync.yml）等からヘッドレスで実行する。
 アプリのlib（NEトークン自動更新・Drive保存・使用量カウント・Chatwork通知）を
-そのまま再利用するため、Streamlit非依存にする軽量シムを噛ませる（st.secrets=環境変数）。
+そのまま再利用するため、Streamlit非依存にする軽量シム（batch/st_shim.py）を噛ませる。
 
 必要な環境変数（GitHub Secrets / ローカルのenv）:
   GOOGLE_REFRESH_TOKEN / GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET  … Drive認証
@@ -16,53 +16,12 @@ GitHub Actions（.github/workflows/ne-master-sync.yml）等からヘッドレス
 """
 import os
 import sys
-import types
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-
-# ── Streamlit ヘッドレスシム（libがst.secrets/st.session_stateだけ使うのを満たす） ──
-class _Secrets:
-    def get(self, key, default=None):
-        # GitHub Actionsは未登録のsecretも空文字でenvにセットするため、空は「未設定」として既定値を使う
-        v = os.environ.get(key)
-        return v if v not in (None, "") else default
-
-    def __getitem__(self, key):
-        v = os.environ.get(key)
-        if not v:
-            raise KeyError(key)
-        return v
-
-    def __contains__(self, key):
-        return bool(os.environ.get(key))
-
-
-class _NoOp:
-    """st.write/st.spinner等の代替（呼んでも何もしない・with可）。"""
-    def __call__(self, *a, **k):
-        return self
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
-
-    def __getattr__(self, _name):
-        return self
-
-
-class _StreamlitShim(types.ModuleType):
-    secrets = _Secrets()
-    session_state = {}
-
-    def __getattr__(self, _name):
-        return _NoOp()
-
-
-sys.modules["streamlit"] = _StreamlitShim("streamlit")
+from batch import st_shim                          # noqa: E402
+st_shim.install()                                  # libのimportより前に差し替える
 
 from lib import master_store                       # noqa: E402
 from lib.ne_api import master_sync, usage          # noqa: E402

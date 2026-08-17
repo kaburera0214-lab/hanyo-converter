@@ -180,6 +180,37 @@ def test_ne_usage_level():
     assert usage._level(500, 0, 0.8) == "ok"          # 上限0（無効）は常にok
 
 
+def test_ne_token_remaining_and_health():
+    """NEトークンの寿命判定: refresh_tokenは発行から3日、残り1日を切ったら警告"""
+    from lib.ne_api import client as ne
+    now = 1_000_000.0
+    assert ne.remaining_hours(now, now) == 72                    # 保存直後は満タン
+    assert ne.remaining_hours(now - 3600 * 24, now) == 48        # 1日経過
+    assert ne.remaining_hours(now - 3600 * 80, now) < 0          # 3日超で失効
+    assert ne.remaining_hours(None) is None                      # 旧形式（saved_at_tsなし）
+
+    assert ne.health_level(72) == "ok"
+    assert ne.health_level(24.5) == "ok"
+    assert ne.health_level(24) == "warn"     # 経過48時間＝延命バッチが2回飛んでいる
+    assert ne.health_level(0.5) == "warn"
+    assert ne.health_level(0) == "dead"
+    assert ne.health_level(-10) == "dead"
+    assert ne.health_level(None) == "unknown"
+
+
+def test_ne_keepalive_alert_cooldown():
+    """失効アラートは毎日は送らない（3日間隔）。復旧後は次の失効で必ず送る"""
+    import datetime
+
+    from lib.ne_api import keepalive as ka
+    today = datetime.date(2026, 8, 17)
+    assert ka.should_alert({}, today) is True                          # 未通知なら送る
+    assert ka.should_alert({"last_alert_date": "2026-08-17"}, today) is False   # 当日は再送しない
+    assert ka.should_alert({"last_alert_date": "2026-08-15"}, today) is False   # 2日後もまだ
+    assert ka.should_alert({"last_alert_date": "2026-08-14"}, today) is True    # 3日後は再送
+    assert ka.should_alert({"last_alert_date": "こわれた値"}, today) is True    # 壊れても送る側に倒す
+
+
 def test_master_name_parse_and_latest():
     """手動(master_)とAPI自動(master_auto_)の新旧判定は末尾の日付+版で行う（名前降順は誤り）"""
     from lib import master_store as ms
