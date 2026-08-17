@@ -76,17 +76,33 @@ def append_history(existing_history, action, actor=None, at=None):
     return trim_history(lines)
 
 
+def iter_entries(existing_history):
+    """履歴を (日時, 記録者, アクション) の列にして返す。書式に合わない行は飛ばす。
+
+    日時が読めない行は日時 None で返す（アクションだけは数えたいため）。
+    """
+    for line in (existing_history or "").split("\n"):
+        m = HISTORY_LINE_RE.match(line.strip())
+        if not m:
+            continue
+        try:
+            at = datetime.strptime(m.group("ts").strip(), "%Y-%m-%d %H:%M").replace(tzinfo=JST)
+        except ValueError:
+            at = None
+        yield at, m.group("actor").strip(), m.group("action").strip()
+
+
+def count_action(existing_history, action):
+    """履歴に指定アクションが何回出てくるか。"""
+    return sum(1 for _, _, a in iter_entries(existing_history) if a == action)
+
+
 def last_action_at(existing_history, action):
     """履歴から指定アクションの最後の日時を返す。無ければ None。"""
     found = None
-    for line in (existing_history or "").split("\n"):
-        m = HISTORY_LINE_RE.match(line)
-        if not m or m.group("action") != action:
-            continue
-        try:
-            found = datetime.strptime(m.group("ts").strip(), "%Y-%m-%d %H:%M").replace(tzinfo=JST)
-        except ValueError:
-            continue
+    for at, _, a in iter_entries(existing_history):
+        if a == action and at is not None:
+            found = at
     return found
 
 

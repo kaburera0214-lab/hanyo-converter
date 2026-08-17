@@ -66,9 +66,7 @@ def get_tags():
 
 TAGS = get_tags()
 
-def get_text(prop):
-    items = prop.get("rich_text", [])
-    return items[0]["plain_text"] if items else ""
+from lib.qa.notion_text import get_text, to_rich_text  # noqa: E402 - 定数定義の後に読む
 
 def compress_image(file_bytes):
     img = Image.open(io.BytesIO(file_bytes))
@@ -183,11 +181,9 @@ def search_similar_questions(title, content):
         if status not in ("回答済", "完了"):
             continue
         title_prop = p.get("質問タイトル", {}).get("title", [])
-        q_title = title_prop[0]["plain_text"] if title_prop else ""
-        q_body_items = p.get("質問本文", {}).get("rich_text", [])
-        q_body = q_body_items[0]["plain_text"] if q_body_items else ""
-        a_items = p.get("回答本文", {}).get("rich_text", [])
-        a_body = a_items[0]["plain_text"] if a_items else ""
+        q_title = "".join(t["plain_text"] for t in title_prop)
+        q_body = get_text(p.get("質問本文", {}))
+        a_body = get_text(p.get("回答本文", {}))
         tags = [s["name"] for s in p.get("タグ", {}).get("multi_select", [])]
         if q_title or q_body:
             candidates.append({
@@ -327,12 +323,12 @@ def submit_question(タイトル, 質問本文, タグ, 画像ファイル):
     history = append_history("", "質問投稿")
     props = {
         "質問タイトル": {"title": [{"text": {"content": タイトル}}]},
-        "質問本文": {"rich_text": [{"text": {"content": 質問本文}}]},
+        "質問本文": {"rich_text": to_rich_text(質問本文)},
         "ステータス": {"select": {"name": "未回答"}},
         "質問者": {"select": {"name": "インハナ"}},
         "質問日時": {"date": {"start": now_jst().isoformat()}},
         "タグ": {"multi_select": [{"name": t} for t in タグ]},
-        "編集履歴": {"rich_text": [{"text": {"content": history}}]},
+        "編集履歴": {"rich_text": to_rich_text(history)},
     }
     page = client.pages.create(**{"parent": {"database_id": DATABASE_ID}, "properties": props})
     page_id = page["id"]
@@ -347,7 +343,7 @@ def submit_question(タイトル, 質問本文, タグ, 画像ファイル):
             画像URLs.append(url)
         client.pages.update(
             page_id=page_id,
-            properties={"画像URL": {"rich_text": [{"text": {"content": "\n".join(画像URLs)}}]}}
+            properties={"画像URL": {"rich_text": to_rich_text("\n".join(画像URLs))}}
         )
     return unique_num, len(画像URLs)
 
@@ -543,10 +539,10 @@ else:
                                 page_id=q["id"],
                                 properties={
                                     "質問タイトル": {"title": [{"text": {"content": new_title}}]},
-                                    "質問本文": {"rich_text": [{"text": {"content": new_content}}]},
+                                    "質問本文": {"rich_text": to_rich_text(new_content)},
                                     "タグ": {"multi_select": [{"name": t} for t in new_tags]},
                                     "ステータス": {"select": {"name": "未回答"}},
-                                    "編集履歴": {"rich_text": [{"text": {"content": new_hist}}]},
+                                    "編集履歴": {"rich_text": to_rich_text(new_hist)},
                                 }
                             )
                             st.session_state.pop("editing_id", None)

@@ -21,9 +21,7 @@ def get_database_id():
 
 DATABASE_ID = get_database_id()
 
-def get_text(prop):
-    items = prop.get("rich_text", [])
-    return items[0]["plain_text"] if items else ""
+from lib.qa.notion_text import get_text  # noqa: E402 - 定数定義の後に読む
 
 def fetch_answered_questions(days: int = None):
     """回答済み質問を取得（days=Noneで全件）"""

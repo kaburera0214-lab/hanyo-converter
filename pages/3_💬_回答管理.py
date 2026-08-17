@@ -10,7 +10,13 @@ def now_jst():
 
 st.set_page_config(page_title="回答管理", layout="wide")
 
+from lib.qa import metrics
+from lib.qa.conversation import (
+    append_answer, append_reason, append_turn, merge_categories, start_log,
+)
 from lib.qa.history import append_history, retag_history, undo_remaining
+from lib.qa.notion_text import get_text, to_rich_text
+from lib.qa.retrieval import rank_cases
 from lib.qa.thread_ui import inject_qa_styles, question_no, render_text_block, render_thread
 
 st.title("✅ 回答・管理（パピー用）")
@@ -57,9 +63,8 @@ ensure_properties()
 
 REASON_CATEGORIES = ["スピード優先", "品質優先", "コスト優先", "顧客対応", "社内ルール", "その他"]
 
-def get_text(prop):
-    items = prop.get("rich_text", [])
-    return items[0]["plain_text"] if items else ""
+# AIドラフトのプロンプトに入れる過去事例の件数
+DRAFT_CASE_LIMIT = 25
 
 def get_questions():
     client = Client(auth=NOTION_API_KEY)
@@ -109,20 +114,28 @@ def get_current_status(page_id):
         return None
 
 
+def select_cases(question, questions, limit=DRAFT_CASE_LIMIT):
+    """AIドラフトが参照する過去事例を、質問文が近い順に選ぶ。
+
+    以前は「同じタグ → 質問日時の新しい順」で先頭25件を取っていたため、
+    同じ形の質問が続くと直近がそれで埋まり、AIがその文脈でしか答えられなくなっていた。
+    いまは文字バイグラムの類似度で並べる（lib/qa/retrieval.py）。
+    戻り値は [(スコア, 事例), ...]。
+    """
+    knowledge = [q for q in questions
+                 if q["ステータス"] in ("回答済", "完了")
+                 and q["回答本文"].strip()
+                 and q["id"] != question.get("id")]
+    return rank_cases(question, knowledge, top_n=limit)
+
 def generate_draft(question, questions):
+    """回答ドラフトを生成する。戻り値は (ドラフト文, 参照した事例)。"""
     if not ANTHROPIC_API_KEY:
-        return "（Anthropic APIキーが未設定のためドラフト生成できません）"
-    # 回答済・完了の両方をナレッジ対象にする（回答本文があるもの）
-    all_knowledge = [q for q in questions
-                     if q["ステータス"] in ("回答済", "完了") and q["回答本文"].strip()]
-    # 同じタグの事例を優先し、最大25件に絞る（プロンプト肥大化防止）
-    q_tags = set(question.get("タグ", []))
-    same_tag = [q for q in all_knowledge if q_tags & set(q["タグ"])]
-    other    = [q for q in all_knowledge if not (q_tags & set(q["タグ"]))]
-    knowledge = (same_tag + other)[:25]
+        return "（Anthropic APIキーが未設定のためドラフト生成できません）", []
+    ranked = select_cases(question, questions)
     knowledge_text = "\n\n".join([
         f"【事例】\n質問: {q['質問本文'][:300]}\n回答: {q['回答本文'][:300]}\n判断理由: {', '.join(q['判断理由カテゴリ'])} / {q['判断理由詳細'][:100]}"
-        for q in knowledge
+        for _score, q in ranked
     ]) or "（まだ蓄積データがありません）"
     try:
         import anthropic
@@ -149,9 +162,9 @@ def generate_draft(question, questions):
 
 上記の質問に対する回答ドラフトを作成してください。"""}]
         )
-        return message.content[0].text
+        return message.content[0].text, ranked
     except Exception as e:
-        return f"（AIドラフト生成に失敗しました。APIキーを確認してください。エラー: {type(e).__name__}）"
+        return f"（AIドラフト生成に失敗しました。APIキーを確認してください。エラー: {type(e).__name__}）", ranked
 
 # EDITOR_1_NAME / EDITOR_1_PASSWORD 〜 EDITOR_10_NAME / EDITOR_10_PASSWORD で定義
 PASSWORDS = {}
@@ -175,6 +188,75 @@ st.caption(
 )
 
 questions = get_questions()
+
+def render_kpi(questions):
+    """今月の状況（スプレッドシートの「集計」シートに相当する層）。
+
+    件数は月の営業日数がぶれるので営業日あたりで見る。
+    増加が良いことに見えないよう、前月差の色は反転させている。
+    """
+    kpi = metrics.summary(questions)
+    当月 = kpi["当月"]
+
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric(
+        f"今月の質問（{当月['年月']}）", f"{当月['質問数']}件",
+        f"{kpi['質問_前月差']:+.2f} 件/営業日", delta_color="inverse",
+        help=f"{当月['質問数_営業日']}件/営業日（{当月['営業日']}営業日）。前月比の増減を表示しています。",
+    )
+    k2.metric(
+        "今月のラリー（追加質問）", f"{当月['追加質問数']}件",
+        f"{kpi['追加質問_前月差']:+.2f} 件/営業日", delta_color="inverse",
+        help="追加質問が発生した日で数えています。1件あたりのラリー率は下の表を参照。",
+    )
+    k3.metric(
+        "パピー待ち", f"{kpi['パピー待ち']}件",
+        help="未回答・ドラフト生成済・再質問。こちらが動く番のものです。",
+    )
+    k4.metric(
+        "インハナさん待ち", f"{kpi['インハナ待ち']}件",
+        help="回答済（完了待ち）・編集中。回答は返しているが完了が押されていないものです。",
+    )
+    if kpi["最長滞留日数"] >= 7:
+        st.warning(f"いちばん長く止まっている質問は {kpi['最長滞留日数']}日 経過しています。")
+
+    with st.expander("📈 直近6ヶ月の推移と、止まっている質問"):
+        st.dataframe(
+            [{
+                "年月": r["年月"] + ("（進行中）" if r["進行中"] else ""),
+                "質問数": r["質問数"],
+                "件/営業日": r["質問数_営業日"],
+                "追加質問": r["追加質問数"],
+                "追加質問/営業日": r["追加質問数_営業日"],
+                "ラリー率%": r["ラリー率"],
+                "営業日": r["営業日"],
+            } for r in metrics.monthly(questions, months=6)],
+            hide_index=True, use_container_width=True,
+        )
+        st.caption(
+            "「ラリー率」はその月に立った質問のうち追加質問が発生した割合です。"
+            "当月はまだ追加質問が来る余地があるため低めに出ます（そこだけ参考値）。"
+        )
+        for 待ち手, items in kpi["滞留"].items():
+            if not items:
+                continue
+            st.markdown(f"**{待ち手}（{len(items)}件）**")
+            st.dataframe(
+                [{
+                    "番号": question_no(w["番号"]),
+                    "経過": f"{w['経過日数']}日" if w["経過日数"] is not None else "-",
+                    "ステータス": w["ステータス"],
+                    "タイトル": w["タイトル"],
+                } for w in items],
+                hide_index=True, use_container_width=True,
+            )
+
+
+# 集計は参考情報なので、ここで転んでも回答業務は止めない
+try:
+    render_kpi(questions)
+except Exception as e:  # noqa: BLE001 - 集計の失敗で回答画面を落とさない
+    st.caption(f"（今月の集計を表示できませんでした: {type(e).__name__}）")
 
 # ── 検索フォーム ──────────────────────────────────────────────────────
 all_tags = sorted({t for q in questions for t in q["タグ"]})
@@ -302,25 +384,26 @@ else:
                     if not add_answer.strip():
                         st.error("回答内容を入力してください")
                     else:
-                        # 会話ログに追記
-                        timestamp = now_jst().strftime("%Y-%m-%d %H:%M")
-                        new_log = q["会話ログ"] + f"\n\n【追加A｜{timestamp}】{add_answer.strip()}"
-                        if len(new_log) > 1900:
-                            new_log = "（古い会話を省略）\n" + new_log[-1800:]
+                        # 元の回答も会話ログの先頭も消さずに継ぎ足す（lib/qa/conversation）
+                        at = now_jst()
+                        base_log = q["会話ログ"] or start_log(q["質問本文"], q["回答本文"])
+                        new_log = append_turn(base_log, "追加A", add_answer, at=at)
                         new_history = append_history(q["編集履歴"], "追加回答")
                         c = Client(auth=NOTION_API_KEY)
                         c.pages.update(
                             page_id=q["id"],
                             properties={
-                                "回答本文": {"rich_text": [{"text": {"content": add_answer}}]},
-                                "追加質問": {"rich_text": [{"text": {"content": ""}}]},
-                                "会話ログ": {"rich_text": [{"text": {"content": new_log}}]},
-                                "判断理由カテゴリ": {"multi_select": [{"name": c2} for c2 in 選択カテゴリ]},
-                                "判断理由詳細": {"rich_text": [{"text": {"content": 理由詳細}}]},
+                                "回答本文": {"rich_text": to_rich_text(append_answer(q["回答本文"], add_answer, at=at))},
+                                "追加質問": {"rich_text": []},
+                                "会話ログ": {"rich_text": to_rich_text(new_log)},
+                                "判断理由カテゴリ": {"multi_select": [
+                                    {"name": c2} for c2 in merge_categories(q["判断理由カテゴリ"], 選択カテゴリ)
+                                ]},
+                                "判断理由詳細": {"rich_text": to_rich_text(append_reason(q["判断理由詳細"], 理由詳細, at=at))},
                                 "ステータス": {"select": {"name": "回答済"}},
-                                "回答日時": {"date": {"start": now_jst().isoformat()}},
+                                "回答日時": {"date": {"start": at.isoformat()}},
                                 "AI学習済": {"checkbox": True},
-                                "編集履歴": {"rich_text": [{"text": {"content": new_history}}]},
+                                "編集履歴": {"rich_text": to_rich_text(new_history)},
                             }
                         )
                         st.success("追加回答を送信しました！")
@@ -334,7 +417,7 @@ else:
                         st.rerun()
                     else:
                         with st.spinner("AIが回答を考えています..."):
-                            draft = generate_draft(q, questions)
+                            draft, ranked = generate_draft(q, questions)
                             if draft.startswith("（AIドラフト生成に失敗") or draft.startswith("（Anthropic") or draft.startswith("（Gemini"):
                                 st.error(draft)
                             else:
@@ -342,10 +425,14 @@ else:
                                 c.pages.update(
                                     page_id=q["id"],
                                     properties={
-                                        "AI生成ドラフト": {"rich_text": [{"text": {"content": draft}}]},
+                                        "AI生成ドラフト": {"rich_text": to_rich_text(draft)},
                                         "ステータス": {"select": {"name": "ドラフト生成済"}},
                                     }
                                 )
+                                # 何を参考にしたかを次の描画で出せるように残す
+                                st.session_state[f"cases_{q['id']}"] = [
+                                    (round(s, 3), c2["番号"], c2["タイトル"]) for s, c2 in ranked
+                                ]
                                 st.success("ドラフトを生成しました。")
                                 st.rerun()
 
@@ -353,6 +440,15 @@ else:
                 answer_value = q["AI生成ドラフト"] if not q["回答本文"] else q["回答本文"]
                 answer_height = max(150, answer_value.count("\n") * 22 + 100)
                 回答本文 = st.text_area("回答内容（編集可）", value=answer_value, height=answer_height, key=f"answer_{q['id']}")
+                refs = st.session_state.get(f"cases_{q['id']}")
+                if refs:
+                    # 何を根拠にしたドラフトかを見えるようにする。
+                    # 上位が的外れなら、その質問には過去事例が足りていないというサイン。
+                    with st.expander(f"🔎 AIが参照した過去事例 {len(refs)}件（類似度順）"):
+                        st.dataframe(
+                            [{"類似度": s, "番号": question_no(num), "タイトル": title} for s, num, title in refs],
+                            hide_index=True, use_container_width=True,
+                        )
                 st.warning("⚠️ 判断理由を入力しないと送信できません")
                 選択カテゴリ = st.multiselect("判断理由カテゴリ", REASON_CATEGORIES, key=f"cat_{q['id']}")
                 理由詳細 = st.text_area("判断理由の詳細", height=80, key=f"reason_{q['id']}")
@@ -372,13 +468,13 @@ else:
                         c.pages.update(
                             page_id=q["id"],
                             properties={
-                                "回答本文": {"rich_text": [{"text": {"content": 回答本文}}]},
+                                "回答本文": {"rich_text": to_rich_text(回答本文)},
                                 "判断理由カテゴリ": {"multi_select": [{"name": c2} for c2 in 選択カテゴリ]},
-                                "判断理由詳細": {"rich_text": [{"text": {"content": 理由詳細}}]},
+                                "判断理由詳細": {"rich_text": to_rich_text(理由詳細)},
                                 "ステータス": {"select": {"name": "回答済"}},
                                 "回答日時": {"date": {"start": now_jst().isoformat()}},
                                 "AI学習済": {"checkbox": True},
-                                "編集履歴": {"rich_text": [{"text": {"content": new_history}}]},
+                                "編集履歴": {"rich_text": to_rich_text(new_history)},
                             }
                         )
                         st.success("送信しました！")
@@ -434,7 +530,7 @@ else:
                                         page_id=q["id"],
                                         properties={
                                             "ステータス": {"select": {"name": "回答済"}},
-                                            "編集履歴": {"rich_text": [{"text": {"content": new_history}}]},
+                                            "編集履歴": {"rich_text": to_rich_text(new_history)},
                                         }
                                     )
                                     st.rerun()
@@ -447,7 +543,7 @@ else:
                                     page_id=q["id"],
                                     properties={
                                         "ステータス": {"select": {"name": "完了"}},
-                                        "編集履歴": {"rich_text": [{"text": {"content": new_history}}]},
+                                        "編集履歴": {"rich_text": to_rich_text(new_history)},
                                     }
                                 )
                                 st.success("完了にしました。")
@@ -466,21 +562,16 @@ else:
                             if not follow_up.strip():
                                 st.error("追加質問の内容を入力してください")
                             else:
-                                timestamp = now_jst().strftime("%Y-%m-%d %H:%M")
-                                existing_log = q["会話ログ"]
-                                if not existing_log:
-                                    existing_log = f"【Q】{q['質問本文']}\n【A】{answer_text}"
-                                new_log = existing_log + f"\n\n【追加Q｜{timestamp}】{follow_up.strip()}"
-                                if len(new_log) > 1900:
-                                    new_log = "（古い会話を省略）\n" + new_log[-1800:]
+                                base_log = q["会話ログ"] or start_log(q["質問本文"], answer_text)
+                                new_log = append_turn(base_log, "追加Q", follow_up)
                                 new_history = append_history(q["編集履歴"], "追加質問")
                                 Client(auth=NOTION_API_KEY).pages.update(
                                     page_id=q["id"],
                                     properties={
-                                        "追加質問": {"rich_text": [{"text": {"content": follow_up.strip()}}]},
-                                        "会話ログ": {"rich_text": [{"text": {"content": new_log}}]},
+                                        "追加質問": {"rich_text": to_rich_text(follow_up.strip())},
+                                        "会話ログ": {"rich_text": to_rich_text(new_log)},
                                         "ステータス": {"select": {"name": "再質問"}},
-                                        "編集履歴": {"rich_text": [{"text": {"content": new_history}}]},
+                                        "編集履歴": {"rich_text": to_rich_text(new_history)},
                                     }
                                 )
                                 st.session_state[edit_key] = False
@@ -525,8 +616,8 @@ else:
                                 c.pages.update(
                                     page_id=q["id"],
                                     properties={
-                                        "回答本文": {"rich_text": [{"text": {"content": new_answer}}]},
-                                        "編集履歴": {"rich_text": [{"text": {"content": new_history}}]},
+                                        "回答本文": {"rich_text": to_rich_text(new_answer)},
+                                        "編集履歴": {"rich_text": to_rich_text(new_history)},
                                     }
                                 )
                                 st.session_state[edit_key] = False
@@ -575,7 +666,7 @@ if st.checkbox("🛠 メンテナンス：編集履歴の記録者を実態に�
             for q, fixed_history, _ in retag_targets:
                 c.pages.update(
                     page_id=q["id"],
-                    properties={"編集履歴": {"rich_text": [{"text": {"content": fixed_history}}]}},
+                    properties={"編集履歴": {"rich_text": to_rich_text(fixed_history)}},
                 )
             st.success(f"{len(retag_targets)}件の履歴を修正しました。")
             st.rerun()
