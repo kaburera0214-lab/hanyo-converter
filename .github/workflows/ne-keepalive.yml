@@ -26,8 +26,10 @@ jobs:
         with:
           python-version: "3.11"
 
-      # libの依存のみ（streamlitはシムで置換するため不要）
-      - run: pip install requests google-api-python-client google-auth
+      # libの依存（streamlitはシムで置換するため不要）。
+      # pandasは lib/master_store → lib/invoice/csv_import が読むため必須
+      # （Drive保存先フォルダIDの解決経路。外すと "No module named 'pandas'" で落ちる）。
+      - run: pip install pandas requests google-api-python-client google-auth
 
       - name: Keep NE tokens alive
         env:
