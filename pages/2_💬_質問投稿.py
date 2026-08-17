@@ -67,6 +67,7 @@ def get_tags():
 TAGS = get_tags()
 
 from lib.qa.notion_text import get_text, to_rich_text  # noqa: E402 - 定数定義の後に読む
+from lib.qa.revisions import KIND_QUESTION, push_revision, question_snapshot  # noqa: E402
 
 def compress_image(file_bytes):
     img = Image.open(io.BytesIO(file_bytes))
@@ -273,6 +274,7 @@ def get_editable_questions():
             "ステータス": p["ステータス"]["select"]["name"] if p["ステータス"]["select"] else "未回答",
             "質問日時": p["質問日時"]["date"]["start"] if p.get("質問日時", {}).get("date") else "",
             "編集履歴": get_text(p.get("編集履歴", {})),
+            "改訂履歴": get_text(p.get("改訂履歴", {})),
         })
     return questions
 
@@ -535,6 +537,12 @@ else:
                     else:
                         try:
                             new_hist = append_history(q.get("編集履歴", ""), "質問編集")
+                            # 上書きせず、修正前のタイトル・タグ・本文を改訂履歴へ積む
+                            new_revs = push_revision(
+                                q.get("改訂履歴", ""), KIND_QUESTION,
+                                question_snapshot(q["タイトル"], q["質問本文"], q["タグ"]),
+                                actor="インハナ",
+                            )
                             Client(auth=NOTION_API_KEY).pages.update(
                                 page_id=q["id"],
                                 properties={
@@ -542,6 +550,7 @@ else:
                                     "質問本文": {"rich_text": to_rich_text(new_content)},
                                     "タグ": {"multi_select": [{"name": t} for t in new_tags]},
                                     "ステータス": {"select": {"name": "未回答"}},
+                                    "改訂履歴": {"rich_text": to_rich_text(new_revs)},
                                     "編集履歴": {"rich_text": to_rich_text(new_hist)},
                                 }
                             )

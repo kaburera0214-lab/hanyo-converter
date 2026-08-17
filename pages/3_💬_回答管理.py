@@ -17,6 +17,7 @@ from lib.qa.conversation import (
 from lib.qa.history import append_history, retag_history, undo_remaining
 from lib.qa.notion_text import get_text, to_rich_text
 from lib.qa.retrieval import rank_cases
+from lib.qa.revisions import KIND_ANSWER, parse_revisions, push_revision
 from lib.qa.thread_ui import inject_qa_styles, question_no, render_text_block, render_thread
 
 st.title("✅ 回答・管理（パピー用）")
@@ -43,7 +44,7 @@ def ensure_properties():
         client = Client(auth=NOTION_API_KEY)
         db = client.databases.retrieve(database_id=DATABASE_ID)
         updates = {}
-        for prop in ["画像URL", "編集履歴", "追加質問", "会話ログ"]:
+        for prop in ["画像URL", "編集履歴", "追加質問", "会話ログ", "改訂履歴"]:
             if prop not in db["properties"]:
                 updates[prop] = {"rich_text": {}}
         if updates:
@@ -102,6 +103,7 @@ def get_questions():
             "編集履歴": get_text(p.get("編集履歴", {})),
             "追加質問": get_text(p.get("追加質問", {})),
             "会話ログ": get_text(p.get("会話ログ", {})),
+            "改訂履歴": get_text(p.get("改訂履歴", {})),
         })
     return questions
 
@@ -188,6 +190,21 @@ st.caption(
 )
 
 questions = get_questions()
+
+def render_history(q):
+    """操作履歴と、修正前の版。どちらも既定では畳んでおく。"""
+    if q.get("編集履歴"):
+        with st.expander("📋 履歴"):
+            st.text(q["編集履歴"])
+    revisions = parse_revisions(q.get("改訂履歴"))
+    if revisions:
+        with st.expander(f"📄 修正前の版（{len(revisions)}件）"):
+            st.caption("上書きせず残している過去の本文です。新しいものが上に来ます。")
+            for r in revisions:
+                label = "・".join(x for x in [r["種別"], r["日時"], r["記録者"]] if x)
+                st.markdown(f'<div class="qa-panel-label">{label}</div>', unsafe_allow_html=True)
+                render_text_block(r["本文"])
+
 
 def render_kpi(questions):
     """今月の状況（スプレッドシートの「集計」シートに相当する層）。
@@ -548,9 +565,7 @@ else:
                                 )
                                 st.success("完了にしました。")
                                 st.rerun()
-                    if q["編集履歴"]:
-                        with st.expander("📋 履歴"):
-                            st.text(q["編集履歴"])
+                    render_history(q)
 
                 elif is_answer_editing == "followup":
                     # 回答管理からの追加質問入力
@@ -612,11 +627,16 @@ else:
                                 st.error("回答内容を入力してください")
                             else:
                                 new_history = append_history(q["編集履歴"], "回答修正", actor=editor_name)
+                                # 上書きせず、修正前の本文を改訂履歴へ積む
+                                new_revisions = push_revision(
+                                    q["改訂履歴"], KIND_ANSWER, answer_text, actor=editor_name
+                                )
                                 c = Client(auth=NOTION_API_KEY)
                                 c.pages.update(
                                     page_id=q["id"],
                                     properties={
                                         "回答本文": {"rich_text": to_rich_text(new_answer)},
+                                        "改訂履歴": {"rich_text": to_rich_text(new_revisions)},
                                         "編集履歴": {"rich_text": to_rich_text(new_history)},
                                     }
                                 )
@@ -629,9 +649,7 @@ else:
                             st.session_state[edit_key] = False
                             st.session_state.pop(f"editor_{q['id']}", None)
                             st.rerun()
-                    if q["編集履歴"]:
-                        with st.expander("📋 履歴"):
-                            st.text(q["編集履歴"])
+                    render_history(q)
 
 # ── メンテナンス：編集履歴の記録者を過去分まで実態に合わせる ──────────
 # 以前はこのページからの操作をすべて「パピー」で記録していたため、実際は
