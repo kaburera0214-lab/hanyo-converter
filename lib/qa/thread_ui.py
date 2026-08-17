@@ -30,6 +30,11 @@ KIND_LABEL = {"Q": "最初の質問", "A": "回答", "追加Q": "追加質問", 
 # 重複判定の対象にする最小文字数（「以上です。」のような短文は消さない）
 DEDUPE_MIN_LEN = 8
 
+# 旧仕様（1900文字で先頭を捨てる）が残した印。この行より後ろは、
+# マーカーごと切られて話者が分からなくなった会話の断片。
+OMITTED_MARK = "（古い会話を省略）"
+OMITTED_NOTE = "この前のやり取りは記録が欠けています（旧仕様で先頭が切られたため）"
+
 
 def inject_qa_styles():
     """会話UIのCSS。ページの先頭で1回だけ呼ぶ。
@@ -54,6 +59,10 @@ def inject_qa_styles():
                            border-top-right-radius:2px; }
 .qa-turn.qa-latest .qa-bubble { border-color:rgba(230,170,40,.75);
                                 box-shadow:0 0 0 2px rgba(230,170,40,.16); }
+/* 先頭が切られて話者が分からない断片。会話であることは見せるが、確定情報ではないと分かる形にする */
+.qa-turn.qa-orphan { align-items:stretch; }
+.qa-turn.qa-orphan .qa-bubble { max-width:100%; background:rgba(128,128,128,.06);
+                                border-color:rgba(128,128,128,.34); border-style:dashed; }
 .qa-bubble p { margin:0 0 6px; }
 .qa-bubble p:last-child { margin-bottom:0; }
 .qa-quote { margin:6px 0 2px; }
@@ -155,6 +164,23 @@ def text_to_html(text):
     return escaped.replace("\n", "<br>")
 
 
+def split_preamble(preamble):
+    """マーカーより前のテキストを (注記, 会話の断片) に分ける。
+
+    会話ログの先頭が切られた質問では、話者マーカーごと消えた会話本文が
+    ここに残る。中央寄せの小さな注記で出すと会話に見えないので、
+    注記と本文を分けて、本文は吹き出しとして描く。
+    """
+    text = (preamble or "").strip()
+    if not text:
+        return "", ""
+    if OMITTED_MARK in text:
+        before, _, after = text.partition(OMITTED_MARK)
+        body = f"{before.strip()}\n{after.strip()}".strip()
+        return OMITTED_NOTE, body
+    return "", text
+
+
 def _quote_html(text):
     lines = [l for l in text.split("\n") if l.strip()]
     summary = f"引用・過去のやり取り（{len(lines)}行）を表示"
@@ -183,10 +209,26 @@ def render_thread(log, *, highlight_last=False, fallback_q="", fallback_a=""):
         return
 
     parts = ['<div class="qa-thread">']
-    if preamble:
-        parts.append(f'<div class="qa-note">{text_to_html(preamble)}</div>')
-
     seen = set()
+
+    note, orphan = split_preamble(preamble)
+    if note:
+        parts.append(f'<div class="qa-note">{text_to_html(note)}</div>')
+    if orphan:
+        # 話者が分からない断片。左右どちらにも寄せず、破線の吹き出しで出す。
+        inner = []
+        for kind, text in split_body(orphan, seen):
+            if kind == "quote":
+                inner.append(_quote_html(text))
+            else:
+                inner.append(f"<p>{text_to_html(text)}</p>")
+        parts.append(
+            '<div class="qa-turn qa-orphan">'
+            '<div class="qa-meta">話者の記録なし</div>'
+            f'<div class="qa-bubble">{"".join(inner)}</div>'
+            "</div>"
+        )
+
     for i, t in enumerate(turns):
         is_last = i == len(turns) - 1
         classes = f"qa-turn qa-{t['role']}"

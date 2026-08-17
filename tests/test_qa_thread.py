@@ -101,3 +101,57 @@ if __name__ == "__main__":
     test_short_line_survives()
     test_escape_and_link()
     print("\nすべて通過")
+
+
+# ── 先頭が切られた会話ログ（旧仕様の残骸）の扱い ──────────────────────
+# 1900文字上限で先頭を捨てていたため、話者マーカーごと消えて本文だけが
+# preamble に残る質問が7件ある。中央寄せの注記に流れ込んで会話に見えなくなっていた。
+TRUNCATED = """（古い会話を省略）ようお願いいたします。
+➡はい、承知致しました。
+
+■確定フォルダの確認
+＞下記フォルダのデータを反映しました。念のためご確認をお願いします。
+➡ご反映頂きありがとうございます。
+
+【追加A｜2026-08-13 23:53】超郷さんがやったことなくても、御社にノウハウがあるだろうから
+「ゼロからの質問ではなく」という形式で確認をご提示いただく形ですと、判断・回答が可能です。
+
+【追加Q｜2026-08-14 12:44】かしこまりました。今後、社内で確認した上、質問するようにします。"""
+
+
+def test_先頭が切られた会話は注記と断片に分かれる():
+    turns, preamble = tu.parse_conversation(TRUNCATED)
+    assert [t["kind"] for t in turns] == ["追加A", "追加Q"], [t["kind"] for t in turns]
+    note, orphan = tu.split_preamble(preamble)
+    assert note == tu.OMITTED_NOTE
+    # 会話の中身は注記ではなく断片side に来る（吹き出しで描かれる）
+    assert "確定フォルダの確認" in orphan
+    assert tu.OMITTED_MARK not in orphan
+    assert "ようお願いいたします" in orphan
+    print("OK 先頭が切られた会話は注記と断片に分かれる")
+
+
+def test_断片の中の引用は畳まれる():
+    _turns, preamble = tu.parse_conversation(TRUNCATED)
+    _note, orphan = tu.split_preamble(preamble)
+    kinds = [k for k, _ in tu.split_body(orphan, set())]
+    assert "quote" in kinds, kinds   # ＞で始まる行は引用として畳む
+    assert "main" in kinds
+    print("OK 断片の中の引用は畳まれる")
+
+
+def test_省略マークが無い前置きはそのまま():
+    turns, preamble = tu.parse_conversation("なにかの前置き\n【Q】質問\n【A】回答")
+    assert [t["kind"] for t in turns] == ["Q", "A"]
+    note, orphan = tu.split_preamble(preamble)
+    assert note == ""
+    assert orphan == "なにかの前置き"
+    print("OK 省略マークが無い前置きはそのまま")
+
+
+def test_前置きが無ければ両方空():
+    assert tu.split_preamble("") == ("", "")
+    assert tu.split_preamble(None) == ("", "")
+    # 省略マークの直後にマーカーが続く場合（断片が0字）
+    assert tu.split_preamble("（古い会話を省略）") == (tu.OMITTED_NOTE, "")
+    print("OK 前置きが無ければ両方空")

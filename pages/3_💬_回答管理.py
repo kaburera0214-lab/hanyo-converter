@@ -363,7 +363,9 @@ else:
                     if url.strip():
                         if "drive.google.com/file/d/" in url:
                             file_id = url.split("/file/d/")[1].split("/")[0]
-                            img_url = f"https://drive.google.com/thumbnail?id={file_id}&sz=w400"
+                            # 400pxのサムネイルを列幅まで引き伸ばすとぼやけて、
+                            # 画面の細かい箇所（赤丸で囲った部分など）が読めない
+                            img_url = f"https://drive.google.com/thumbnail?id={file_id}&sz=w1600"
                         else:
                             img_url = url
                         with cols[i % 3]:
