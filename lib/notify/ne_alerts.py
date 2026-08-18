@@ -5,19 +5,42 @@ NE関連アラートの本文（Chatworkタスク）。
 【方針】通知は「読んだ人がその場で完結できる」ことを最優先にする。
 souko（倉庫）アカウントは現場スタッフが見るので、
   - 送るのは「スタッフが自分で直せること」＝NEの再認可（ブラウザでログインするだけ）のみ
-  - 本文は画面の名前どおりの番号つき手順にし、専門用語（トークン・API・GitHub等）は出さない
+  - 本文は画面の名前どおりの手順にし、専門用語（トークン・API・GitHub等）は出さない
   - できなかったときの逃げ道（タスクに返信）を必ず書く
 バッチの不具合や無料枠超過など**スタッフには直せないもの**は管理者宛に送り、
 「スタッフの対応は不要」と明記する（現場を止めない・不安にさせない）。
 """
 
 REPO_ACTIONS = "https://github.com/kaburera0214-lab/hanyo-converter/actions"
+# 入荷登録ページの相対パス（Streamlitはファイル名から日本語スラッグを作る）。
+# アプリのURL自体は公開リポジトリに置かない方針のため、APP_URL（Secrets）から組み立てる。
+RECEIVING_PATH = "/%E5%85%A5%E8%8D%B7%E7%99%BB%E9%8C%B2"
+
+
+def receiving_url(app_url):
+    """アプリTOPのURL → 入荷登録ページの直リンク。app_urlが空なら空文字。"""
+    app_url = (app_url or "").strip()
+    return app_url.rstrip("/") + RECEIVING_PATH if app_url else ""
 
 
 def reauth_body(app_url=""):
-    """スタッフ向け: NE再認可のお願い（手順つき）。"""
-    open_step = (f"1. パピー業務ツールを開く\n   {app_url}" if app_url
-                 else "1. パピー業務ツールを開く（いつものブックマークから）")
+    """スタッフ向け: NE再認可のお願い（手順つき）。
+    app_url（アプリTOP）があれば入荷登録ページへの直リンクにして手順を1つ減らす。"""
+    url = receiving_url(app_url)
+    if url:
+        steps = ["下のリンクを開く（入荷登録の画面が開きます）\n   " + url]
+    else:
+        steps = ["パピー業務ツールを開く（いつものブックマークから）",
+                 "左のメニューから「📥 入荷登録」を開く"]
+    steps += [
+        "画面の上のほうにある「🔐 NE API接続（管理者用）」の行をクリックして開く",
+        "中にある「🔑 NEにログインして認可する」ボタンを押す",
+        "ネクストエンジンのログイン画面が開くので、いつものID・パスワードでログインする",
+        "「許可」を押す",
+        "パピー業務ツールの最初の画面に戻り、緑色で\n"
+        "   「✅ ネクストエンジンAPIの認可が完了しました」と出れば完了です",
+    ]
+    steps_text = "".join("{}. {}\n".format(i, t) for i, t in enumerate(steps, 1))
     return (
         "[info][title]🔐【要対応】ネクストエンジンの再認可をお願いします（3分）[/title]"
         "入荷登録の「ネクストエンジンへの自動反映」が止まっています。\n"
@@ -26,14 +49,7 @@ def reauth_body(app_url=""):
         "用意するもの: ネクストエンジンのID・パスワード（いつも使っているもの）\n"
         "[hr]"
         "■ やること\n"
-        f"{open_step}\n"
-        "2. 左のメニューから「📥 入荷登録」を開く\n"
-        "3. 画面の上のほうにある「🔐 NE API接続（管理者用）」の行をクリックして開く\n"
-        "4. 中にある「🔑 NEにログインして認可する」ボタンを押す\n"
-        "5. ネクストエンジンのログイン画面が開くので、いつものID・パスワードでログインする\n"
-        "6. 「許可」を押す\n"
-        "7. パピー業務ツールの最初の画面に戻り、緑色で\n"
-        "   「✅ ネクストエンジンAPIの認可が完了しました」と出れば完了です\n"
+        + steps_text +
         "[hr]"
         "■ できたか確かめる\n"
         "「📥 入荷登録」→「🔐 NE API接続」を開いて、緑色で「認可済み」と出ていればOKです。\n"
@@ -48,11 +64,12 @@ def reauth_body(app_url=""):
 
 def admin_body(title, error, impact, action, workflow=""):
     """管理者向け: 開発担当者しか直せない失敗の通知（原因と次の一手を明記）。"""
-    link = f"\n{REPO_ACTIONS}/workflows/{workflow}" if workflow else f"\n{REPO_ACTIONS}"
+    link = "\n{}/workflows/{}".format(REPO_ACTIONS, workflow) if workflow \
+        else "\n" + REPO_ACTIONS
     return (
-        f"[info][title]⚠️【犬飼対応】{title}[/title]"
-        f"エラー: {error}\n"
-        f"影響: {impact}\n"
-        f"対応: {action}{link}\n"
+        "[info][title]⚠️【犬飼対応】{}[/title]".format(title) +
+        "エラー: {}\n".format(error) +
+        "影響: {}\n".format(impact) +
+        "対応: {}{}\n".format(action, link) +
         "※倉庫スタッフの対応は不要です（soukoには通知していません）。"
         "[/info]")
