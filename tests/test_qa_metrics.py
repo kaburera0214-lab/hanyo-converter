@@ -95,11 +95,41 @@ def test_サマリーの前月差():
     assert s["質問_前月差"] > 0
 
 
+def test_移行前の月はラリーが記録なしになる():
+    """スプレッドシートから取り込んだ分は編集履歴を持たない。
+    ここで0件と出すと「ツール導入でラリーが増えた」と誤読される。"""
+    questions = [
+        q(1, "2026-05-20T10:00:00+09:00", 履歴=""),            # 移行前・履歴なし
+        q(2, "2026-07-06T10:00:00+09:00",
+          履歴="[2026-07-06 10:00] インハナ：質問投稿"),        # 移行後
+    ]
+    rows = {r["年月"]: r for r in M.monthly(questions, months=4, now=NOW)}
+    五月 = rows["2026-05"]
+    assert 五月["質問数"] == 1              # 件数は分かる
+    assert 五月["記録あり"] is False
+    assert 五月["追加質問数"] is None       # ラリーは「0」ではなく「記録なし」
+    assert 五月["ラリー率"] is None
+    七月 = rows["2026-07"]
+    assert 七月["記録あり"] is True
+    assert 七月["追加質問数"] == 0          # こちらは本当に0件
+    assert 七月["ラリー率"] == 0.0
+
+
+def test_記録が無い月とは前月差を出さない():
+    questions = [q(1, "2026-08-04T10:00:00+09:00",
+                   履歴="[2026-08-04 10:00] インハナ：質問投稿")]
+    s = M.summary(questions, now=NOW)
+    assert s["当月"]["記録あり"] is True
+    assert s["前月"]["記録あり"] is False
+    assert s["追加質問_前月差"] is None      # 比較できないので出さない
+    assert s["質問_前月差"] is not None      # 件数は比較できる
+
+
 def test_空でも落ちない():
     s = M.summary([], now=NOW)
     assert s["当月"]["質問数"] == 0
     assert s["最長滞留日数"] == 0
-    assert M.monthly([], months=3, now=NOW)[0]["ラリー率"] == 0.0
+    assert M.monthly([], months=3, now=NOW)[0]["ラリー率"] is None
 
 
 if __name__ == "__main__":

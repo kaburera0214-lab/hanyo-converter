@@ -102,16 +102,23 @@ def monthly(questions, months=6, now=None):
     posted = {}      # (y, m) -> 質問数
     followups = {}   # (y, m) -> 追加質問の発生数
     cohort = {}      # (y, m) -> [追加質問があったか, ...]
+    tracked = set()  # 編集履歴を持つ質問があった月＝ラリーを数えられる月
 
     for q in questions:
+        history = q.get("編集履歴")
         at = parse_dt(q.get("質問日時"))
         if at is not None:
             key = (at.year, at.month)
             posted[key] = posted.get(key, 0) + 1
-            cohort.setdefault(key, []).append(count_action(q.get("編集履歴"), "追加質問") > 0)
-        for entry_at, _actor, action in iter_entries(q.get("編集履歴")):
-            if action == "追加質問" and entry_at is not None:
-                k = (entry_at.year, entry_at.month)
+            if (history or "").strip():
+                tracked.add(key)
+                cohort.setdefault(key, []).append(count_action(history, "追加質問") > 0)
+        for entry_at, _actor, action in iter_entries(history):
+            if entry_at is None:
+                continue
+            k = (entry_at.year, entry_at.month)
+            tracked.add(k)
+            if action == "追加質問":
                 followups[k] = followups.get(k, 0) + 1
 
     rows = []
@@ -119,14 +126,18 @@ def monthly(questions, months=6, now=None):
         until = today if (y, m) == (today.year, today.month) else None
         days = business_days(y, m, until=until)
         seen = cohort.get((y, m), [])
+        # 移行前（スプレッドシートから取り込んだ分）は編集履歴を持たないので、
+        # ラリーは「0件」ではなく「記録なし」。0と出すと減った/増えたを誤読させる。
+        has_record = (y, m) in tracked
         rows.append({
             "年月": f"{y}-{m:02d}",
             "営業日": days,
             "質問数": posted.get((y, m), 0),
             "質問数_営業日": _per_day(posted.get((y, m), 0), days),
-            "追加質問数": followups.get((y, m), 0),
-            "追加質問数_営業日": _per_day(followups.get((y, m), 0), days),
-            "ラリー率": round(100 * sum(seen) / len(seen), 1) if seen else 0.0,
+            "追加質問数": followups.get((y, m), 0) if has_record else None,
+            "追加質問数_営業日": _per_day(followups.get((y, m), 0), days) if has_record else None,
+            "ラリー率": round(100 * sum(seen) / len(seen), 1) if seen else (0.0 if has_record else None),
+            "記録あり": has_record,
             "進行中": (y, m) == (today.year, today.month),
         })
     return rows
@@ -173,7 +184,10 @@ def summary(questions, now=None):
         "当月": this_month,
         "前月": last_month,
         "質問_前月差": round(this_month["質問数_営業日"] - last_month["質問数_営業日"], 2),
-        "追加質問_前月差": round(this_month["追加質問数_営業日"] - last_month["追加質問数_営業日"], 2),
+        "追加質問_前月差": (
+            round(this_month["追加質問数_営業日"] - last_month["追加質問数_営業日"], 2)
+            if this_month["記録あり"] and last_month["記録あり"] else None
+        ),
         "パピー待ち": len(waits["パピー待ち"]),
         "インハナ待ち": len(waits["インハナ待ち"]),
         "最長滞留日数": oldest,

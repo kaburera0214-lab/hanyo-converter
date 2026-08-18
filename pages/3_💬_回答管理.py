@@ -14,7 +14,7 @@ from lib.qa import metrics
 from lib.qa.conversation import (
     append_answer, append_reason, append_turn, merge_categories, start_log,
 )
-from lib.qa.history import append_history, retag_history, undo_remaining
+from lib.qa.history import append_history, undo_remaining
 from lib.qa.notion_text import get_text, to_rich_text
 from lib.qa.retrieval import rank_cases
 from lib.qa.revisions import KIND_ANSWER, parse_revisions, push_revision
@@ -221,9 +221,11 @@ def render_kpi(questions):
         f"{kpi['質問_前月差']:+.2f} 件/営業日", delta_color="inverse",
         help=f"{当月['質問数_営業日']}件/営業日（{当月['営業日']}営業日）。前月比の増減を表示しています。",
     )
+    追加差 = kpi["追加質問_前月差"]
     k2.metric(
-        "今月のラリー（追加質問）", f"{当月['追加質問数']}件",
-        f"{kpi['追加質問_前月差']:+.2f} 件/営業日", delta_color="inverse",
+        "今月のラリー（追加質問）",
+        f"{当月['追加質問数']}件" if 当月["記録あり"] else "—",
+        f"{追加差:+.2f} 件/営業日" if 追加差 is not None else None, delta_color="inverse",
         help="追加質問が発生した日で数えています。1件あたりのラリー率は下の表を参照。",
     )
     k3.metric(
@@ -243,9 +245,10 @@ def render_kpi(questions):
                 "年月": r["年月"] + ("（進行中）" if r["進行中"] else ""),
                 "質問数": r["質問数"],
                 "件/営業日": r["質問数_営業日"],
-                "追加質問": r["追加質問数"],
-                "追加質問/営業日": r["追加質問数_営業日"],
-                "ラリー率%": r["ラリー率"],
+                # 移行前は編集履歴が無いので「0」ではなく「—（記録なし）」
+                "追加質問": r["追加質問数"] if r["記録あり"] else "—",
+                "追加質問/営業日": r["追加質問数_営業日"] if r["記録あり"] else "—",
+                "ラリー率%": r["ラリー率"] if r["記録あり"] else "—",
                 "営業日": r["営業日"],
             } for r in metrics.monthly(questions, months=6)],
             hide_index=True, use_container_width=True,
@@ -253,6 +256,7 @@ def render_kpi(questions):
         st.caption(
             "「ラリー率」はその月に立った質問のうち追加質問が発生した割合です。"
             "当月はまだ追加質問が来る余地があるため低めに出ます（そこだけ参考値）。"
+            "「—」は移行前でラリーの記録が残っていない月です（0件という意味ではありません）。"
         )
         for 待ち手, items in kpi["滞留"].items():
             if not items:
@@ -652,41 +656,3 @@ else:
                             st.session_state.pop(f"editor_{q['id']}", None)
                             st.rerun()
                     render_history(q)
-
-# ── メンテナンス：編集履歴の記録者を過去分まで実態に合わせる ──────────
-# 以前はこのページからの操作をすべて「パピー」で記録していたため、実際は
-# インハナさんの操作である「追加質問」「完了」がパピー名で残っている。
-# 何度実行しても結果は同じ（対象が無くなれば「修正不要」と出るだけ）。
-# expanderではなくcheckboxにしているのは、60秒ごとの自動リロードで閉じないようにするため。
-if st.checkbox("🛠 メンテナンス：編集履歴の記録者を実態に合わせる（過去分）"):
-    retag_targets = []
-    for q in questions:
-        fixed_history, changed_lines = retag_history(q["編集履歴"])
-        if changed_lines:
-            retag_targets.append((q, fixed_history, changed_lines))
-
-    if not retag_targets:
-        st.success("修正が必要な履歴はありません。")
-    else:
-        st.caption(
-            f"{len(retag_targets)}件の質問に修正対象があります"
-            f"（計{sum(t[2] for t in retag_targets)}行）。内容を確認して反映してください。"
-        )
-        for q, fixed_history, changed_lines in retag_targets:
-            st.markdown(f"**{question_no(q['番号'])} {q['タイトル']}**（{changed_lines}行）")
-            diff = [
-                f"- {before}\n+ {after}"
-                for before, after in zip(q["編集履歴"].split("\n"), fixed_history.split("\n"))
-                if before != after
-            ]
-            st.code("\n".join(diff), language="diff")
-
-        if st.button("💾 上記のとおり履歴を修正する", type="primary"):
-            c = Client(auth=NOTION_API_KEY)
-            for q, fixed_history, _ in retag_targets:
-                c.pages.update(
-                    page_id=q["id"],
-                    properties={"編集履歴": {"rich_text": to_rich_text(fixed_history)}},
-                )
-            st.success(f"{len(retag_targets)}件の履歴を修正しました。")
-            st.rerun()
