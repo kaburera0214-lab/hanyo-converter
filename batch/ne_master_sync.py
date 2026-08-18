@@ -48,10 +48,22 @@ if __name__ == "__main__":
         main()
     except Exception as e:  # noqa: BLE001
         print(f"[ne_master_sync] FAILED: {e}", file=sys.stderr, flush=True)
+        # 原因で宛先を分ける: 認証切れは現場スタッフが再認可で直せる（手順つきで souko へ）。
+        # それ以外はスタッフには直せないので管理者にだけ送る。
         try:
-            from lib.notify import chatwork
-            chatwork.create_task("[info][title]⚠️ NEマスタ週次自動取得が失敗[/title]"
-                                 f"{e}\nGitHub Actionsのログを確認してください。[/info]")
+            from lib.notify import chatwork, ne_alerts
+            message = str(e)
+            if "認証" in message or "認可" in message or "002" in message:
+                chatwork.create_task(ne_alerts.reauth_body(os.environ.get("APP_URL", "").strip()),
+                                     limit_days=1, audience=chatwork.STAFF)
+            else:
+                chatwork.create_task(ne_alerts.admin_body(
+                    title="NEマスタ週次自動取得が失敗",
+                    error=message,
+                    impact="Driveの商品マスタ（master_auto_*）が更新されません。"
+                           "手動アップのマスタが最新ならすぐ困ることはありません。",
+                    action="ログを確認して修正 → Run workflow で再実行",
+                    workflow="ne-master-sync.yml"), limit_days=3, audience=chatwork.ADMIN)
         except Exception:  # noqa: BLE001
             pass
         sys.exit(1)

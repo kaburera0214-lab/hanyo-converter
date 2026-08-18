@@ -97,14 +97,15 @@ def _maybe_alert(data):
         if not chatwork.is_configured():
             return   # 通知先未設定 → 既読にしない（後で設定したら通知できるように）
         if level == "over":
-            body = (f"[info][title]🔴 NE API 無料枠を超過[/title]"
+            body = (f"[info][title]🔴【犬飼対応】NE API 無料枠を超過[/title]"
                     f"今月のNE API呼び出しが無料枠(1000回)を超えました（{calls}回）。"
                     f"以降は課金対象です。マスタ自動取得・入荷登録の頻度を確認してください。[/info]")
         else:
-            body = (f"[info][title]🟡 NE API 無料枠の80%超過[/title]"
+            body = (f"[info][title]🟡【犬飼対応】NE API 無料枠の80%超過[/title]"
                     f"今月のNE API呼び出しが{calls}/1000回になりました。"
                     f"残り{FREE_LIMIT - calls}回で課金に入ります。[/info]")
-        if chatwork.create_task(body, limit_days=3):
+        # 無料枠は「実行頻度の見直し」でしか対処できず現場スタッフには直せないため管理者へ
+        if chatwork.create_task(body, limit_days=3, audience=chatwork.ADMIN):
             data["alerted"] = level
     except Exception:  # noqa: BLE001
         pass

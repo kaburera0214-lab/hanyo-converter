@@ -30,10 +30,11 @@ from lib.ne_api import keepalive, usage                # noqa: E402
 APP_URL = os.environ.get("APP_URL", "").strip()
 
 
-def _alert(body):
+def _alert(body, audience):
+    """audience: chatwork.STAFF（現場が直せる）/ chatwork.ADMIN（開発者しか直せない）。"""
     try:
         from lib.notify import chatwork
-        return chatwork.create_task(body, limit_days=1)
+        return chatwork.create_task(body, limit_days=1, audience=audience)
     except Exception:  # noqa: BLE001
         return False
 
@@ -52,19 +53,18 @@ def main():
 
     print(f"[ne_keepalive] FAILED: {r['message']}", file=sys.stderr, flush=True)
     if r.get("alert"):
-        where = f"\n{APP_URL}" if APP_URL else ""
+        from lib.notify import chatwork, ne_alerts
         if r.get("auth"):
-            _alert("[info][title]🔐 ネクストエンジンの再認可が必要です[/title]"
-                   "NEのトークンが失効しました（3日以上APIを呼べていません）。"
-                   "このままだと入荷登録のNE自動更新が失敗します。\n"
-                   "対応: パピー業務ツール →「📥 入荷登録」→「🔐 NE API接続」→"
-                   "「🔑 NEにログインして認可する」を押してNEにログインするだけです"
-                   f"（1分で終わります）。{where}[/info]")
+            # 失効の復旧はブラウザでのログインだけ＝現場スタッフが自分でできる
+            _alert(ne_alerts.reauth_body(APP_URL), chatwork.STAFF)
         else:
-            _alert("[info][title]⚠️ NEトークン延命バッチが失敗[/title]"
-                   f"{r['message']}\n"
-                   "3日以内に復旧しないとNEの認証が切れます。"
-                   f"GitHub Actionsのログを確認してください。{where}[/info]")
+            # バッチ側の不具合。スタッフには直せないので管理者にだけ送る
+            _alert(ne_alerts.admin_body(
+                title="NEトークン延命バッチが失敗",
+                error=r["message"],
+                impact="このまま3日続くとNEの認証が切れ、入荷登録のNE自動反映が止まります。",
+                action="ログを確認して修正 → Run workflow で再実行",
+                workflow="ne-keepalive.yml"), chatwork.ADMIN)
     return 1
 
 
