@@ -39,7 +39,8 @@ def _ne_batch(step, rows, results, failed, key, on_step):
         on_step(f"{step} を更新中…")
     try:
         que_id = goods.upload_goods(rows)
-        ok, message = goods.wait_que(que_id)
+        timeout, interval = goods.wait_policy(len(rows))   # 大量アップは長めに待つ
+        ok, message = goods.wait_que(que_id, timeout=timeout, interval=interval)
         if ok:
             results.append({"ステップ": step, "対象": target, "状態": "成功",
                             "メッセージ": f"キュー{que_id} 完了"})

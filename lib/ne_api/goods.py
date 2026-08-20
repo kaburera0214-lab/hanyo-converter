@@ -11,9 +11,15 @@ uploadは非同期でque_idが返る → api_v1_system_que/search で完了(-1=�
 """
 import csv
 import io
+import math
 import time
 
 from . import client
+
+# goods_id-in にまとめて渡す件数。NEのsearchは limit=10000 まで実績がある
+# （master_sync.fetch_master が10万件を10数回で取得）が、リクエストが長くなり過ぎない
+# ようこの単位で分割する。
+SEARCH_CHUNK = 500
 
 
 def build_csv(rows):
@@ -64,6 +70,30 @@ def que_status(que_id):
     return status, str(row.get("que_message") or "")
 
 
+def wait_policy(n_rows):
+    """行数に応じたキュー待ちの (timeout, interval)。
+
+    大量アップロードはNE側の処理に時間がかかるので待ち時間を延ばす（短いと成功して
+    いるのにタイムアウトで失敗表示になる）。同時に、ポーリングもAPI課金の対象なので
+    件数が多いほど間隔を広げて呼び出し回数を抑える。
+    """
+    if n_rows > 200:
+        return 900, 20
+    if n_rows > 50:
+        return 300, 10
+    return 120, 5
+
+
+def call_estimate(n_rows):
+    """商品マスタ更新1回で使うNE API呼び出し回数の見積り（画面表示用）。
+    存在確認（一括・SEARCH_CHUNK件ごと）＋ upload 1回 ＋ キュー完了待ち 数回。"""
+    if not n_rows:
+        return 0
+    _, interval = wait_policy(n_rows)
+    polls = 2 if interval <= 5 else 3          # 実測ベースのざっくり値
+    return math.ceil(n_rows / SEARCH_CHUNK) + 1 + polls
+
+
 def wait_que(que_id, timeout=120, interval=5):
     """キュー完了までポーリングする。返り値: (成功:bool, メッセージ:str)。
     que_status_id: 0=待機 / 1=処理中 / 2=完了 / -1=失敗（理由は que_message）
@@ -97,6 +127,12 @@ def find_existing(codes):
     一致しなければ新規登録（売価・原価等が必須）」で動く。マスタ(Drive)とNEで
     商品コードの大文字小文字や表記がずれていると新規登録扱いになりエラーになるため、
     事前にNEへ問い合わせて存在確認し、NEが実際に持つ正確なコードへ置き換える。
+
+    NE APIは**呼び出し回数で課金**される（無料枠1000回/月）。1件ずつ引くと商品数ぶんの
+    呼び出しになり、取扱数の多い取引先（1500商品など）だと1回の価格改定で無料枠を
+    使い切ってしまうため、まず goods_id-in で SEARCH_CHUNK 件ずつ**一括**確認する
+    （1500商品なら3回。2026-08-20 修正。旧実装は1500〜4500回）。
+    一括でヒットしなかったコードだけ、従来の1件ずつ（大文字小文字ゆらぎ・部分一致）で救済する。
     """
     uniq = []
     seen = set()
@@ -105,11 +141,30 @@ def find_existing(codes):
         if s and s.lower() not in seen:
             seen.add(s.lower())
             uniq.append(s)
+
     found = {}
+    for i in range(0, len(uniq), SEARCH_CHUNK):
+        chunk = uniq[i:i + SEARCH_CHUNK]
+        try:
+            rows = client.call("api_v1_master_goods/search",
+                               {"goods_id-in": ",".join(chunk),
+                                "fields": "goods_id",
+                                "limit": str(len(chunk))}).get("data") or []
+        except client.NEAuthError:
+            raise
+        except Exception:  # noqa: BLE001（一括が使えない環境なら下の1件ずつで拾う）
+            rows = []
+        for row in rows:
+            gid = str(row.get("goods_id", "")).strip()
+            if gid and gid.lower() in seen:
+                found[gid.lower()] = gid        # 入力コード → NEの正確なコード
+
+    # 一括で見つからなかったぶんだけ1件ずつ（表記ゆらぎの救済）。通常は0件。
     for code in uniq:
-        gid = _search_one_code(code)
-        if gid:
-            found[code.lower()] = gid          # 入力コード → NEの正確なコード
+        if code.lower() not in found:
+            gid = _search_one_code(code)
+            if gid:
+                found[code.lower()] = gid
     return found
 
 

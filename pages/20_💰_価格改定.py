@@ -34,7 +34,7 @@ st.caption("インプットCSV（JAN・新下代）→ 新販売価格を計算�
 
 from lib import master_store
 from lib.invoice import csv_import
-from lib.ne_api import client as ne_client, usage as ne_usage
+from lib.ne_api import client as ne_client, goods as ne_goods, usage as ne_usage
 from lib.pricing import apply, calc, export as ex, masters, pipeline, rakuten_price
 from lib.receiving import yahoo_queue as yq
 from lib.yahoo_api import client as yahoo_client
@@ -420,11 +420,14 @@ def confirm_and_apply(result_df, key_prefix, tab_label,
                    + "、".join(notes["ne_skipped"][:10]))
 
     # 課金されるのはNEだけ（無料枠1000回/月）。楽天・Yahooは呼び出し回数での課金は無い。
-    # 反映を押す前に今月の残枠が見えるようにしておく。
-    with st.expander(f"💳 NE APIの使用量（今回の反映で約 {n['ne'] + 3}回 使います）", expanded=False):
-        st.caption("呼び出し回数で課金されるのはネクストエンジンだけです（無料枠1000回/月）。"
-                   "楽天・Yahooは回数での課金がありません。内訳は"
-                   f"「商品コードの存在確認 {n['ne']}回 ＋ アップロード1回 ＋ 完了待ち2回前後」。")
+    # 反映を押す前に今月の残枠と今回の消費見込みが見えるようにしておく。
+    est = ne_goods.call_estimate(n["ne"])
+    with st.expander(f"💳 NE APIの使用量（今回の反映で約 {est}回 使います）", expanded=False):
+        st.caption(f"呼び出し回数で課金されるのはネクストエンジンだけです（無料枠1000回/月）。"
+                   f"楽天・Yahooは回数での課金がありません。内訳は「商品コードの存在確認"
+                   f" {max(-(-n['ne'] // ne_goods.SEARCH_CHUNK), 0)}回"
+                   f"（{ne_goods.SEARCH_CHUNK}件ずつ一括で照会）＋ アップロード1回"
+                   f" ＋ 完了待ち数回」。件数が増えても呼び出し回数はほとんど増えません。")
         ne_usage.render(compact=True)
 
     blockers = []
