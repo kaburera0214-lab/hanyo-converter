@@ -265,6 +265,15 @@ def rakuten_price_controls(matched, key):
     return cache
 
 
+def _drop_blank_rows(df):
+    """入力CSVの空行（Excelが末尾に残す「,」だけの行など）を落として知らせる。
+    そのまま突合すると「NE商品マスタに存在しない行」として警告に出てしまうため。"""
+    df, n = pipeline.drop_blank_rows(df)
+    if n:
+        st.caption(f"※空行 {n}行 を読み飛ばしました（CSV末尾の空行など）。残り {len(df)}行 で計算します。")
+    return df
+
+
 def show_unmatched(unmatched):
     if unmatched:
         st.error(f"⚠️ NE商品マスタに存在しない行が {len(unmatched)} 件あります（計算から除外）")
@@ -598,6 +607,7 @@ with tab1:
             st.error(f"CSVの読込に失敗: {e}")
 
     if in_df is not None:
+        in_df = _drop_blank_rows(in_df)
         c_jan = pipeline.pick_col(in_df, "JANコード", "JAN", "jan")
         c_code = pipeline.pick_col(in_df, "商品コード")
         c_cost = pipeline.pick_col(in_df, "新下代", "下代", "仕入価格", "納品価格", "新仕入")
@@ -642,6 +652,7 @@ with tab2:
             st.error(f"CSVの読込に失敗: {e}")
             in_df2 = None
         if in_df2 is not None:
+            in_df2 = _drop_blank_rows(in_df2)
             c_jan = pipeline.pick_col(in_df2, "JANコード", "JAN", "jan")
             c_code = pipeline.pick_col(in_df2, "商品コード")
             c_cost = pipeline.pick_col(in_df2, "新下代", "下代", "仕入価格")

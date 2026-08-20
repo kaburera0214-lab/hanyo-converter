@@ -23,9 +23,27 @@ def pick_col(df, *cands):
     return None
 
 
+def drop_blank_rows(df):
+    """全セルが空の行を落とす。返り値: (落とした後のdf, 落とした行数)
+
+    Excelで作ったCSVは末尾に「,」だけの行が残ることがある（2026-08-20の実障害）。
+    これはデータではないので突合の対象にしない。放置すると「NE商品マスタに存在しない行が
+    1件あります」と警告に出てしまい、マスタが古いのかと調べる手間が発生する。
+
+    ※「一部だけ空」の行は落とさない。JANが空で下代だけあるような行は入力ミスなので、
+      未マッチとして見せる必要がある（黙って捨てると気づけない）。
+    """
+    if df is None or len(df) == 0:
+        return df, 0
+    blank = df.apply(
+        lambda row: all(str(v).strip() in ("", "nan", "None", "NaT") for v in row), axis=1)
+    return df[~blank].reset_index(drop=True), int(blank.sum())
+
+
 def match_input(df, c_code, c_jan, jan_map, code_info):
     """入力CSVの各行を商品コードに解決する。(matched=[(入力行, info)], unmatched=[識別子])
-    JAN列に商品コードが入っていても救済する（JAN→ダメなら商品コードとして照合）。"""
+    JAN列に商品コードが入っていても救済する（JAN→ダメなら商品コードとして照合）。
+    ※空行は drop_blank_rows で先に落としておくこと（ここでは未マッチ扱いになる）。"""
     matched, unmatched = [], []
     for _, r in df.iterrows():
         code = masters.norm_key(r[c_code]) if c_code else ""

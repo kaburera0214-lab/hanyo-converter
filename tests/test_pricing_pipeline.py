@@ -332,3 +332,41 @@ if __name__ == "__main__":
                 print(f"FAIL {name}")
                 traceback.print_exc()
     sys.exit(1 if fails else 0)
+
+
+def test_drop_blank_rows_real_case():
+    """2026-08-20の実障害: Excel由来の末尾「,」だけの行が
+    「NE商品マスタに存在しない行が1件」として警告に出ていた（マスタは正常だった）。"""
+    from lib.invoice import csv_import
+    raw = ("JANコード,新下代\r\n4521718136837 ,313\r\n4521718554105 ,420\r\n,\r\n"
+           ).encode("cp932")
+    df = csv_import.read_csv_auto(raw)
+    assert len(df) == 3                                   # 空行も1行として読まれる
+
+    clean, dropped = pipeline.drop_blank_rows(df)
+    assert dropped == 1 and len(clean) == 2
+
+    jan_map = {"4521718136837": "artc6366", "4521718554105": "artc6739"}
+    code_info = {"artc6366": {"商品コード": "artc6366", "商品名": "透明ドームミニ",
+                              "原価": "313", "項目1": "60"},
+                 "artc6739": {"商品コード": "artc6739", "商品名": "木製ソーラーカー組立キット",
+                              "原価": "420", "項目1": "60"}}
+    c_jan = pipeline.pick_col(clean, "JANコード", "JAN", "jan")
+    matched, unmatched = pipeline.match_input(clean, None, c_jan, jan_map, code_info)
+    assert [i["商品コード"] for _, i in matched] == ["artc6366", "artc6739"]
+    assert unmatched == []                                # 空行由来の「JAN 」が出ない
+
+
+def test_drop_blank_rows_keeps_partially_filled():
+    """一部だけ空の行は落とさない（入力ミスなので未マッチとして見せる必要がある）。"""
+    df = pd.DataFrame([{"JAN": "4900000000284", "新下代": "1200"},
+                       {"JAN": "", "新下代": "999"},        # JANだけ空＝入力ミス
+                       {"JAN": "", "新下代": ""}])          # 全部空＝ただの空行
+    clean, dropped = pipeline.drop_blank_rows(df)
+    assert dropped == 1
+    assert list(clean["新下代"]) == ["1200", "999"]
+
+
+def test_drop_blank_rows_empty_df():
+    clean, dropped = pipeline.drop_blank_rows(pd.DataFrame())
+    assert dropped == 0 and len(clean) == 0
