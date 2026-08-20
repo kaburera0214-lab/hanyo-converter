@@ -9,8 +9,10 @@
 API反映は lib/pricing/apply.py（同・テスト共用。tests/test_pricing_apply.py）。
 出力形式は実際のアップロード実績ファイルに一致（lib/pricing/export.py）。
 
-CSV出力は廃止していない。APIが未設定・失敗した分はCSVアップロードで反映できる安全網として
-残してあり、確定した内容は今までどおりDriveに証跡として保存される。
+画面の流れは ①✅確定（内容をロック・CSV表示）→ ②🚀反映（API）→ ③💾バックアップ の順。
+バックアップは**反映した後**に自動で取る（実際に反映した内容と実行結果を一緒に残すため）。
+反映せずCSVだけで運用する場合は③の手動ボタンで保存する。
+CSV出力は廃止していない。APIが未設定・失敗した分はCSVアップロードで反映できる安全網。
 ※梱包サイズ変更は「📥 入荷登録」ページ（pages/21）へ移設した（2026-07-21）。
 """
 import pandas as pd
@@ -38,6 +40,38 @@ from lib.receiving import yahoo_queue as yq
 from lib.yahoo_api import client as yahoo_client
 
 product_folder = master_store.folder_id()
+
+
+# ══ バックアップへのショートカット（常時表示） ══════════════
+# 価格変更の作業をしていなくても、過去の証跡をいつでも見に行けるようにページ先頭に出す。
+
+def _history_url():
+    """Driveの「価格改定履歴」フォルダURL。返り値: (url, エラー文言)。
+    毎rerunでDriveを叩かないようセッションにキャッシュし、保存したら破棄する
+    （_save_backup が `_pricing_hist` を消す）。"""
+    ck = st.session_state.get("_pricing_hist")
+    if ck and ck.get("folder") == product_folder:
+        return ck["url"], ck["err"]
+    hist_id, err = masters.find_history_folder(product_folder)
+    url = masters.folder_url(hist_id) if hist_id else ""
+    st.session_state["_pricing_hist"] = {"folder": product_folder, "url": url, "err": err}
+    return url, err
+
+
+_hist_url, _hist_err = _history_url()
+_hc1, _hc2 = st.columns([1, 3])
+if _hist_url:
+    _hc1.link_button("📁 バックアップを開く", _hist_url, use_container_width=True)
+    _hc2.caption("Driveの「価格改定履歴」フォルダ。反映・確定した内容が"
+                 "`YYYYMMDD_連番_タブ名` で版数管理されています。")
+else:
+    _hc1.button("📁 バックアップを開く", disabled=True, use_container_width=True,
+                key="hist_open_disabled")
+    if _hist_err:
+        # 「まだ無い」ではなく「確認できなかった」。履歴があるのに無いように見せない。
+        _hc2.caption(f"⚠️ Driveを確認できませんでした: {_hist_err}")
+    else:
+        _hc2.caption("まだバックアップがありません（1回目の反映・保存でフォルダが作られます）。")
 
 
 # ══ サイドバー: 計算パラメータ ══════════════════════════════
@@ -325,58 +359,49 @@ _DL_LABELS = {
 
 
 def confirm_gate(files, key_prefix, tab_label, extra_files=None):
-    """✅確定 → Driveの「価格改定履歴」へ版数付き保存（YYYYMMDD_連番_タブ名）→ DLボタン表示。
+    """① ✅確定 → 内容をロックしてCSVのDLボタンを出す。
 
-    複数人運用での誤操作対策: 確定するまでCSVは出さない。確定した内容は
-    Driveに証跡として残り、確定後に内容を修正した場合は再確定を求める。
-    extra_files: Driveには保存するがDLボタンは出さないファイル（入力CSVなどの証跡用）。
-    返り値: 今の内容のハッシュ（確定後に内容が変わったかの判定にAPI直更新側でも使う）。
+    複数人運用での誤操作対策: 確定するまでCSVは出さない。確定した内容は次の
+    「🚀 反映」まで固定され、途中で画面の内容が変わったら再確定を求める。
+
+    Driveへのバックアップはここでは取らない。**反映した後**（backup_section）に、
+    実際に反映した内容と実行結果をまとめて残す。反映せずCSVだけで運用する場合は
+    backup_sectionの手動ボタンで保存する。
+    extra_files: バックアップには含めるがDLボタンは出さないファイル（入力CSVなどの証跡用）。
+    返り値: 今の内容のハッシュ（確定後に内容が変わったかの判定に反映側でも使う）。
     """
     import hashlib
     cur_hash = hashlib.md5(b"".join(files.values())).hexdigest()
 
     conf_key = key_prefix + "_confirmed"
     conf = st.session_state.get(conf_key)
-    label = "✅ 確定してDriveに保存（CSVを表示）" if conf is None else "✅ 再確定してDriveに保存し直す"
+    label = "✅ 確定（CSVを表示・反映に進む）" if conf is None else "✅ 再確定（最新の内容にし直す）"
     if st.button(label, key=key_prefix + "_confirm", type="primary",
                  disabled=(conf is not None and conf["hash"] == cur_hash)):
         import datetime
-        run_name, url, err = "", "", ""
-        try:
-            with st.spinner("Driveにバックアップ中…"):
-                run_name, run_id = masters.save_run_to_drive(
-                    {**files, **(extra_files or {})}, tab_label, product_folder)
-            url = f"https://drive.google.com/drive/folders/{run_id}"
-        except Exception as e:  # noqa: BLE001
-            err = str(e)
-        # DLファイル名のユニーク化用サフィックス（版数と一致させる。Drive失敗時は時刻）
+        # DLファイル名のユニーク化用サフィックス。バックアップを取ったらその版数
+        # （例 20260820_001）に差し替える（backup_section）。
         # ※ブラウザの重複リネーム「 (7)」はRMSのファイル名規則（半角英数と-_のみ）で
         #   弾かれるため、最初からユニークな名前で配布する
-        if run_name:
-            suffix = "_".join(run_name.split("_")[:2])          # 例: 20260717_001
-        else:
-            suffix = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        st.session_state[conf_key] = {"hash": cur_hash, "files": files,
-                                      "run": run_name, "url": url, "err": err,
-                                      "suffix": suffix}
+        st.session_state[conf_key] = {
+            "hash": cur_hash, "files": files, "extra": dict(extra_files or {}),
+            "suffix": datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}
+        st.session_state.pop(key_prefix + "_backup", None)      # 別内容なので前回の保存結果は消す
         st.rerun()
 
     if conf is None:
-        st.info("内容を確認したら「✅ 確定」を押してください。Driveにバックアップされた後、CSVがダウンロードできます。")
+        st.info("内容を確認したら「✅ 確定」を押してください。CSVのダウンロードと"
+                "モールへの反映は、確定してからできます。")
         return cur_hash
 
-    if conf["err"]:
-        st.error(f"⚠️ Driveへのバックアップに失敗しました（CSVは下からダウンロードできます）: {conf['err']}")
-    else:
-        st.success(f"確定済み: **{conf['run']}** としてDriveに保存しました。")
-        if conf["url"]:
-            st.link_button("📁 バックアップフォルダを開く", conf["url"])
+    st.success("確定済み。この内容で反映・ダウンロードできます。")
     if conf["hash"] != cur_hash:
-        st.warning("⚠️ 確定した後に内容が変わっています。下のCSVは**確定時点の内容**です。"
+        st.warning("⚠️ 確定した後に内容が変わっています。下のCSVと反映対象は**確定時点の内容**です。"
                    "最新の内容にするには「✅ 再確定」を押してください。")
 
     saved = conf["files"]
-    suffix = conf.get("suffix", "")
+    backup = st.session_state.get(key_prefix + "_backup") or {}
+    suffix = backup.get("suffix") or conf.get("suffix", "")
     items = list(saved.items())
     for i in range(0, len(items), 4):
         chunk = items[i:i + 4]
@@ -516,19 +541,34 @@ def _run_api(tasks, key_prefix, tab_label):
             results.append({"ステップ": apply.STEP_YAHOO, "対象": "キュー退避", "状態": "失敗",
                             "メッセージ": f"CSVキューへの退避にも失敗: {e}"})
 
-    bar.progress(1.0, text="証跡を保存中…")
-    run_name, url, err = "", "", ""
+    st.session_state[key_prefix + "_api_result"] = {
+        "results": results, "failed": failed, "yahoo_saved": yahoo_saved}
+
+    # ③ 反映が終わったらバックアップ。実際に反映した内容（入力CSV・出力CSV・実行結果）を
+    #    ひとまとめにしてDriveへ残す。失敗した反映も含めて「何をやったか」を記録する。
+    bar.progress(1.0, text="Driveにバックアップ中…")
+    _save_backup(key_prefix, tab_label, results=results)
+    bar.empty()
+
+
+def _save_backup(key_prefix, tab_label, results=None):
+    """確定した内容（＋あれば反映結果）をDriveの「価格改定履歴」へ版数付きで保存する。
+    保存結果はセッションに残す（rerunしても表示が消えないように）。"""
+    conf = st.session_state.get(key_prefix + "_confirmed") or {}
+    files = {**conf.get("files", {}), **conf.get("extra", {})}
+    if results is not None:
+        files["api_result.csv"] = ex.detail_csv(pd.DataFrame(results))
+    run_name, url, err, suffix = "", "", "", ""
     try:
-        run_name, run_id = masters.save_run_to_drive(
-            {"api_result.csv": ex.detail_csv(pd.DataFrame(results))},
-            tab_label + "_API反映", product_folder)
-        url = f"https://drive.google.com/drive/folders/{run_id}"
+        run_name, run_id = masters.save_run_to_drive(files, tab_label, product_folder)
+        url = masters.folder_url(run_id)
+        suffix = "_".join(run_name.split("_")[:2])              # 例: 20260820_001
+        st.session_state.pop("_pricing_hist", None)             # 履歴フォルダのキャッシュを破棄
     except Exception as e:  # noqa: BLE001
         err = str(e)
-    bar.empty()
-    st.session_state[key_prefix + "_api_result"] = {
-        "results": results, "failed": failed, "run": run_name, "url": url,
-        "err": err, "yahoo_saved": yahoo_saved}
+    st.session_state[key_prefix + "_backup"] = {
+        "run": run_name, "url": url, "err": err, "suffix": suffix,
+        "with_result": results is not None}
 
 
 def _show_api_result(key_prefix, tab_label):
@@ -546,17 +586,11 @@ def _show_api_result(key_prefix, tab_label):
     c3.metric("スキップ", f"{n_skip}件")
     st.dataframe(pd.DataFrame(results), use_container_width=True, hide_index=True)
     st.caption("表示は**直近の実行分**です（再実行するとこの表は入れ替わります）。"
-               "各実行の結果はDriveに `api_result.csv` として1回ぶんずつ残ります。")
+               "各実行の結果は下のバックアップに `api_result.csv` として1回ぶんずつ残ります。")
 
     if state["yahoo_saved"]:
         st.info(f"🟡 Yahooは反映待ちキューへ退避しました（キュー全体で {state['yahoo_saved']}件）。"
                 "「📥 入荷登録」ページのYahooキューからCSVをまとめてアップしてください。")
-    if state["err"]:
-        st.warning(f"実行結果のDrive保存に失敗しました（反映自体は上の表のとおり）: {state['err']}")
-    elif state["run"]:
-        st.caption(f"実行結果を **{state['run']}** としてDriveに保存しました。")
-        if state["url"]:
-            st.link_button("📁 実行結果フォルダを開く", state["url"])
 
     if apply.has_auth_error(results):
         st.error("🔑 認証切れが含まれています。「📥 入荷登録」ページの🔐から"
@@ -572,18 +606,54 @@ def _show_api_result(key_prefix, tab_label):
         st.success("✅ すべて反映しました。CSVのアップロードは不要です。")
 
 
+# ══ ③ バックアップ（反映した後に取る） ═════════════════════
+
+def backup_section(key_prefix, tab_label):
+    """③ 確定した内容＋反映結果をDriveの「価格改定履歴」へ版数付きで残す。
+
+    反映を実行すると自動で保存される（＝実際に反映した内容の証跡）。
+    反映せずCSVだけで運用する場合のために、手動の保存ボタンも出す。
+    """
+    conf = st.session_state.get(key_prefix + "_confirmed")
+    if conf is None:
+        return
+    st.divider()
+    st.markdown("#### 💾 バックアップ（Driveの「価格改定履歴」）")
+
+    state = st.session_state.get(key_prefix + "_backup")
+    if state and state["err"]:
+        st.error(f"⚠️ Driveへの保存に失敗しました: {state['err']}　"
+                 "反映自体は上の結果表のとおりです。下のボタンでやり直せます。")
+    elif state:
+        what = "反映結果つきで" if state["with_result"] else "（反映前の内容だけ）"
+        st.success(f"**{state['run']}** として{what}保存しました。")
+        if state["url"]:
+            st.link_button("📁 このバックアップを開く", state["url"])
+    else:
+        st.caption("まだ保存していません。**「🚀 反映を実行」すると自動で保存されます。**"
+                   "反映せずCSVだけで進める場合は、下のボタンで保存してください。")
+
+    label = "💾 バックアップを保存し直す" if state else "💾 反映せずバックアップだけ保存"
+    if st.button(label, key=f"{key_prefix}_backup_save"):
+        with st.spinner("Driveに保存中…"):
+            _save_backup(key_prefix, tab_label)
+        st.rerun()
+
+
 def confirm_and_download(result_df, key_prefix, tab_label, include_unchanged,
                          input_file=None, free_shipping=False):
-    """価格変更タブ用: 出力CSVを組み立てて確定ゲートへ。input_file=(名前, bytes)は証跡として一緒に保存。"""
+    """価格変更タブ用: 出力CSVを組み立てて ①確定 → ②反映 → ③バックアップ の順に並べる。
+    input_file=(名前, bytes) はバックアップに証跡として一緒に保存する。"""
     files, mall_n, ne_n = build_output_files(result_df, include_unchanged, free_shipping)
     st.caption(f"モール向け: {mall_n}件（価格変更あり{'＋変わらない行' if include_unchanged else 'のみ'}）"
                f" ／ NE向け: {ne_n}件（原価更新のため価格が変わらない行も含む）")
     extra = {f"input_{input_file[0]}": input_file[1]} if input_file else None
-    cur_hash = confirm_gate(files, key_prefix, tab_label, extra_files=extra)
+    cur_hash = confirm_gate(files, key_prefix, tab_label, extra_files=extra)   # ①確定
     conf = st.session_state.get(key_prefix + "_confirmed")
-    api_apply_section(result_df, key_prefix, tab_label, include_unchanged,
+    api_apply_section(result_df, key_prefix, tab_label, include_unchanged,     # ②反映
                       stale=bool(conf and conf["hash"] != cur_hash),
                       free_shipping=free_shipping)
+    backup_section(key_prefix, tab_label)                                      # ③バックアップ
 
 
 def input_file_of(uploaded, prefill=None, prefill_name="サイズ変更引き継ぎ.csv"):

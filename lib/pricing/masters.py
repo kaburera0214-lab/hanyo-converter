@@ -184,6 +184,28 @@ def build_lookup(ne_df):
 HISTORY_FOLDER_NAME = "価格改定履歴"
 
 
+def folder_url(folder_id):
+    """DriveフォルダIDから、ブラウザで開けるURLを作る。"""
+    return f"https://drive.google.com/drive/folders/{folder_id}"
+
+
+def find_history_folder(folder_id):
+    """「価格改定履歴」フォルダを探す（**作らない**）。返り値: (フォルダID, エラー文言)
+
+      (id, None)   … 見つかった
+      (None, None) … Driveは見に行けたが、まだ1度も保存していない（フォルダが無い）
+      (None, str)  … Driveを確認できなかった（認証切れ・通信エラー等）
+
+    「まだ無い」と「確認できなかった」は意味が違うので、呼び出し側で区別できるようにする
+    （確認できなかっただけなのに「履歴なし」と表示すると、実際はある履歴を見落とす）。
+    """
+    try:
+        found = drive_master.find_folder(HISTORY_FOLDER_NAME, folder_id)
+    except Exception as e:  # noqa: BLE001
+        return None, str(e)
+    return (found["id"] if found else None), None
+
+
 def save_run_to_drive(files, label, folder_id):
     """
     確定した出力CSV一式を、Driveの「価格改定履歴/YYYYMMDD_連番_ラベル」フォルダへ保存する。

@@ -40,15 +40,23 @@ def download_bytes(file_id):
     return buf.getvalue()
 
 
-def get_or_create_folder(name, parent_id):
-    """parent_id配下に name のフォルダを取得（無ければ作成）し、IDを返す。"""
+def find_folder(name, parent_id):
+    """parent_id配下の name フォルダを探す（無ければNone）。**作らない**ので、
+    画面表示のたびに呼んでも副作用が無い。"""
     service = _service()
     q = (f"name = '{name}' and '{parent_id}' in parents and "
          "mimeType = 'application/vnd.google-apps.folder' and trashed = false")
-    res = service.files().list(q=q, fields="files(id)", pageSize=1).execute()
+    res = service.files().list(q=q, fields="files(id, name)", pageSize=1).execute()
     files = res.get("files", [])
-    if files:
-        return files[0]["id"]
+    return files[0] if files else None
+
+
+def get_or_create_folder(name, parent_id):
+    """parent_id配下に name のフォルダを取得（無ければ作成）し、IDを返す。"""
+    found = find_folder(name, parent_id)
+    if found:
+        return found["id"]
+    service = _service()
     meta = {"name": name, "mimeType": "application/vnd.google-apps.folder",
             "parents": [parent_id]}
     created = service.files().create(body=meta, fields="id").execute()
