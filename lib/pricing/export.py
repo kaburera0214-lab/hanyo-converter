@@ -39,16 +39,23 @@ def _to_csv_bytes(df, encoding=UPLOAD_ENCODING):
     return buf.getvalue().encode(encoding, errors="replace")
 
 
-def rakuten_rows(rows, sku_table):
+def rakuten_groups(rows, sku_table):
     """
-    rows: [{商品コード, 楽天販売価格}] → (normal-item.csv用の行list, SKU対応表に無いコードlist)
+    rows: [{商品コード, 楽天販売価格}] → (groups, order, missing)
+
+    groups:  {商品管理番号（小文字）: [(SKU管理番号, システム連携用SKU番号, 価格, 商品コード)]}
+    order:   商品管理番号の出現順
+    missing: SKU管理番号が分からず対象にできなかった商品コード
 
     SKU対応表にあればその親/SKU番号を使う。無い場合、枝番なしコードは
-    「単品SKU（SKU管理番号=商品コード・連携番号なし）」とみなして出力し、
-    枝番付き（-01等）はSKU管理番号が分からないため除外して missing で返す。
+    「単品SKU（SKU管理番号=商品コード・連携番号なし）」とみなし、
+    枝番付き（-01等）はSKU管理番号が分からないため missing に入れる。
+
+    CSV出力（rakuten_rows）とAPI直更新（lib/pricing/apply）が同じ親子のまとめ方・
+    同じ除外判定になるよう、組み立てはこの関数に一本化する。
     """
-    groups = {}   # 親コード → [(SKU管理番号, 連携番号, 価格)]
-    order = []    # 親コードの出現順
+    groups = {}   # 商品管理番号 → [(SKU管理番号, 連携番号, 価格, 商品コード)]
+    order = []    # 商品管理番号の出現順
     missing = []
     for r in rows:
         code = masters.norm_key(r["商品コード"])
@@ -65,14 +72,23 @@ def rakuten_rows(rows, sku_table):
         if key not in groups:
             groups[key] = []
             order.append(key)
-        groups[key].append((sku_no, renkei, price))
+        groups[key].append((sku_no, renkei, price, code))
+    return groups, order, missing
 
+
+def rakuten_rows(rows, sku_table):
+    """
+    rows: [{商品コード, 楽天販売価格}] → (normal-item.csv用の行list, SKU対応表に無いコードlist)
+
+    親行（商品番号のみ）＋SKU行の組み立て。親子の判定は rakuten_groups と共通。
+    """
+    groups, order, missing = rakuten_groups(rows, sku_table)
     records = []
     for parent in order:
         records.append({"商品管理番号（商品URL）": parent, "商品番号": parent,
                         "SKU管理番号": "", "システム連携用SKU番号": "",
                         "販売価格": "", "表示価格": "", "二重価格文言管理番号": ""})
-        for sku_no, renkei, price in groups[parent]:
+        for sku_no, renkei, price, _code in groups[parent]:
             records.append({"商品管理番号（商品URL）": parent, "商品番号": "",
                             "SKU管理番号": sku_no, "システム連携用SKU番号": renkei,
                             "販売価格": price, "表示価格": price,
@@ -82,7 +98,7 @@ def rakuten_rows(rows, sku_table):
 
 def rakuten_csv(records, free_shipping=False):
     """rakuten_rows()の結果 → normal-item.csv のbytes。
-    free_shipping=True（直送品・送料込み価格）なら送料無料フラグ列を追加（商品行に0）。"""
+    free_shipping=True（直送品・送料込み価格）なら送料無料フラグ列を追加（商品行に1＝送料無料）。"""
     columns = list(RAKUTEN_COLUMNS)
     if free_shipping:
         columns.append(RAKUTEN_FREE_SHIP_COLUMN)

@@ -3,10 +3,14 @@
 価格改定（納品価格変更・直送価格＆送料変更）
 
 インプットCSV（JAN・新下代）から新販売価格を計算し、
-楽天RMS・Yahoo!ショッピング・ネクストエンジンの価格更新CSVを出力する。
+楽天RMS・Yahoo!ショッピング・ネクストエンジンへ**APIで直接反映**する（2026-08-20）。
 計算ロジックはGoogleスプレッドシート「パピー納品価格変更」の数式を再現（lib/pricing/calc.py）。
 突合〜ルール適用は lib/pricing/pipeline.py（Streamlit非依存・テスト共用）。
+API反映は lib/pricing/apply.py（同・テスト共用。tests/test_pricing_apply.py）。
 出力形式は実際のアップロード実績ファイルに一致（lib/pricing/export.py）。
+
+CSV出力は廃止していない。APIが未設定・失敗した分はCSVアップロードで反映できる安全網として
+残してあり、確定した内容は今までどおりDriveに証跡として保存される。
 ※梱包サイズ変更は「📥 入荷登録」ページ（pages/21）へ移設した（2026-07-21）。
 """
 import pandas as pd
@@ -21,13 +25,17 @@ st.title("💰 価格改定")
 import datetime as _dt
 import os as _os
 _build = _dt.datetime.fromtimestamp(_os.path.getmtime(__file__)).strftime("%Y-%m-%d %H:%M")
-st.caption("インプットCSV（JAN・新下代）→ 楽天・Yahoo・ネクストエンジンの価格更新CSVを作ります。"
-           "アップロード（本番反映）は必ず内容を確認してから手動で行ってください。"
+st.caption("インプットCSV（JAN・新下代）→ 新販売価格を計算し、楽天・Yahoo・ネクストエンジンへ"
+           "**APIで直接反映**します（CSVアップロード不要。CSVも従来どおり出せます）。"
+           "反映は必ず内容を確認・確定してから実行してください。"
            f"　（app更新: {_build}）")
 
 from lib import master_store
 from lib.invoice import csv_import
-from lib.pricing import calc, export as ex, masters, pipeline, rakuten_price
+from lib.ne_api import client as ne_client, usage as ne_usage
+from lib.pricing import apply, calc, export as ex, masters, pipeline, rakuten_price
+from lib.receiving import yahoo_queue as yq
+from lib.yahoo_api import client as yahoo_client
 
 product_folder = master_store.folder_id()
 
@@ -281,11 +289,9 @@ def editable_result(df, key):
 def build_output_files(result_df, include_unchanged, free_shipping=False):
     """結果表 → 出力CSV一式（bytes）。返り値: (files dict, モール件数, NE件数)
     free_shipping=True（直送品・送料込み価格）ならモールCSVに送料無料フラグ列を追加。"""
-    ok = result_df[result_df["新販売価格"].notna() & (result_df["新販売価格"] > 0)]
-    changed = ok if include_unchanged else ok[ok["新販売価格"] != ok["現販売価格"]]
-    mall_rows = [{"商品コード": r["商品コード"],
-                  "楽天販売価格": r["新販売価格"], "Yahoo販売価格": r["新販売価格"]}
-                 for _, r in changed.iterrows()]
+    # 対象行の判定はAPI直更新（lib/pricing/apply）と共通 ＝ CSVとAPIで中身が食い違わない
+    ok, changed = apply.split_targets(result_df, include_unchanged)
+    mall_rows = apply.mall_rows_of(changed)
     ne_rows = [{"商品コード": r["商品コード"], "NE売価": r["NE売価"], "NE原価": r["新下代"]}
                for _, r in ok.iterrows()]
 
@@ -324,6 +330,7 @@ def confirm_gate(files, key_prefix, tab_label, extra_files=None):
     複数人運用での誤操作対策: 確定するまでCSVは出さない。確定した内容は
     Driveに証跡として残り、確定後に内容を修正した場合は再確定を求める。
     extra_files: Driveには保存するがDLボタンは出さないファイル（入力CSVなどの証跡用）。
+    返り値: 今の内容のハッシュ（確定後に内容が変わったかの判定にAPI直更新側でも使う）。
     """
     import hashlib
     cur_hash = hashlib.md5(b"".join(files.values())).hexdigest()
@@ -356,7 +363,7 @@ def confirm_gate(files, key_prefix, tab_label, extra_files=None):
 
     if conf is None:
         st.info("内容を確認したら「✅ 確定」を押してください。Driveにバックアップされた後、CSVがダウンロードできます。")
-        return
+        return cur_hash
 
     if conf["err"]:
         st.error(f"⚠️ Driveへのバックアップに失敗しました（CSVは下からダウンロードできます）: {conf['err']}")
@@ -379,6 +386,190 @@ def confirm_gate(files, key_prefix, tab_label, extra_files=None):
             dl_name = f"{stem}_{suffix}.{ext}" if suffix else name
             col.download_button(_DL_LABELS.get(name, name), data, dl_name, "text/csv",
                                 key=f"{key_prefix}_dl_{name}", use_container_width=True)
+    return cur_hash
+
+
+# ══ API直更新（CSVアップロードの代わり） ═══════════════════
+# CSVは残したまま。APIが未設定・失敗した分は従来どおりCSVで反映できる（安全網）。
+
+_API_LABELS = {"ne": "🟢 ネクストエンジン（売価・原価）",
+               "rakuten": "🔴 楽天（販売価格・表示価格）",
+               "yahoo": "🟡 Yahoo（販売価格）"}
+
+
+def _api_available():
+    """各システムのAPIが使える状態か。使えないものはチェックを外して選べなくする。"""
+    return {"ne": ne_client.is_configured(),
+            "rakuten": rakuten_price.is_configured(),
+            "yahoo": yahoo_client.api_enabled()}
+
+
+def api_apply_section(result_df, key_prefix, tab_label, include_unchanged,
+                      stale=False, free_shipping=False):
+    """✅確定後に出す「モールへ直接反映」。CSVアップロードの代わりにAPIで書き込む。
+
+    確定していない（＝Driveに証跡が無い）内容は反映させない。確定後に画面の内容を
+    変えた場合も、証跡と実際の反映がズレないよう再確定を求める。
+    """
+    conf = st.session_state.get(key_prefix + "_confirmed")
+    if conf is None:
+        return
+
+    st.divider()
+    st.markdown("#### 🚀 モールへ直接反映（CSVアップロード不要）")
+    st.caption("確定した新価格を、各システムのAPIでそのまま書き込みます。"
+               "CSVは今までどおり残してあるので、APIを使わない・失敗した分は"
+               "CSVアップロードで反映できます。")
+
+    avail = _api_available()
+    systems, cols = set(), st.columns(3)
+    for col, name in zip(cols, apply.ALL_SYSTEMS):
+        on = col.checkbox(_API_LABELS[name], value=avail[name], disabled=not avail[name],
+                          key=f"{key_prefix}_api_{name}")
+        if not avail[name]:
+            col.caption("⚠️ APIが未設定のため選べません（CSVで反映してください）")
+        if on:
+            systems.add(name)
+    if not systems:
+        st.info("反映先が選ばれていません。CSVだけで反映する場合はこのままでOKです。")
+        return
+
+    tasks, notes = apply.build_tasks(result_df, sku_table, include_unchanged, systems)
+    n = apply.task_counts(tasks)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("NE 更新", f"{n['ne']}件", help="売価・原価。価格が変わらない行も原価更新のため含みます")
+    c2.metric("楽天 更新", f"{n['rakuten']}商品",
+              help=f"SKU合計 {n['rakuten_sku']}件。商品管理番号ごとにPATCHします")
+    c3.metric("Yahoo 更新", f"{n['yahoo']}件", help="親コード単位。更新後に全反映予約を1回呼びます")
+
+    if free_shipping:
+        st.warning("⚠️ 直送タブの**送料無料フラグはAPIでは設定できません**（価格のみ反映）。"
+                   "送料設定は楽天・YahooのCSV（下のダウンロード）か管理画面で別途反映してください。")
+    if notes["rakuten_missing"]:
+        st.warning(f"🔴 楽天SKU番号が分からない {len(notes['rakuten_missing'])}件 はAPI対象外です: "
+                   + "、".join(notes["rakuten_missing"][:10])
+                   + (" …" if len(notes["rakuten_missing"]) > 10 else "")
+                   + "　→ 📡「楽天から現在価格を取得」を押すとSKU番号も取得されます。")
+    if notes["yahoo_diff"]:
+        st.caption(f"🟡 Yahooは親コード単位のため、SKUで価格が割れた {len(notes['yahoo_diff'])}件 は最高値: "
+                   + "、".join(notes["yahoo_diff"][:10]))
+    if notes["ne_skipped"]:
+        st.warning(f"🟢 売価か原価が空のため NE に送れない {len(notes['ne_skipped'])}件: "
+                   + "、".join(notes["ne_skipped"][:10]))
+
+    blockers = []
+    if stale:
+        blockers.append("確定した後に画面の内容が変わっています。"
+                        "証跡と実際の反映がズレるので「✅ 再確定」を押してから実行してください。")
+    if not any(n[k] for k in ("ne", "rakuten", "yahoo")):
+        blockers.append("反映する対象が0件です。")
+    for b in blockers:
+        st.error("🛑 " + b)
+
+    agree = st.checkbox("上記の内容で**本番データ（ネクストエンジン・楽天・Yahoo）を直接更新**する"
+                        "ことを確認しました", key=f"{key_prefix}_api_agree")
+    if st.button("🚀 反映を実行", type="primary", key=f"{key_prefix}_api_run",
+                 disabled=not agree or bool(blockers)):
+        _run_api(tasks, key_prefix, tab_label)
+        st.rerun()
+
+    _show_api_result(key_prefix, tab_label)
+
+
+def _run_api(tasks, key_prefix, tab_label):
+    """APIを実行し、結果・失敗分・証跡の保存先をセッションに残す（rerunしても消えないように）。"""
+    total = ((1 if tasks.get("ne_price") else 0) + len(tasks.get("rakuten_price") or [])
+             + (1 if tasks.get("yahoo_price") else 0))
+    bar = st.progress(0.0, text="反映中…")
+    done = {"n": 0}
+
+    def on_step(message):
+        done["n"] += 1
+        bar.progress(min(done["n"] / max(total, 1), 1.0), text=message)
+
+    try:
+        results, failed = apply.execute(tasks, on_step=on_step)
+    except Exception as e:  # noqa: BLE001（想定外でも画面を壊さず結果として見せる）
+        results = [{"ステップ": "実行", "対象": "-", "状態": "失敗",
+                    "メッセージ": f"実行中に想定外のエラー: {e}"}]
+        failed = {k: v for k, v in tasks.items() if v}
+    try:
+        ne_usage.flush()
+    except Exception:  # noqa: BLE001
+        pass
+
+    # Yahooが失敗したら反映待ちキュー（CSV）へ退避する＝APIが壊れていても取りこぼさない。
+    # 退避できたら再実行キューからは外す（壊れたAPIを叩き続けないため）。
+    yahoo_saved = 0
+    if failed.get("yahoo_price"):
+        try:
+            yahoo_saved = yq.append_prices(
+                [{"code": c, "price": p} for c, p in failed["yahoo_price"].items()],
+                product_folder)
+            failed.pop("yahoo_price")
+            for r in results:
+                if r.get("ステップ") == apply.STEP_YAHOO and r.get("状態") == "失敗":
+                    r["状態"] = "CSV退避"
+                    r["メッセージ"] = "APIが失敗したためYahoo反映待ちキューへ退避しました（元エラー: "\
+                                   + str(r["メッセージ"]) + "）"
+        except Exception as e:  # noqa: BLE001
+            results.append({"ステップ": apply.STEP_YAHOO, "対象": "キュー退避", "状態": "失敗",
+                            "メッセージ": f"CSVキューへの退避にも失敗: {e}"})
+
+    bar.progress(1.0, text="証跡を保存中…")
+    run_name, url, err = "", "", ""
+    try:
+        run_name, run_id = masters.save_run_to_drive(
+            {"api_result.csv": ex.detail_csv(pd.DataFrame(results))},
+            tab_label + "_API反映", product_folder)
+        url = f"https://drive.google.com/drive/folders/{run_id}"
+    except Exception as e:  # noqa: BLE001
+        err = str(e)
+    bar.empty()
+    st.session_state[key_prefix + "_api_result"] = {
+        "results": results, "failed": failed, "run": run_name, "url": url,
+        "err": err, "yahoo_saved": yahoo_saved}
+
+
+def _show_api_result(key_prefix, tab_label):
+    """直近の反映結果（行×ステップ）と、失敗した分だけの再実行ボタン。"""
+    state = st.session_state.get(key_prefix + "_api_result")
+    if not state:
+        return
+    results, failed = state["results"], state["failed"]
+    n_ok, n_ng, n_skip = apply.summarize(results)
+
+    st.markdown("##### 反映結果")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("成功", f"{n_ok}件")
+    c2.metric("失敗", f"{n_ng}件")
+    c3.metric("スキップ", f"{n_skip}件")
+    st.dataframe(pd.DataFrame(results), use_container_width=True, hide_index=True)
+    st.caption("表示は**直近の実行分**です（再実行するとこの表は入れ替わります）。"
+               "各実行の結果はDriveに `api_result.csv` として1回ぶんずつ残ります。")
+
+    if state["yahoo_saved"]:
+        st.info(f"🟡 Yahooは反映待ちキューへ退避しました（キュー全体で {state['yahoo_saved']}件）。"
+                "「📥 入荷登録」ページのYahooキューからCSVをまとめてアップしてください。")
+    if state["err"]:
+        st.warning(f"実行結果のDrive保存に失敗しました（反映自体は上の表のとおり）: {state['err']}")
+    elif state["run"]:
+        st.caption(f"実行結果を **{state['run']}** としてDriveに保存しました。")
+        if state["url"]:
+            st.link_button("📁 実行結果フォルダを開く", state["url"])
+
+    if apply.has_auth_error(results):
+        st.error("🔑 認証切れが含まれています。「📥 入荷登録」ページの🔐から"
+                 "ネクストエンジン／Yahooを再認可してから、下の「失敗した分だけ再実行」を押してください。")
+
+    if failed:
+        n_failed = (len(failed.get("ne_price") or []) + len(failed.get("rakuten_price") or [])
+                    + len(failed.get("yahoo_price") or {}))
+        if st.button(f"🔁 失敗した分だけ再実行（{n_failed}件）", key=f"{key_prefix}_api_retry"):
+            _run_api(failed, key_prefix, tab_label)
+            st.rerun()
+    elif n_ng == 0 and not state["yahoo_saved"]:
+        st.success("✅ すべて反映しました。CSVのアップロードは不要です。")
 
 
 def confirm_and_download(result_df, key_prefix, tab_label, include_unchanged,
@@ -388,7 +579,11 @@ def confirm_and_download(result_df, key_prefix, tab_label, include_unchanged,
     st.caption(f"モール向け: {mall_n}件（価格変更あり{'＋変わらない行' if include_unchanged else 'のみ'}）"
                f" ／ NE向け: {ne_n}件（原価更新のため価格が変わらない行も含む）")
     extra = {f"input_{input_file[0]}": input_file[1]} if input_file else None
-    confirm_gate(files, key_prefix, tab_label, extra_files=extra)
+    cur_hash = confirm_gate(files, key_prefix, tab_label, extra_files=extra)
+    conf = st.session_state.get(key_prefix + "_confirmed")
+    api_apply_section(result_df, key_prefix, tab_label, include_unchanged,
+                      stale=bool(conf and conf["hash"] != cur_hash),
+                      free_shipping=free_shipping)
 
 
 def input_file_of(uploaded, prefill=None, prefill_name="サイズ変更引き継ぎ.csv"):

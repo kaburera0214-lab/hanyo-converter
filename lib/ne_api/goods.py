@@ -113,6 +113,21 @@ def find_existing(codes):
     return found
 
 
+def split_by_existence(rows, found):
+    """NE更新行を「存在する／しない」に分ける（find_existing の結果を当てる・純関数）。
+    rows: [{syohin_code, ...}] / found: {商品コード小文字: NEの正確な商品コード}
+    存在する行は syohin_code をNEの正確なコードに置換して返す（大文字小文字ずれの吸収）。
+    返り値: (存在する行list, 見つからなかった商品コードlist)"""
+    ok, missing = [], []
+    for r in rows:
+        gid = found.get(str(r["syohin_code"]).strip().lower())
+        if gid:
+            ok.append({**r, "syohin_code": gid})
+        else:
+            missing.append(r["syohin_code"])
+    return ok, missing
+
+
 def _search_one_code(code):
     """1つの商品コードをNEで探し、NEが実際に持つ正確な商品コードを返す（無ければNone）。
     完全一致(-eq)で見つからないNE環境があるため、部分一致(-like)でも探し、

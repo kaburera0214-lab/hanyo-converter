@@ -10,6 +10,10 @@
 """
 import pandas as pd
 
+# split_by_existence はNE商品マスタupload側の前処理なので lib/ne_api/goods.py が本体。
+# 入荷登録（runner）・価格改定（apply）の両方から同じ実装を使う。ここは従来の
+# plan.split_by_existence 呼び出しを壊さないための再エクスポート。
+from lib.ne_api.goods import split_by_existence  # noqa: F401
 from lib.pricing import export as ex, masters, pipeline
 
 
@@ -125,21 +129,6 @@ def ne_rows_from_plan(plan):
             price_rows.append({"syohin_code": r["商品コード"],
                                "baika_tnk": int(r["NE売価"])})
     return main_rows, price_rows
-
-
-def split_by_existence(rows, found):
-    """NE更新行を「存在する／しない」に分ける（商品マスタupload前の存在確認・純関数）。
-    rows: [{syohin_code, ...}] / found: {商品コード小文字: NEの正確な商品コード}
-    存在する行は syohin_code をNEの正確なコードに置換して返す（大文字小文字ずれの吸収）。
-    返り値: (存在する行list, 見つからなかった商品コードlist)"""
-    ok, missing = [], []
-    for r in rows:
-        gid = found.get(str(r["syohin_code"]).strip().lower())
-        if gid:
-            ok.append({**r, "syohin_code": gid})
-        else:
-            missing.append(r["syohin_code"])
-    return ok, missing
 
 
 def delivery_rows(plan, sku_table):
