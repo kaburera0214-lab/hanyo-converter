@@ -9,10 +9,10 @@
 API反映は lib/pricing/apply.py（同・テスト共用。tests/test_pricing_apply.py）。
 出力形式は実際のアップロード実績ファイルに一致（lib/pricing/export.py）。
 
-画面の流れは ①✅確定（内容をロック・CSV表示）→ ②🚀反映（API）→ ③💾バックアップ の順。
-バックアップは**反映した後**に自動で取る（実際に反映した内容と実行結果を一緒に残すため）。
-反映せずCSVだけで運用する場合は③の手動ボタンで保存する。
-CSV出力は廃止していない。APIが未設定・失敗した分はCSVアップロードで反映できる安全網。
+操作は**「✅ 確定して反映」ボタン1つ**。押すと3システムをAPIで更新し、そのまま
+Driveの「価格改定履歴」へバックアップする（入力CSV・出力CSV・実行結果を1フォルダに）。
+CSVのダウンロードボタンは出さない——手でモールにアップして二重反映する事故を防ぐため。
+CSVはバックアップに残るので、APIが未設定・失敗したときはそこから手動反映できる。
 ※梱包サイズ変更は「📥 入荷登録」ページ（pages/21）へ移設した（2026-07-21）。
 """
 import pandas as pd
@@ -27,9 +27,9 @@ st.title("💰 価格改定")
 import datetime as _dt
 import os as _os
 _build = _dt.datetime.fromtimestamp(_os.path.getmtime(__file__)).strftime("%Y-%m-%d %H:%M")
-st.caption("インプットCSV（JAN・新下代）→ 新販売価格を計算し、楽天・Yahoo・ネクストエンジンへ"
-           "**APIで直接反映**します（CSVアップロード不要。CSVも従来どおり出せます）。"
-           "反映は必ず内容を確認・確定してから実行してください。"
+st.caption("インプットCSV（JAN・新下代）→ 新販売価格を計算し、「✅ 確定して反映」ボタンで"
+           "**楽天・Yahoo・ネクストエンジンを直接更新**します（CSVアップロード不要）。"
+           "反映した内容はDriveの「価格改定履歴」に自動でバックアップされます。"
            f"　（app更新: {_build}）")
 
 from lib import master_store
@@ -349,160 +349,86 @@ def build_output_files(result_df, include_unchanged, free_shipping=False):
     return files, len(mall_rows), len(ne_rows)
 
 
-# ダウンロードボタンの表示名（ファイル名→ラベル）
-_DL_LABELS = {
-    "normal-item.csv": "🔴 楽天 normal-item.csv",
-    "yahoo_data.csv": "🟡 Yahoo data.csv",
-    "ne_price_update.csv": "🟢 NE商品マスタ更新CSV",
-    "price_detail.csv": "📄 計算明細CSV",
-}
+# ══ 確定＝反映（ボタン1つ） ═════════════════════════════════
+# 「✅ 確定して反映」を押したら、楽天・Yahoo・NEをAPIで更新し、そのままDriveへ
+# バックアップする。CSVのダウンロードボタンは出さない——手でモールにアップして
+# 二重反映してしまう事故を防ぐため。CSVはバックアップとしてDriveに残るので、
+# APIが失敗したときはそこから手動反映できる。
 
-
-def confirm_gate(files, key_prefix, tab_label, extra_files=None):
-    """① ✅確定 → 内容をロックしてCSVのDLボタンを出す。
-
-    複数人運用での誤操作対策: 確定するまでCSVは出さない。確定した内容は次の
-    「🚀 反映」まで固定され、途中で画面の内容が変わったら再確定を求める。
-
-    Driveへのバックアップはここでは取らない。**反映した後**（backup_section）に、
-    実際に反映した内容と実行結果をまとめて残す。反映せずCSVだけで運用する場合は
-    backup_sectionの手動ボタンで保存する。
-    extra_files: バックアップには含めるがDLボタンは出さないファイル（入力CSVなどの証跡用）。
-    返り値: 今の内容のハッシュ（確定後に内容が変わったかの判定に反映側でも使う）。
-    """
-    import hashlib
-    cur_hash = hashlib.md5(b"".join(files.values())).hexdigest()
-
-    conf_key = key_prefix + "_confirmed"
-    conf = st.session_state.get(conf_key)
-    label = "✅ 確定（CSVを表示・反映に進む）" if conf is None else "✅ 再確定（最新の内容にし直す）"
-    if st.button(label, key=key_prefix + "_confirm", type="primary",
-                 disabled=(conf is not None and conf["hash"] == cur_hash)):
-        import datetime
-        # DLファイル名のユニーク化用サフィックス。バックアップを取ったらその版数
-        # （例 20260820_001）に差し替える（backup_section）。
-        # ※ブラウザの重複リネーム「 (7)」はRMSのファイル名規則（半角英数と-_のみ）で
-        #   弾かれるため、最初からユニークな名前で配布する
-        st.session_state[conf_key] = {
-            "hash": cur_hash, "files": files, "extra": dict(extra_files or {}),
-            "suffix": datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}
-        st.session_state.pop(key_prefix + "_backup", None)      # 別内容なので前回の保存結果は消す
-        st.rerun()
-
-    if conf is None:
-        st.info("内容を確認したら「✅ 確定」を押してください。CSVのダウンロードと"
-                "モールへの反映は、確定してからできます。")
-        return cur_hash
-
-    st.success("確定済み。この内容で反映・ダウンロードできます。")
-    if conf["hash"] != cur_hash:
-        st.warning("⚠️ 確定した後に内容が変わっています。下のCSVと反映対象は**確定時点の内容**です。"
-                   "最新の内容にするには「✅ 再確定」を押してください。")
-
-    saved = conf["files"]
-    backup = st.session_state.get(key_prefix + "_backup") or {}
-    suffix = backup.get("suffix") or conf.get("suffix", "")
-    items = list(saved.items())
-    for i in range(0, len(items), 4):
-        chunk = items[i:i + 4]
-        cols = st.columns(4)
-        for col, (name, data) in zip(cols, chunk):
-            stem, _, ext = name.rpartition(".")
-            dl_name = f"{stem}_{suffix}.{ext}" if suffix else name
-            col.download_button(_DL_LABELS.get(name, name), data, dl_name, "text/csv",
-                                key=f"{key_prefix}_dl_{name}", use_container_width=True)
-    return cur_hash
-
-
-# ══ API直更新（CSVアップロードの代わり） ═══════════════════
-# CSVは残したまま。APIが未設定・失敗した分は従来どおりCSVで反映できる（安全網）。
-
-_API_LABELS = {"ne": "🟢 ネクストエンジン（売価・原価）",
-               "rakuten": "🔴 楽天（販売価格・表示価格）",
-               "yahoo": "🟡 Yahoo（販売価格）"}
+_SYSTEM_LABELS = {"ne": "🟢 ネクストエンジン", "rakuten": "🔴 楽天", "yahoo": "🟡 Yahoo"}
 
 
 def _api_available():
-    """各システムのAPIが使える状態か。使えないものはチェックを外して選べなくする。"""
+    """各システムのAPIが使える状態か。使えないものは反映されないので警告を出す。"""
     return {"ne": ne_client.is_configured(),
             "rakuten": rakuten_price.is_configured(),
             "yahoo": yahoo_client.api_enabled()}
 
 
-def api_apply_section(result_df, key_prefix, tab_label, include_unchanged,
-                      stale=False, free_shipping=False):
-    """✅確定後に出す「モールへ直接反映」。CSVアップロードの代わりにAPIで書き込む。
+def confirm_and_apply(result_df, key_prefix, tab_label, include_unchanged,
+                      input_file=None, free_shipping=False):
+    """確定＝反映。ボタン1つで 楽天・Yahoo・NE をAPIで更新し、Driveにバックアップする。
 
-    確定していない（＝Driveに証跡が無い）内容は反映させない。確定後に画面の内容を
-    変えた場合も、証跡と実際の反映がズレないよう再確定を求める。
+    上の結果テーブルが確認画面そのものなので、反映先の選択や同意チェックは置かない。
+    input_file=(名前, bytes) はバックアップに証跡として一緒に保存する。
     """
-    conf = st.session_state.get(key_prefix + "_confirmed")
-    if conf is None:
-        return
-
-    st.divider()
-    st.markdown("#### 🚀 モールへ直接反映（CSVアップロード不要）")
-    st.caption("確定した新価格を、各システムのAPIでそのまま書き込みます。"
-               "CSVは今までどおり残してあるので、APIを使わない・失敗した分は"
-               "CSVアップロードで反映できます。")
+    files, mall_n, ne_n = build_output_files(result_df, include_unchanged, free_shipping)
+    if input_file:
+        files = {**files, f"input_{input_file[0]}": input_file[1]}
 
     avail = _api_available()
-    systems, cols = set(), st.columns(3)
-    for col, name in zip(cols, apply.ALL_SYSTEMS):
-        on = col.checkbox(_API_LABELS[name], value=avail[name], disabled=not avail[name],
-                          key=f"{key_prefix}_api_{name}")
-        if not avail[name]:
-            col.caption("⚠️ APIが未設定のため選べません（CSVで反映してください）")
-        if on:
-            systems.add(name)
-    if not systems:
-        st.info("反映先が選ばれていません。CSVだけで反映する場合はこのままでOKです。")
-        return
-
+    systems = {name for name, ok in avail.items() if ok}
     tasks, notes = apply.build_tasks(result_df, sku_table, include_unchanged, systems)
     n = apply.task_counts(tasks)
-    c1, c2, c3 = st.columns(3)
-    c1.metric("NE 更新", f"{n['ne']}件", help="売価・原価。価格が変わらない行も原価更新のため含みます")
-    c2.metric("楽天 更新", f"{n['rakuten']}商品",
-              help=f"SKU合計 {n['rakuten_sku']}件。商品管理番号ごとにPATCHします")
-    c3.metric("Yahoo 更新", f"{n['yahoo']}件", help="親コード単位。更新後に全反映予約を1回呼びます")
 
+    st.divider()
+    st.markdown("#### 🚀 反映（楽天・Yahoo・ネクストエンジン）")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("🟢 NE 売価・原価", f"{n['ne']}件",
+              help="価格が変わらない行も、原価を更新するため含みます")
+    c2.metric("🔴 楽天 販売価格", f"{n['rakuten']}商品",
+              help=f"SKU合計 {n['rakuten_sku']}件。商品管理番号ごとに更新します")
+    c3.metric("🟡 Yahoo 販売価格", f"{n['yahoo']}件",
+              help="親コード単位。更新後に全反映予約を1回呼びます")
+
+    for name, ok in avail.items():
+        if not ok:
+            st.warning(f"⚠️ {_SYSTEM_LABELS[name]} はAPIが未設定のため**反映されません**。"
+                       "反映後のバックアップに入っているCSVから手動で反映してください。")
     if free_shipping:
         st.warning("⚠️ 直送タブの**送料無料フラグはAPIでは設定できません**（価格のみ反映）。"
-                   "送料設定は楽天・YahooのCSV（下のダウンロード）か管理画面で別途反映してください。")
+                   "送料設定はバックアップのCSVか、モールの管理画面で別途反映してください。")
     if notes["rakuten_missing"]:
-        st.warning(f"🔴 楽天SKU番号が分からない {len(notes['rakuten_missing'])}件 はAPI対象外です: "
+        st.warning(f"🔴 楽天SKU番号が分からない {len(notes['rakuten_missing'])}件 は反映されません: "
                    + "、".join(notes["rakuten_missing"][:10])
                    + (" …" if len(notes["rakuten_missing"]) > 10 else "")
                    + "　→ 📡「楽天から現在価格を取得」を押すとSKU番号も取得されます。")
-    if notes["yahoo_diff"]:
-        st.caption(f"🟡 Yahooは親コード単位のため、SKUで価格が割れた {len(notes['yahoo_diff'])}件 は最高値: "
-                   + "、".join(notes["yahoo_diff"][:10]))
     if notes["ne_skipped"]:
         st.warning(f"🟢 売価か原価が空のため NE に送れない {len(notes['ne_skipped'])}件: "
                    + "、".join(notes["ne_skipped"][:10]))
 
     blockers = []
-    if stale:
-        blockers.append("確定した後に画面の内容が変わっています。"
-                        "証跡と実際の反映がズレるので「✅ 再確定」を押してから実行してください。")
+    if not systems:
+        blockers.append("楽天・Yahoo・NEのいずれもAPIが未設定です。反映できません。")
     if not any(n[k] for k in ("ne", "rakuten", "yahoo")):
         blockers.append("反映する対象が0件です。")
     for b in blockers:
         st.error("🛑 " + b)
 
-    agree = st.checkbox("上記の内容で**本番データ（ネクストエンジン・楽天・Yahoo）を直接更新**する"
-                        "ことを確認しました", key=f"{key_prefix}_api_agree")
-    if st.button("🚀 反映を実行", type="primary", key=f"{key_prefix}_api_run",
-                 disabled=not agree or bool(blockers)):
-        _run_api(tasks, key_prefix, tab_label)
+    done = st.session_state.get(key_prefix + "_api_result")
+    label = "✅ 確定して反映（本番データを更新）" if not done else "🔁 もう一度 確定して反映"
+    if st.button(label, key=key_prefix + "_apply", type="primary", disabled=bool(blockers)):
+        _run_api(tasks, key_prefix, tab_label, files)
         st.rerun()
+    if not done:
+        st.caption("押すと、上の表の内容で**本番データ（楽天・Yahoo・ネクストエンジン）を直接更新**し、"
+                   "そのままDriveにバックアップします。CSVのアップロード作業は不要です。")
 
-    _show_api_result(key_prefix, tab_label)
+    _show_api_result(key_prefix, tab_label, files)
 
 
-def _run_api(tasks, key_prefix, tab_label):
-    """APIを実行し、結果・失敗分・証跡の保存先をセッションに残す（rerunしても消えないように）。"""
+def _run_api(tasks, key_prefix, tab_label, files):
+    """APIを実行し、結果・失敗分をセッションに残してからDriveへバックアップする。"""
     total = ((1 if tasks.get("ne_price") else 0) + len(tasks.get("rakuten_price") or [])
              + (1 if tasks.get("yahoo_price") else 0))
     bar = st.progress(0.0, text="反映中…")
@@ -544,35 +470,31 @@ def _run_api(tasks, key_prefix, tab_label):
     st.session_state[key_prefix + "_api_result"] = {
         "results": results, "failed": failed, "yahoo_saved": yahoo_saved}
 
-    # ③ 反映が終わったらバックアップ。実際に反映した内容（入力CSV・出力CSV・実行結果）を
-    #    ひとまとめにしてDriveへ残す。失敗した反映も含めて「何をやったか」を記録する。
+    # 反映が終わったらバックアップ。実際に反映した内容（入力CSV・出力CSV・実行結果）を
+    # ひとまとめにしてDriveへ残す。失敗した反映も含めて「何をやったか」を記録する。
     bar.progress(1.0, text="Driveにバックアップ中…")
-    _save_backup(key_prefix, tab_label, results=results)
+    _save_backup(key_prefix, tab_label, files, results=results)
     bar.empty()
 
 
-def _save_backup(key_prefix, tab_label, results=None):
-    """確定した内容（＋あれば反映結果）をDriveの「価格改定履歴」へ版数付きで保存する。
+def _save_backup(key_prefix, tab_label, files, results=None):
+    """反映した内容をDriveの「価格改定履歴」へ版数付きで保存する。
     保存結果はセッションに残す（rerunしても表示が消えないように）。"""
-    conf = st.session_state.get(key_prefix + "_confirmed") or {}
-    files = {**conf.get("files", {}), **conf.get("extra", {})}
+    saved = dict(files)
     if results is not None:
-        files["api_result.csv"] = ex.detail_csv(pd.DataFrame(results))
-    run_name, url, err, suffix = "", "", "", ""
+        saved["api_result.csv"] = ex.detail_csv(pd.DataFrame(results))
+    run_name, url, err = "", "", ""
     try:
-        run_name, run_id = masters.save_run_to_drive(files, tab_label, product_folder)
+        run_name, run_id = masters.save_run_to_drive(saved, tab_label, product_folder)
         url = masters.folder_url(run_id)
-        suffix = "_".join(run_name.split("_")[:2])              # 例: 20260820_001
-        st.session_state.pop("_pricing_hist", None)             # 履歴フォルダのキャッシュを破棄
+        st.session_state.pop("_pricing_hist", None)          # 履歴フォルダのキャッシュを破棄
     except Exception as e:  # noqa: BLE001
         err = str(e)
-    st.session_state[key_prefix + "_backup"] = {
-        "run": run_name, "url": url, "err": err, "suffix": suffix,
-        "with_result": results is not None}
+    st.session_state[key_prefix + "_backup"] = {"run": run_name, "url": url, "err": err}
 
 
-def _show_api_result(key_prefix, tab_label):
-    """直近の反映結果（行×ステップ）と、失敗した分だけの再実行ボタン。"""
+def _show_api_result(key_prefix, tab_label, files):
+    """反映結果（行×ステップ）＋失敗分の再実行＋バックアップへのリンク。"""
     state = st.session_state.get(key_prefix + "_api_result")
     if not state:
         return
@@ -586,12 +508,11 @@ def _show_api_result(key_prefix, tab_label):
     c3.metric("スキップ", f"{n_skip}件")
     st.dataframe(pd.DataFrame(results), use_container_width=True, hide_index=True)
     st.caption("表示は**直近の実行分**です（再実行するとこの表は入れ替わります）。"
-               "各実行の結果は下のバックアップに `api_result.csv` として1回ぶんずつ残ります。")
+               "各実行の結果はバックアップに `api_result.csv` として1回ぶんずつ残ります。")
 
     if state["yahoo_saved"]:
         st.info(f"🟡 Yahooは反映待ちキューへ退避しました（キュー全体で {state['yahoo_saved']}件）。"
                 "「📥 入荷登録」ページのYahooキューからCSVをまとめてアップしてください。")
-
     if apply.has_auth_error(results):
         st.error("🔑 認証切れが含まれています。「📥 入荷登録」ページの🔐から"
                  "ネクストエンジン／Yahooを再認可してから、下の「失敗した分だけ再実行」を押してください。")
@@ -600,60 +521,17 @@ def _show_api_result(key_prefix, tab_label):
         n_failed = (len(failed.get("ne_price") or []) + len(failed.get("rakuten_price") or [])
                     + len(failed.get("yahoo_price") or {}))
         if st.button(f"🔁 失敗した分だけ再実行（{n_failed}件）", key=f"{key_prefix}_api_retry"):
-            _run_api(failed, key_prefix, tab_label)
+            _run_api(failed, key_prefix, tab_label, files)
             st.rerun()
     elif n_ng == 0 and not state["yahoo_saved"]:
         st.success("✅ すべて反映しました。CSVのアップロードは不要です。")
 
-
-# ══ ③ バックアップ（反映した後に取る） ═════════════════════
-
-def backup_section(key_prefix, tab_label):
-    """③ 確定した内容＋反映結果をDriveの「価格改定履歴」へ版数付きで残す。
-
-    反映を実行すると自動で保存される（＝実際に反映した内容の証跡）。
-    反映せずCSVだけで運用する場合のために、手動の保存ボタンも出す。
-    """
-    conf = st.session_state.get(key_prefix + "_confirmed")
-    if conf is None:
-        return
-    st.divider()
-    st.markdown("#### 💾 バックアップ（Driveの「価格改定履歴」）")
-
-    state = st.session_state.get(key_prefix + "_backup")
-    if state and state["err"]:
-        st.error(f"⚠️ Driveへの保存に失敗しました: {state['err']}　"
-                 "反映自体は上の結果表のとおりです。下のボタンでやり直せます。")
-    elif state:
-        what = "反映結果つきで" if state["with_result"] else "（反映前の内容だけ）"
-        st.success(f"**{state['run']}** として{what}保存しました。")
-        if state["url"]:
-            st.link_button("📁 このバックアップを開く", state["url"])
-    else:
-        st.caption("まだ保存していません。**「🚀 反映を実行」すると自動で保存されます。**"
-                   "反映せずCSVだけで進める場合は、下のボタンで保存してください。")
-
-    label = "💾 バックアップを保存し直す" if state else "💾 反映せずバックアップだけ保存"
-    if st.button(label, key=f"{key_prefix}_backup_save"):
-        with st.spinner("Driveに保存中…"):
-            _save_backup(key_prefix, tab_label)
-        st.rerun()
-
-
-def confirm_and_download(result_df, key_prefix, tab_label, include_unchanged,
-                         input_file=None, free_shipping=False):
-    """価格変更タブ用: 出力CSVを組み立てて ①確定 → ②反映 → ③バックアップ の順に並べる。
-    input_file=(名前, bytes) はバックアップに証跡として一緒に保存する。"""
-    files, mall_n, ne_n = build_output_files(result_df, include_unchanged, free_shipping)
-    st.caption(f"モール向け: {mall_n}件（価格変更あり{'＋変わらない行' if include_unchanged else 'のみ'}）"
-               f" ／ NE向け: {ne_n}件（原価更新のため価格が変わらない行も含む）")
-    extra = {f"input_{input_file[0]}": input_file[1]} if input_file else None
-    cur_hash = confirm_gate(files, key_prefix, tab_label, extra_files=extra)   # ①確定
-    conf = st.session_state.get(key_prefix + "_confirmed")
-    api_apply_section(result_df, key_prefix, tab_label, include_unchanged,     # ②反映
-                      stale=bool(conf and conf["hash"] != cur_hash),
-                      free_shipping=free_shipping)
-    backup_section(key_prefix, tab_label)                                      # ③バックアップ
+    backup = st.session_state.get(key_prefix + "_backup") or {}
+    if backup.get("err"):
+        st.error(f"⚠️ Driveへのバックアップに失敗しました: {backup['err']}　"
+                 "反映自体は上の表のとおりです。")
+    elif backup.get("url"):
+        st.link_button(f"📁 このバックアップを開く（{backup['run']}）", backup["url"])
 
 
 def input_file_of(uploaded, prefill=None, prefill_name="サイズ変更引き継ぎ.csv"):
@@ -666,7 +544,7 @@ def input_file_of(uploaded, prefill=None, prefill_name="サイズ変更引き継
 
 
 def result_section(rows, key_prefix, tab_label, input_file=None, free_shipping=False):
-    """結果テーブル＋警告フィルタ＋確定・ダウンロード一式。"""
+    """結果テーブル＋警告フィルタ＋「確定して反映」一式。"""
     df = pd.DataFrame(rows)
     # 警告は見つけやすいように商品名の直後に置く
     lead = ["商品コード", "商品名", "警告"]
@@ -693,10 +571,10 @@ def result_section(rows, key_prefix, tab_label, input_file=None, free_shipping=F
     c2.metric("値下げ", f"{len(down)}件")
     c3.metric("変わらず", f"{len(keep)}件")
     c4.metric("計算不可・要確認", f"{len(df) - len(up) - len(down) - len(keep)}件")
-    include_unchanged = st.checkbox("価格が変わらない行もモールCSVに含める", value=False,
-                                    key=f"{key_prefix}_inc_unchanged")
-    confirm_and_download(df, key_prefix, tab_label, include_unchanged,
-                         input_file=input_file, free_shipping=free_shipping)
+    include_unchanged = st.checkbox("価格が変わらない行もモール（楽天・Yahoo）に反映する",
+                                    value=False, key=f"{key_prefix}_inc_unchanged")
+    confirm_and_apply(df, key_prefix, tab_label, include_unchanged,
+                      input_file=input_file, free_shipping=free_shipping)
 
 
 # ══ タブ ════════════════════════════════════════════════════
