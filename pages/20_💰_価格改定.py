@@ -374,13 +374,16 @@ def _api_available():
             "yahoo": yahoo_client.api_enabled()}
 
 
-def confirm_and_apply(result_df, key_prefix, tab_label, include_unchanged,
+def confirm_and_apply(result_df, key_prefix, tab_label,
                       input_file=None, free_shipping=False):
     """確定＝反映。ボタン1つで 楽天・Yahoo・NE をAPIで更新し、Driveにバックアップする。
 
     上の結果テーブルが確認画面そのものなので、反映先の選択や同意チェックは置かない。
+    計算できた行は**全件**反映する（価格が変わらない行も送る）。課金対象のNE APIは
+    元から全件送っているので、全件にしても増えるのは無料の楽天PATCHだけ。
     input_file=(名前, bytes) はバックアップに証跡として一緒に保存する。
     """
+    include_unchanged = True     # 全件更新（選ばせない）
     files, mall_n, ne_n = build_output_files(result_df, include_unchanged, free_shipping)
     if input_file:
         files = {**files, f"input_{input_file[0]}": input_file[1]}
@@ -415,6 +418,14 @@ def confirm_and_apply(result_df, key_prefix, tab_label, include_unchanged,
     if notes["ne_skipped"]:
         st.warning(f"🟢 売価か原価が空のため NE に送れない {len(notes['ne_skipped'])}件: "
                    + "、".join(notes["ne_skipped"][:10]))
+
+    # 課金されるのはNEだけ（無料枠1000回/月）。楽天・Yahooは呼び出し回数での課金は無い。
+    # 反映を押す前に今月の残枠が見えるようにしておく。
+    with st.expander(f"💳 NE APIの使用量（今回の反映で約 {n['ne'] + 3}回 使います）", expanded=False):
+        st.caption("呼び出し回数で課金されるのはネクストエンジンだけです（無料枠1000回/月）。"
+                   "楽天・Yahooは回数での課金がありません。内訳は"
+                   f"「商品コードの存在確認 {n['ne']}回 ＋ アップロード1回 ＋ 完了待ち2回前後」。")
+        ne_usage.render(compact=True)
 
     blockers = []
     if not systems:
@@ -580,9 +591,7 @@ def result_section(rows, key_prefix, tab_label, input_file=None, free_shipping=F
     c2.metric("値下げ", f"{len(down)}件")
     c3.metric("変わらず", f"{len(keep)}件")
     c4.metric("計算不可・要確認", f"{len(df) - len(up) - len(down) - len(keep)}件")
-    include_unchanged = st.checkbox("価格が変わらない行もモール（楽天・Yahoo）に反映する",
-                                    value=False, key=f"{key_prefix}_inc_unchanged")
-    confirm_and_apply(df, key_prefix, tab_label, include_unchanged,
+    confirm_and_apply(df, key_prefix, tab_label,
                       input_file=input_file, free_shipping=free_shipping)
 
 
