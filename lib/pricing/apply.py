@@ -3,8 +3,7 @@
 価格改定の本番反映（楽天RMS・Yahoo!ショッピング・ネクストエンジンへAPIで直接書き込む）。
 
 確定した新価格を、CSVを手でアップロードする代わりにそのままAPIで反映する（2026-08-20新設）。
-CSV出力は廃止せず証跡・フォールバックとして残す＝APIが落ちてもその日の価格改定を
-取りこぼさない。
+CSV出力は廃止せず証跡として残す。API失敗は画面に表示し、失敗タスクとして再実行できる。
 
 対象と順序（NE＝社内の正本を先に、モールは後）:
   ① NE    api_v1_master_goods/upload   … baika_tnk（税抜売価）・genka_tnk（原価＝新下代）
@@ -210,7 +209,7 @@ def _rakuten_prices(items, results, failed, on_step):
 
 def _yahoo_prices(price_by_code, results, failed, on_step):
     """Yahoo価格を updateItems で更新し、reservePublish で店頭反映する。
-    price_by_code: {Yahoo商品コード(親): 価格}。失敗分はページ側でCSVキューへ退避する。"""
+    商品未登録（it-02002）だけは対象外として明示し、登録済み商品は除外後に再送する。"""
     if not price_by_code:
         return
     target = f"{len(price_by_code)}件"
@@ -221,19 +220,31 @@ def _yahoo_prices(price_by_code, results, failed, on_step):
         yclient.access_token()            # 期限切れ間近なら自動リフレッシュ
         if on_step:
             on_step(f"{STEP_YAHOO}: 価格更新API(updateItems)を呼び出し中…")
-        ok, errs = yitems.update_prices(price_by_code)
+        ok, errs, missing = yitems.update_prices_checked(price_by_code)
+        missing_set = set(missing)
+        update_map = {code: price for code, price in price_by_code.items()
+                      if code not in missing_set}
+        if missing:
+            shown = "、".join(missing[:10]) + (" …" if len(missing) > 10 else "")
+            results.append({"ステップ": STEP_YAHOO, "対象": f"{len(missing)}件（{shown}）",
+                            "状態": "スキップ",
+                            "メッセージ": "Yahoo API it-02002（指定された商品は存在しません）のため"
+                                         "価格更新の対象外にしました。Yahooの商品登録状況を確認してください。"})
         if errs:
-            results.append({"ステップ": STEP_YAHOO, "対象": target, "状態": "失敗",
+            results.append({"ステップ": STEP_YAHOO, "対象": f"{len(update_map)}件", "状態": "失敗",
                             "メッセージ": "／".join(errs[:5])})
-            failed["yahoo_price"] = price_by_code
+            if update_map:
+                failed["yahoo_price"] = update_map
+            return
+        if not update_map:
             return
         if on_step:
             on_step(f"{STEP_YAHOO}: 反映予約API(reservePublish)を呼び出し中…")
         perr = yitems.reserve_publish()   # 更新は自動反映されないので反映予約を1回
         if perr:
-            results.append({"ステップ": STEP_YAHOO, "対象": target, "状態": "失敗",
+            results.append({"ステップ": STEP_YAHOO, "対象": f"{len(update_map)}件", "状態": "失敗",
                             "メッセージ": "更新OKだが反映予約に失敗: " + "／".join(perr[:5])})
-            failed["yahoo_price"] = price_by_code
+            failed["yahoo_price"] = update_map
         else:
             results.append({"ステップ": STEP_YAHOO, "対象": f"{ok}件", "状態": "成功",
                             "メッセージ": "更新＋反映予約 完了"})

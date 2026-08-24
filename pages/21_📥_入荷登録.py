@@ -156,7 +156,7 @@ with st.expander("🔐 Yahoo API接続（管理者用）", expanded=False):
     if not yahoo_client.is_configured():
         st.info("Secrets に YAHOO_CLIENT_ID / YAHOO_CLIENT_SECRET / YAHOO_SELLER_ID / "
                 "YAHOO_REDIRECT_URI を設定すると、Yahooの価格も自動更新（updateItems＋反映予約）"
-                "できます。未設定の間は価格は下の『Yahoo反映待ちキュー』でCSV運用します。")
+                "できます。未設定・無効の場合、価格再設定を伴う更新は実行できません。")
     else:
         _yt = yahoo_client.token_status()
         _use_test = yahoo_client._secret("YAHOO_USE_TEST").lower() in ("true", "1", "yes")
@@ -195,44 +195,27 @@ with st.expander("🔐 楽天RMS接続（管理者用・ライセンスキーの
     st.link_button("📊 ライセンスキー管理シートを開く", RMS_KEY_SHEET_URL,
                    use_container_width=True)
 
-with st.expander("🟡 Yahoo反映待ちキュー（管理者がまとめてアップ）", expanded=False):
+with st.expander("🟡 Yahoo配送グループ待機キュー（管理者がまとめてアップ）", expanded=False):
     st.caption("**手順**: 下の一括CSVをダウンロード → ストアクリエイターPro「商品データアップロード」で"
                "**アップロードタイプ＝『項目指定』**を選んでアップ → この画面で「アップ済み」を押して"
                "キューを空にする（内容はDrive「Yahoo反映済み」へ自動アーカイブ）。"
                "**頻度**: 便種変更（メール便⇔宅配便）が出たときだけ（比較的まれ）。"
-               "価格はAPIで自動反映されるので、通常ここに貯まるのは配送グループのみです。")
-    _yp = yq.load_prices(product_folder)
+               "価格は待機キューへ入れず、APIの成功・失敗を実行結果に表示します。")
     _yd = yq.load_delivery(product_folder)
-    yc1, yc2 = st.columns(2)
-    with yc1:
-        st.markdown(f"**価格の反映待ち: {len(_yp)}件**")
-        if len(_yp):
-            st.dataframe(_yp, use_container_width=True, hide_index=True, height=180)
-            st.download_button("⬇️ Yahoo一括アップ用（価格 code,price）",
-                               yq.upload_csv_bytes(_yp, "price"), "yahoo_data.csv",
-                               "text/csv", key="yq_dl_price", use_container_width=True)
-            if st.checkbox("価格をYahooにアップ済みにする", key="yq_price_confirm"):
-                if st.button("✅ 価格キューを空にする", key="yq_price_clear"):
-                    n = yq.clear_prices(product_folder)
-                    st.success(f"{n}件をアーカイブしてキューを空にしました。")
-                    st.rerun()
-        else:
-            st.caption("なし")
-    with yc2:
-        st.markdown(f"**配送グループの反映待ち: {len(_yd)}件**")
-        if len(_yd):
-            st.dataframe(_yd, use_container_width=True, hide_index=True, height=180)
-            st.download_button("⬇️ Yahoo一括アップ用（配送 code,グループ番号）",
-                               yq.upload_csv_bytes(_yd, "配送グループ管理番号"),
-                               "yahoo_delivery.csv", "text/csv",
-                               key="yq_dl_dv", use_container_width=True)
-            if st.checkbox("配送グループをYahooにアップ済みにする", key="yq_dv_confirm"):
-                if st.button("✅ 配送キューを空にする", key="yq_dv_clear"):
-                    n = yq.clear_delivery(product_folder)
-                    st.success(f"{n}件をアーカイブしてキューを空にしました。")
-                    st.rerun()
-        else:
-            st.caption("なし")
+    st.markdown(f"**配送グループの反映待ち: {len(_yd)}件**")
+    if len(_yd):
+        st.dataframe(_yd, use_container_width=True, hide_index=True, height=180)
+        st.download_button("⬇️ Yahoo一括アップ用（配送 code,グループ番号）",
+                           yq.upload_csv_bytes(_yd, "配送グループ管理番号"),
+                           "yahoo_delivery.csv", "text/csv",
+                           key="yq_dl_dv", use_container_width=True)
+        if st.checkbox("配送グループをYahooにアップ済みにする", key="yq_dv_confirm"):
+            if st.button("✅ 配送キューを空にする", key="yq_dv_clear"):
+                n = yq.clear_delivery(product_folder)
+                st.success(f"{n}件をアーカイブしてキューを空にしました。")
+                st.rerun()
+    else:
+        st.caption("なし")
 
 with st.expander("⚙️ 楽天 配送方法セット管理番号（便種変更の自動修正に必要）", expanded=False):
     st.caption("番号はRMS「店舗設定→配送方法セット」の一覧で確認できます。"
@@ -805,6 +788,9 @@ if plan_rows and not _plan_stale:
         blockers.append("便種変更がありますが、RMSキー未設定のため楽天を自動修正できません。")
     if n_ng and not rakuten_price.is_configured():
         blockers.append("価格再設定がありますが、RMSキー未設定のため楽天価格を自動更新できません。")
+    if n_ng and not yahoo_client.api_enabled():
+        blockers.append("価格再設定がありますが、Yahoo APIが未設定または無効のため"
+                        "Yahoo価格を自動更新できません。")
     if not ne_client.is_configured():
         blockers.append("NE APIが未設定です（Secrets NE_CLIENT_ID / NE_CLIENT_SECRET）。")
     if _no_price_rows:
@@ -832,11 +818,10 @@ if plan_rows and not _plan_stale:
             group_of = {"宅配便": str(_settings.get("rakuten_group_takuhai", "")).strip(),
                         "メール便": str(_settings.get("rakuten_group_mail", "")).strip()}
             main_rows, ne_price_rows = rp.ne_rows_from_plan(plan_rows)
-            # Yahoo価格: API設定済みならAPIで自動更新（親コード単位）、未設定なら後段でCSVキューへ
+            # Yahoo価格: APIで自動更新（親コード単位）。未設定・無効時は事前に実行をブロックする。
             _repriced_rows = [r for r in plan_rows if r.get("新販売価格")]
-            _yahoo_api_on = yahoo_client.api_enabled()   # YAHOO_DISABLE=trueで切り分け可
             yahoo_price_map = {}
-            if _repriced_rows and _yahoo_api_on:
+            if _repriced_rows:
                 _ymall = [{"商品コード": r["商品コード"], "楽天販売価格": r["新販売価格"],
                            "Yahoo販売価格": r["新販売価格"]} for r in _repriced_rows]
                 _yr, _ = ex.yahoo_rows(_ymall, sku_table)
@@ -877,32 +862,9 @@ if plan_rows and not _plan_stale:
             except Exception as e:  # noqa: BLE001
                 err = f"証跡CSVの生成に失敗: {e}"
 
-            # Yahoo反映待ちキューへ追記（バックアップ）。価格CSVは
-            #   ・API未使用（YAHOO_DISABLE / 未設定）
-            #   ・APIを使ったが失敗（400・認証切れ・例外等）
-            # のいずれかで退避する＝APIが壊れていても価格改定を取りこぼさない安全網。
-            # 配送グループは常にCSV（editItem全項目上書きの危険回避）。
-            _yahoo_price_failed = bool(failed.get("yahoo_price"))
+            # 配送グループだけは常にCSV（editItem全項目上書きの危険回避）。
+            # Yahoo価格のAPI失敗はキューへ退避せず、結果表と再実行対象に残す。
             try:
-                if _repriced_rows and (not _yahoo_api_on or _yahoo_price_failed):
-                    _mall = [{"商品コード": r["商品コード"], "楽天販売価格": r["新販売価格"],
-                              "Yahoo販売価格": r["新販売価格"]} for r in _repriced_rows]
-                    _yrows, _ = ex.yahoo_rows(_mall, sku_table)
-                    yq.append_prices([{"code": r["code"], "price": r["price"]}
-                                      for r in _yrows], product_folder)
-                    if _yahoo_price_failed:
-                        # APIは失敗したがCSVへ退避済み。壊れたAPIを再実行で叩き続け
-                        # ないよう再実行キューから外し、結果表の⑤を「CSV退避」に置換して
-                        # 過剰なアラーム（失敗扱い）を防ぐ。元エラーはメッセージに残す。
-                        failed.pop("yahoo_price", None)
-                        for _r in results:
-                            if _r.get("ステップ") == runner.STEP_YAHOO_PRICE \
-                                    and _r.get("状態") == "失敗":
-                                _r["状態"] = "CSV退避"
-                                _r["メッセージ"] = (
-                                    "Yahoo APIで反映できずCSVバックアップに退避しました"
-                                    "（下の『Yahoo反映待ちキュー』から管理者が反映）。"
-                                    "元エラー: " + str(_r.get("メッセージ", "")))
                 if dv_rows:
                     _ydv = [{"code": str(d["商品管理番号"]).lower(),
                              "配送グループ管理番号":
@@ -935,7 +897,7 @@ if plan_rows and not _plan_stale:
         # 実行履歴に1件追記（どこまで実行したかの確認用。セッション内で保持）。
         _codes = [str(r.get("商品コード", "")) for r in plan_rows if r.get("商品コード")]
         _nok = sum(1 for r in results if r.get("状態") == "成功")
-        _nng = sum(1 for r in results if r.get("状態") in ("失敗", "CSV退避"))
+        _nng = sum(1 for r in results if r.get("状態") == "失敗")
         _hist = st.session_state.setdefault("recv_history", [])
         _hist.insert(0, {
             "時刻": _dt.datetime.now().strftime("%m/%d %H:%M"),
@@ -956,16 +918,19 @@ if res:
     n_ok = int((rdf["状態"] == "成功").sum()) if len(rdf) else 0
     n_fail = int((rdf["状態"] == "失敗").sum()) if len(rdf) else 0
     n_skip = int((rdf["状態"] == "スキップ").sum()) if len(rdf) else 0
-    if n_fail == 0:
+    if n_fail == 0 and n_skip == 0:
         st.success(f"✅ 更新が完了しました（成功 {n_ok}件）")
+    elif n_fail == 0:
+        st.warning(f"⚠️ 更新処理は完了しましたが、対象外があります"
+                   f"（成功 {n_ok}／スキップ {n_skip}）")
     else:
         st.error(f"⚠️ 一部の更新に失敗しました（成功 {n_ok}／失敗 {n_fail}／スキップ {n_skip}）")
     st.dataframe(rdf, use_container_width=True, hide_index=True)
 
-    # 失敗＋CSV退避（Yahooが反映できずキューへ退避）の理由を全文表示する。
-    _fails = [r for r in results if r.get("状態") in ("失敗", "CSV退避")]
+    # API失敗の理由を省略せず全文表示する。
+    _fails = [r for r in results if r.get("状態") == "失敗"]
     if _fails:
-        with st.expander("❌ 失敗・CSV退避の詳細（メッセージ全文）", expanded=True):
+        with st.expander("❌ 失敗の詳細（メッセージ全文）", expanded=True):
             for r in _fails:
                 st.markdown(f"**{r.get('ステップ')}**（{r.get('対象')}・{r.get('状態')}）")
                 st.code(str(r.get("メッセージ", "")))
@@ -1017,16 +982,8 @@ if res:
         if res["url"]:
             st.link_button("📁 証跡フォルダを開く", res["url"])
 
-    # Yahoo: 価格はAPI設定済みなら自動反映（上の結果表に⑤で出る）。未設定/無効/失敗はキューへ。
-    _has_price = any(r.get("新販売価格") for r in (st.session_state.get("recv_plan") or []))
-    if _has_price and not yahoo_client.api_enabled():
-        _why = "API未設定" if not yahoo_client.is_configured() else "API一時無効(YAHOO_DISABLE)"
-        st.info(f"🟡 Yahoo価格は下の「Yahoo反映待ちキュー」に貯まりました（{_why}のためCSV運用）。")
-    elif any(r.get("状態") == "CSV退避" for r in results):
-        st.info("🟡 Yahoo価格はAPIで反映できなかったため「Yahoo反映待ちキュー」に退避しました"
-                "（管理者がまとめて反映してください）。壊れたAPIは再実行では叩きません。")
     if res.get("n_dv"):
-        st.info("🟡 便種変更があったため、**Yahoo配送グループだけ**は「Yahoo反映待ちキュー」に"
+        st.info("🟡 便種変更があったため、**Yahoo配送グループだけ**は「Yahoo配送グループ待機キュー」に"
                 "貯まりました（価格は⑤でAPI自動反映済み）。配送グループはAPIに項目指定更新が"
                 "無いので、キューのCSVを『項目指定』でアップして反映してください。")
 

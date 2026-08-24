@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from lib.event import rms_api                       # noqa: E402
 from lib.ne_api import goods                        # noqa: E402
 from lib.pricing import apply, export as ex, rakuten_price  # noqa: E402
+import lib.yahoo_api as yahoo_api                   # noqa: E402
 
 # kei0018 は枝番なし＝単品SKU（SKU対応表に無くても出力できる）。
 # artc0486-01 は枝番付きなのでSKU対応表が要る。
@@ -123,9 +124,9 @@ def stub(monkeypatch):
 
     class _Items:
         @staticmethod
-        def update_prices(price_by_code):
+        def update_prices_checked(price_by_code):
             calls["yahoo"].append(price_by_code)
-            return len(price_by_code), []
+            return len(price_by_code), [], []
 
         @staticmethod
         def reserve_publish():
@@ -139,6 +140,8 @@ def stub(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "lib.yahoo_api.items", _Items)
     monkeypatch.setitem(sys.modules, "lib.yahoo_api.client", _Client)
+    monkeypatch.setattr(yahoo_api, "items", _Items, raising=False)
+    monkeypatch.setattr(yahoo_api, "client", _Client, raising=False)
     return calls
 
 
@@ -202,20 +205,47 @@ def test_execute_yahoo_error_is_retryable(stub, monkeypatch):
     """Yahooのエラーは失敗として残し、同じ形（dict）で再実行できるようにする。"""
     class _Bad:
         @staticmethod
-        def update_prices(price_by_code):
-            return 0, ["it-02022 sale_priceが指定されていません"]
+        def update_prices_checked(price_by_code):
+            return 0, ["it-02022 sale_priceが指定されていません"], []
 
         @staticmethod
         def reserve_publish():
             raise AssertionError("更新に失敗したら反映予約は呼ばない")
 
     monkeypatch.setitem(sys.modules, "lib.yahoo_api.items", _Bad)
+    monkeypatch.setattr(yahoo_api, "items", _Bad, raising=False)
     tasks, _ = apply.build_tasks(_result_df(), SKU_TABLE, systems={"yahoo"})
     results, failed = apply.execute(tasks)
 
     assert results[0]["状態"] == "失敗"
     assert failed["yahoo_price"] == tasks["yahoo_price"]
     assert apply.summarize(results) == (0, 1, 0)
+
+
+def test_execute_yahoo_missing_item_is_skipped_and_others_continue(stub, monkeypatch):
+    """Yahoo未登録商品だけを対象外にし、登録済み商品の価格更新と反映予約は続行する。"""
+    class _PartlyMissing:
+        @staticmethod
+        def update_prices_checked(price_by_code):
+            stub["yahoo"].append(price_by_code)
+            return 1, [], ["artc0486"]
+
+        @staticmethod
+        def reserve_publish():
+            stub["publish"] += 1
+            return []
+
+    monkeypatch.setitem(sys.modules, "lib.yahoo_api.items", _PartlyMissing)
+    monkeypatch.setattr(yahoo_api, "items", _PartlyMissing, raising=False)
+    tasks, _ = apply.build_tasks(_result_df(), SKU_TABLE, systems={"yahoo"})
+    results, failed = apply.execute(tasks)
+
+    assert failed == {}
+    assert [r["状態"] for r in results] == ["スキップ", "成功"]
+    assert "artc0486" in results[0]["対象"]
+    assert "it-02002" in results[0]["メッセージ"]
+    assert results[1]["対象"] == "1件"
+    assert stub["publish"] == 1
 
 
 def test_execute_retry_only_failed(stub, monkeypatch):

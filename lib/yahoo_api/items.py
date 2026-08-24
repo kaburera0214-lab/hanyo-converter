@@ -28,6 +28,15 @@ MAX_ITEMS = 100
 LYP_MEMBER_RATE = 0.98
 
 
+class YahooHTTPError(client.YahooError):
+    """Yahoo APIのHTTPエラー。呼び出し側でXMLのエラー内容を判定できるよう本文を保持する。"""
+
+    def __init__(self, status_code, body):
+        self.status_code = int(status_code)
+        self.body = str(body or "")
+        super().__init__(f"Yahoo APIエラー HTTP {self.status_code}: {self.body[:1500]}")
+
+
 def _base():
     return TEST_BASE if client._secret("YAHOO_USE_TEST").lower() in ("true", "1", "yes") \
         else PROD_BASE
@@ -43,7 +52,7 @@ def _post(path, data):
         raise client.YahooAuthError(
             f"Yahoo APIの認証に失敗しました（HTTP {res.status_code}）。再認可してください。")
     if res.status_code >= 400:
-        raise client.YahooError(f"Yahoo APIエラー HTTP {res.status_code}: {res.text[:1500]}")
+        raise YahooHTTPError(res.status_code, res.text)
     return res.text
 
 
@@ -64,6 +73,94 @@ def _errors_from_xml(text):
     return msgs
 
 
+def _not_found_positions(text):
+    """updateItems応答から it-02002（商品なし）の itemN を返す。
+
+    updateItemsは1件でも不正だと同じリクエスト内の全商品を更新しないため、商品なしだけが
+    原因のときに限り、その商品を除いて安全に再送する。別種のエラーが混在する場合は
+    原因を隠さないよう空listを返し、通常の失敗として扱う。
+    """
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError:
+        return []
+    rows = []
+    for res in root.iter():
+        if _strip_ns(res.tag) != "Result":
+            continue
+        values = {}
+        for el in res.iter():
+            key = _strip_ns(el.tag)
+            value = (el.text or "").strip()
+            if value:
+                values[key] = value
+        if values.get("Code"):
+            rows.append(values)
+    if not rows or any(r.get("Code") != "it-02002" for r in rows):
+        return []
+    positions = []
+    for row in rows:
+        key = row.get("ErrorKey", "")
+        if not key.startswith("item") or not key[4:].isdigit():
+            return []
+        positions.append(int(key[4:]))
+    return sorted(set(positions))
+
+
+def _update_data(seller, chunk):
+    """updateItems 1リクエスト分のPOSTデータを作る。"""
+    data = {"seller_id": seller}
+    for n, (code, price) in enumerate(chunk, start=1):
+        member = int(round(price * LYP_MEMBER_RATE))
+        data[f"item{n}"] = (f"item_code={code}&price={price}"
+                            f"&sale_price=&member_price={member}")
+    return data
+
+
+def update_prices_checked(price_by_code):
+    """Yahoo価格を更新し、商品未登録だけを除外して残りを再送する。
+
+    返り値: (成功件数, エラーlist, Yahooに存在しなかった商品コードlist)。
+    it-02002以外のエラーは除外・再送せず、そのままエラーとして返す。
+    """
+    items = [(str(code), int(price)) for code, price in price_by_code.items()
+             if str(code).strip() and price]
+    seller = client.seller_id()
+    if not seller:
+        raise client.YahooNotConfigured("Secrets に YAHOO_SELLER_ID（ストアアカウント）が未設定です。")
+    ok, errors, missing = 0, [], []
+    for i in range(0, len(items), MAX_ITEMS):
+        pending = items[i:i + MAX_ITEMS]
+        while pending:
+            try:
+                text = _post("/updateItems", _update_data(seller, pending))
+            except YahooHTTPError as e:
+                positions = _not_found_positions(e.body)
+                if not positions or any(p < 1 or p > len(pending) for p in positions):
+                    errors.append(str(e))
+                    break
+                missing.extend(pending[p - 1][0] for p in positions)
+                omitted = set(positions)
+                pending = [item for n, item in enumerate(pending, start=1) if n not in omitted]
+                continue
+
+            positions = _not_found_positions(text)
+            if positions and all(1 <= p <= len(pending) for p in positions):
+                missing.extend(pending[p - 1][0] for p in positions)
+                omitted = set(positions)
+                pending = [item for n, item in enumerate(pending, start=1) if n not in omitted]
+                continue
+            errs = _errors_from_xml(text)
+            if errs:
+                errors.extend(errs)
+            else:
+                ok += len(pending)
+            break
+        if errors:
+            break
+    return ok, errors, missing
+
+
 def update_prices(price_by_code):
     """{商品コード: 価格} を updateItems で更新する（親コード＝Yahoo商品コード単位）。
     返り値: (成功件数, エラーlist)。設定するのは以下（ユーザー確定 2026-07-30・公式仕様準拠）:
@@ -74,28 +171,8 @@ def update_prices(price_by_code):
       - member_price（LYPプレミアム会員向け販売価格）= priceの2%引き。
     値制約: member_price<price(it-02026)を満たす。sale_priceが空なので
     sale_price<price(it-02011)・member_price<sale_price(it-02027)は無関係。"""
-    items = [(str(code), int(price)) for code, price in price_by_code.items()
-             if str(code).strip() and price]
-    seller = client.seller_id()
-    if not seller:
-        raise client.YahooNotConfigured("Secrets に YAHOO_SELLER_ID（ストアアカウント）が未設定です。")
-    ok, errors = 0, []
-    for i in range(0, len(items), MAX_ITEMS):
-        chunk = items[i:i + MAX_ITEMS]
-        # 認証は Authorization: Bearer のみ（公式仕様）。appid は本文に入れない。
-        data = {"seller_id": seller}
-        for n, (code, price) in enumerate(chunk, start=1):
-            member = int(round(price * LYP_MEMBER_RATE))
-            # 1商品 = "item_code=X&price=Y&sale_price=&member_price=Z"（sale_priceは空文字）。
-            # requestsが1回percent-encodeするのでここは生の文字列（自前quoteは二重encodeで壊れる）。
-            data[f"item{n}"] = (f"item_code={code}&price={price}"
-                                f"&sale_price=&member_price={member}")
-        text = _post("/updateItems", data)
-        errs = _errors_from_xml(text)
-        if errs:
-            errors.extend(errs)
-        else:
-            ok += len(chunk)
+    ok, errors, missing = update_prices_checked(price_by_code)
+    errors.extend(f"{code}: 指定された商品は存在しません（it-02002）" for code in missing)
     return ok, errors
 
 

@@ -51,7 +51,7 @@ def is_configured():
 
 def api_enabled():
     """更新時にYahoo APIを使うか。YAHOO_DISABLE=true で一時的に無効化できる（切り分け用）。
-    無効時はYahoo価格の自動反映を行わず、CSVキューにフォールバックする。"""
+    無効時はYahoo価格を更新できないため、価格更新を伴う画面では実行をブロックする。"""
     if str(_secret("YAHOO_DISABLE")).lower() in ("true", "1", "yes"):
         return False
     return is_configured()

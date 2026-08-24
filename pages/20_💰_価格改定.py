@@ -36,7 +36,6 @@ from lib import master_store
 from lib.invoice import csv_import
 from lib.ne_api import client as ne_client, goods as ne_goods, usage as ne_usage
 from lib.pricing import apply, calc, export as ex, masters, pipeline, rakuten_price
-from lib.receiving import yahoo_queue as yq
 from lib.yahoo_api import client as yahoo_client
 
 product_folder = master_store.folder_id()
@@ -472,26 +471,7 @@ def _run_api(tasks, key_prefix, tab_label, files):
     except Exception:  # noqa: BLE001
         pass
 
-    # Yahooが失敗したら反映待ちキュー（CSV）へ退避する＝APIが壊れていても取りこぼさない。
-    # 退避できたら再実行キューからは外す（壊れたAPIを叩き続けないため）。
-    yahoo_saved = 0
-    if failed.get("yahoo_price"):
-        try:
-            yahoo_saved = yq.append_prices(
-                [{"code": c, "price": p} for c, p in failed["yahoo_price"].items()],
-                product_folder)
-            failed.pop("yahoo_price")
-            for r in results:
-                if r.get("ステップ") == apply.STEP_YAHOO and r.get("状態") == "失敗":
-                    r["状態"] = "CSV退避"
-                    r["メッセージ"] = "APIが失敗したためYahoo反映待ちキューへ退避しました（元エラー: "\
-                                   + str(r["メッセージ"]) + "）"
-        except Exception as e:  # noqa: BLE001
-            results.append({"ステップ": apply.STEP_YAHOO, "対象": "キュー退避", "状態": "失敗",
-                            "メッセージ": f"CSVキューへの退避にも失敗: {e}"})
-
-    st.session_state[key_prefix + "_api_result"] = {
-        "results": results, "failed": failed, "yahoo_saved": yahoo_saved}
+    st.session_state[key_prefix + "_api_result"] = {"results": results, "failed": failed}
 
     # 反映が終わったらバックアップ。実際に反映した内容（入力CSV・出力CSV・実行結果）を
     # ひとまとめにしてDriveへ残す。失敗した反映も含めて「何をやったか」を記録する。
@@ -533,9 +513,6 @@ def _show_api_result(key_prefix, tab_label, files):
     st.caption("表示は**直近の実行分**です（再実行するとこの表は入れ替わります）。"
                "各実行の結果はバックアップに `api_result.csv` として1回ぶんずつ残ります。")
 
-    if state["yahoo_saved"]:
-        st.info(f"🟡 Yahooは反映待ちキューへ退避しました（キュー全体で {state['yahoo_saved']}件）。"
-                "「📥 入荷登録」ページのYahooキューからCSVをまとめてアップしてください。")
     if apply.has_auth_error(results):
         st.error("🔑 認証切れが含まれています。「📥 入荷登録」ページの🔐から"
                  "ネクストエンジン／Yahooを再認可してから、下の「失敗した分だけ再実行」を押してください。")
@@ -546,8 +523,11 @@ def _show_api_result(key_prefix, tab_label, files):
         if st.button(f"🔁 失敗した分だけ再実行（{n_failed}件）", key=f"{key_prefix}_api_retry"):
             _run_api(failed, key_prefix, tab_label, files)
             st.rerun()
-    elif n_ng == 0 and not state["yahoo_saved"]:
+    elif n_ng == 0 and n_skip == 0:
         st.success("✅ すべて反映しました。CSVのアップロードは不要です。")
+    elif n_ng == 0:
+        st.warning("⚠️ API処理は完了しましたが、Yahoo未登録の対象外商品があります。"
+                   "上のスキップ内容を確認してください。")
 
     backup = st.session_state.get(key_prefix + "_backup") or {}
     if backup.get("err"):
