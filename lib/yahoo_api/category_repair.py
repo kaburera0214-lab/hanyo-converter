@@ -123,6 +123,43 @@ def _search_hits(item):
     return "", []
 
 
+def _nearest_store_category(item, max_distance=3):
+    """連番の近い店内商品から、商品名も似ているカテゴリ候補を探す。"""
+    match = re.match(r"^(.*?)(\d+)$", str(item.get("code") or ""))
+    if not match:
+        return None
+    prefix, number_text = match.groups()
+    number = int(number_text)
+    candidates = []
+    for distance in range(1, max_distance + 1):
+        for neighbor_number in (number - distance, number + distance):
+            if neighbor_number < 0:
+                continue
+            neighbor_code = f"{prefix}{neighbor_number:0{len(number_text)}d}"
+            try:
+                neighbor = get_item(neighbor_code)
+            except Exception:  # noqa: BLE001
+                continue
+            category_id = int(neighbor.get("product_category") or 0)
+            if category_id <= 0:
+                continue
+            score = _similarity(item.get("name"), neighbor.get("name"))
+            candidates.append((score, distance, neighbor, category_id))
+        if candidates and max(row[0] for row in candidates) >= 0.55:
+            break
+    if not candidates:
+        return None
+    score, distance, neighbor, category_id = max(
+        candidates, key=lambda row: (row[0], -row[1]))
+    if score < 0.55:
+        return None
+    return {**item, "category_id": category_id, "category_name": "",
+            "source": "Yahoo店内類似商品", "candidate_name": neighbor.get("name", ""),
+            "score": round(float(score), 4),
+            "reason": (f"店内類似商品 {neighbor['code']} のカテゴリを採用"
+                       f"（商品名類似度 {score:.2f}）")}
+
+
 def infer_product_category(code):
     """JANを優先し、無ければYahoo類似商品名からカテゴリを推定する。"""
     item = get_item(code)
@@ -131,6 +168,9 @@ def infer_product_category(code):
         return {**item, "category_id": existing, "category_name": "",
                 "source": "Yahoo既存値", "candidate_name": "", "score": 1.0,
                 "reason": "既にプロダクトカテゴリが設定済み"}
+    store_candidate = _nearest_store_category(item)
+    if store_candidate:
+        return store_candidate
     source, hits = _search_hits(item)
     if not hits:
         raise client.YahooError("Yahoo商品検索でカテゴリ付きの類似商品が見つかりません。")

@@ -101,8 +101,12 @@ with st.expander("🛠️ 旧Yahoo価格キューを楽天価格で復旧（管�
 
         _category_codes = yahoo_recovery.category_failure_codes(_recovery_state)
         _category_plan = _recovery_state.get("category_plan") or {}
-        if _category_codes and not all(code in _category_plan for code in _category_codes):
-            if st.button(f"カテゴリ未設定{len(_category_codes)}件の候補を作成（書き込みなし）",
+        if _category_codes:
+            _has_full_plan = all(code in _category_plan for code in _category_codes)
+            _plan_label = (f"カテゴリ未設定{len(_category_codes)}件の候補を再作成（書き込みなし）"
+                           if _has_full_plan else
+                           f"カテゴリ未設定{len(_category_codes)}件の候補を作成（書き込みなし）")
+            if st.button(_plan_label,
                          key="yahoo_category_plan"):
                 _bar = st.progress(0.0, text="Yahoo類似商品からカテゴリを推定中…")
                 plans, failures = yahoo_category.plan_categories(

@@ -13,12 +13,30 @@ def test_infer_category_prefers_same_jan_majority(monkeypatch):
         {"name": "木製ハンマー C", "janCode": item["jan"],
          "genreCategory": {"id": 12345, "name": "工具"}},
     ]))
+    monkeypatch.setattr(cr, "_nearest_store_category", lambda item: None)
 
     plan = cr.infer_product_category("artc0001")
 
     assert plan["category_id"] == 38099
     assert plan["source"] == "JAN"
     assert "2/3" in plan["reason"]
+
+
+def test_infer_category_prefers_similar_neighbor_in_same_store(monkeypatch):
+    target = {"code": "artc3132", "name": "しんちゅう釘 32mm40本組",
+              "jan": "4521718453095", "product_category": ""}
+    candidate = {**target, "category_id": 34649, "category_name": "",
+                 "source": "Yahoo店内類似商品", "candidate_name": "しんちゅうメッキ釘 25mm",
+                 "score": 0.8, "reason": "店内類似商品 artc3131"}
+    monkeypatch.setattr(cr, "get_item", lambda code: target)
+    monkeypatch.setattr(cr, "_nearest_store_category", lambda item: candidate)
+    monkeypatch.setattr(cr, "_search_hits",
+                        lambda item: (_ for _ in ()).throw(AssertionError("public search not needed")))
+
+    plan = cr.infer_product_category("artc3132")
+
+    assert plan["category_id"] == 34649
+    assert plan["source"] == "Yahoo店内類似商品"
 
 
 def test_category_price_csv_is_partial_update_format():
