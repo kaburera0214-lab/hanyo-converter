@@ -159,7 +159,10 @@ def _yahoo_prices(price_by_code, results, failed, on_step):
         yclient.access_token()            # 期限切れ間近なら自動リフレッシュ
         if on_step:
             on_step("⑤ Yahoo: 価格更新API(updateItems)を呼び出し中…")
-        ok, errs, missing = yitems.update_prices_checked(price_by_code)
+        category_repairs = {}
+        ok, errs, missing = yitems.update_prices_checked(
+            price_by_code,
+            on_category_repair=lambda code, detail: category_repairs.__setitem__(code, detail))
         missing_set = set(missing)
         update_map = {code: price for code, price in price_by_code.items()
                       if code not in missing_set}
@@ -185,8 +188,14 @@ def _yahoo_prices(price_by_code, results, failed, on_step):
                             "メッセージ": "更新OKだが反映予約に失敗: " + "／".join(perr[:5])})
             failed["yahoo_price"] = update_map
         else:
+            message = "更新＋反映予約 完了"
+            if category_repairs:
+                shown = "、".join(
+                    f"{code}→{detail['category_id']}({detail.get('category_name') or '名称不明'})"
+                    for code, detail in list(category_repairs.items())[:10])
+                message += f"／プロダクトカテゴリ自動設定 {len(category_repairs)}件: {shown}"
             results.append({"ステップ": STEP_YAHOO_PRICE, "対象": f"{ok}件", "状態": "成功",
-                            "メッセージ": "更新＋反映予約 完了"})
+                            "メッセージ": message})
     except Exception as e:  # noqa: BLE001（認可切れ等もここで拾う。has_auth_errorが文言で判定）
         results.append({"ステップ": STEP_YAHOO_PRICE, "対象": target, "状態": "失敗",
                         "メッセージ": str(e)})

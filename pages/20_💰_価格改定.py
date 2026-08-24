@@ -38,7 +38,7 @@ from lib.ne_api import client as ne_client, goods as ne_goods, usage as ne_usage
 from lib.pricing import (apply, calc, export as ex, masters, pipeline, rakuten_price,
                          yahoo_recovery)
 from lib.receiving import yahoo_queue as yq
-from lib.yahoo_api import client as yahoo_client
+from lib.yahoo_api import category_repair as yahoo_category, client as yahoo_client
 
 product_folder = master_store.folder_id()
 
@@ -98,6 +98,52 @@ with st.expander("🛠️ 旧Yahoo価格キューを楽天価格で復旧（管�
             yahoo_recovery.reset_retryable(_recovery_state)
             yahoo_recovery.save_state(product_folder, _recovery_queue, _recovery_state)
             st.rerun()
+
+        _category_codes = yahoo_recovery.category_failure_codes(_recovery_state)
+        _category_plan = _recovery_state.get("category_plan") or {}
+        if _category_codes and not all(code in _category_plan for code in _category_codes):
+            if st.button(f"カテゴリ未設定{len(_category_codes)}件の候補を作成（書き込みなし）",
+                         key="yahoo_category_plan"):
+                _bar = st.progress(0.0, text="Yahoo類似商品からカテゴリを推定中…")
+                plans, failures = yahoo_category.plan_categories(
+                    _category_codes,
+                    on_progress=lambda done, total, msg: _bar.progress(
+                        done / max(total, 1), text=msg))
+                _recovery_state["category_plan"] = plans
+                _recovery_state["category_plan_failures"] = failures
+                yahoo_recovery.save_state(product_folder, _recovery_queue, _recovery_state)
+                _bar.empty()
+                st.rerun()
+
+        if _category_codes and _category_plan:
+            _planned = [_category_plan[c] for c in _category_codes if c in _category_plan]
+            st.caption(f"カテゴリ候補: {len(_planned)}/{len(_category_codes)}件。"
+                       "同一JANを優先し、無ければYahooの商品名類似検索を使います。")
+            if _planned:
+                st.dataframe(pd.DataFrame([{
+                    "code": p["code"], "商品名": p.get("name", ""),
+                    "候補カテゴリID": p["category_id"],
+                    "候補カテゴリ名": p.get("category_name", ""),
+                    "根拠": p.get("reason", ""),
+                    "類似商品": p.get("candidate_name", ""),
+                } for p in _planned]), use_container_width=True, hide_index=True, height=300)
+            _plan_failures = _recovery_state.get("category_plan_failures") or {}
+            if _plan_failures:
+                st.warning("候補を作れなかった商品: " + "／".join(
+                    f"{code}: {message}" for code, message in list(_plan_failures.items())[:10]))
+            if len(_planned) == len(_category_codes) and st.button(
+                    f"候補カテゴリを設定し、楽天価格でYahooへ反映（{len(_planned)}件）",
+                    key="yahoo_category_apply", type="primary"):
+                yahoo_recovery.reset_category_failures(_recovery_state)
+                _bar = st.progress(0.0, text="カテゴリと価格をYahooへ反映中…")
+                yahoo_recovery.process_next(
+                    _recovery_queue, _recovery_state, limit=len(_planned),
+                    category_plans=_category_plan,
+                    on_progress=lambda done, total, msg: _bar.progress(
+                        done / max(total, 1), text=msg))
+                yahoo_recovery.save_state(product_folder, _recovery_queue, _recovery_state)
+                _bar.empty()
+                st.rerun()
         _audit = yahoo_recovery.audit_df(_recovery_queue, _recovery_state)
         st.dataframe(_audit.tail(100), use_container_width=True, hide_index=True, height=260)
         st.download_button("監査結果CSVをダウンロード", _audit.to_csv(index=False).encode("utf-8-sig"),

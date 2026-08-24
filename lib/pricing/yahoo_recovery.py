@@ -69,12 +69,17 @@ def audit_df(queue_df, state):
     rows = []
     for code in _codes(queue_df):
         r = (state.get("results") or {}).get(code, {})
+        category = r.get("category_repair") or {}
         rows.append({"code": code, "旧キュー価格": prices.get(code, ""),
                      "楽天現在価格": r.get("rakuten_price", ""),
+                     "YahooカテゴリID": category.get("category_id", ""),
+                     "Yahooカテゴリ名": category.get("category_name", ""),
+                     "カテゴリ推定根拠": category.get("reason", ""),
                      "状態": r.get("status", "未処理"),
                      "メッセージ": r.get("message", ""),
                      "処理日時": r.get("processed_at", "")})
     return pd.DataFrame(rows, columns=["code", "旧キュー価格", "楽天現在価格",
+                                      "YahooカテゴリID", "Yahooカテゴリ名", "カテゴリ推定根拠",
                                       "状態", "メッセージ", "処理日時"])
 
 
@@ -160,13 +165,30 @@ def reset_retryable(state):
     return len(retry)
 
 
-def _record(state, code, price, status, message=""):
-    state.setdefault("results", {})[code] = {
+def category_failure_codes(state):
+    """it-02037相当のカテゴリ未設定エラーになった商品コード。"""
+    return [code for code, row in (state.get("results") or {}).items()
+            if row.get("status") == "Yahoo更新失敗"
+            and "プロダクトカテゴリが設定されていない" in str(row.get("message") or "")]
+
+
+def reset_category_failures(state):
+    codes = category_failure_codes(state)
+    for code in codes:
+        state.get("results", {}).pop(code, None)
+    return len(codes)
+
+
+def _record(state, code, price, status, message="", category_detail=None):
+    row = {
         "rakuten_price": price if price is not None else "",
         "status": status, "message": str(message or ""), "processed_at": _now()}
+    if category_detail:
+        row["category_repair"] = category_detail
+    state.setdefault("results", {})[code] = row
 
 
-def process_next(queue_df, state, limit=BATCH_SIZE, on_progress=None):
+def process_next(queue_df, state, limit=BATCH_SIZE, on_progress=None, category_plans=None):
     """未処理の次バッチを楽天取得→Yahoo更新する。旧キュー自体は変更しない。"""
     batch = remaining_codes(queue_df, state)[:int(limit)]
     if not batch:
@@ -192,7 +214,10 @@ def process_next(queue_df, state, limit=BATCH_SIZE, on_progress=None):
 
     try:
         yahoo_client.access_token()
-        ok, errors, missing = yahoo_items.update_prices_checked(yahoo_prices)
+        category_repairs = {}
+        ok, errors, missing = yahoo_items.update_prices_checked(
+            yahoo_prices, category_plans=category_plans,
+            on_category_repair=lambda code, detail: category_repairs.__setitem__(code, detail))
         missing_set = set(missing)
         for code in missing:
             _record(state, code, yahoo_prices[code], "Yahoo商品なし",
@@ -200,8 +225,20 @@ def process_next(queue_df, state, limit=BATCH_SIZE, on_progress=None):
         candidates = [code for code in yahoo_prices if code not in missing_set]
         if errors:
             message = "／".join(errors[:5])
+            repair_publish_errors = yahoo_items.reserve_publish() if category_repairs else []
             for code in candidates:
-                _record(state, code, yahoo_prices[code], "Yahoo更新失敗", message)
+                if code in category_repairs:
+                    detail = category_repairs[code]
+                    if repair_publish_errors:
+                        _record(state, code, yahoo_prices[code], "Yahoo反映予約失敗",
+                                "カテゴリ・価格更新OK、反映予約失敗: "
+                                + "／".join(repair_publish_errors[:5]), category_detail=detail)
+                    else:
+                        _record(state, code, yahoo_prices[code], "Yahoo反映成功",
+                                f"カテゴリ{detail['category_id']}を自動設定し楽天現在価格で更新",
+                                category_detail=detail)
+                else:
+                    _record(state, code, yahoo_prices[code], "Yahoo更新失敗", message)
             return state
         if ok != len(candidates):
             message = f"Yahoo成功件数が不一致（予定{len(candidates)}／応答{ok}）"
@@ -216,7 +253,13 @@ def process_next(queue_df, state, limit=BATCH_SIZE, on_progress=None):
                     _record(state, code, yahoo_prices[code], "Yahoo反映予約失敗", message)
             else:
                 for code in candidates:
-                    _record(state, code, yahoo_prices[code], "Yahoo反映成功", "楽天現在価格で更新")
+                    detail = category_repairs.get(code)
+                    message = "楽天現在価格で更新"
+                    if detail:
+                        message += (f"・Yahooカテゴリ{detail['category_id']}"
+                                    f"（{detail.get('category_name') or '名称不明'}）を自動設定")
+                    _record(state, code, yahoo_prices[code], "Yahoo反映成功", message,
+                            category_detail=detail)
     except Exception as e:  # noqa: BLE001
         for code, price in yahoo_prices.items():
             if code not in state.get("results", {}):

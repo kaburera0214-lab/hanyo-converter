@@ -124,7 +124,7 @@ def stub(monkeypatch):
 
     class _Items:
         @staticmethod
-        def update_prices_checked(price_by_code):
+        def update_prices_checked(price_by_code, **kwargs):
             calls["yahoo"].append(price_by_code)
             return len(price_by_code), [], []
 
@@ -205,7 +205,7 @@ def test_execute_yahoo_error_is_retryable(stub, monkeypatch):
     """Yahooのエラーは失敗として残し、同じ形（dict）で再実行できるようにする。"""
     class _Bad:
         @staticmethod
-        def update_prices_checked(price_by_code):
+        def update_prices_checked(price_by_code, **kwargs):
             return 0, ["it-02022 sale_priceが指定されていません"], []
 
         @staticmethod
@@ -226,7 +226,7 @@ def test_execute_yahoo_missing_item_is_skipped_and_others_continue(stub, monkeyp
     """Yahoo未登録商品だけを対象外にし、登録済み商品の価格更新と反映予約は続行する。"""
     class _PartlyMissing:
         @staticmethod
-        def update_prices_checked(price_by_code):
+        def update_prices_checked(price_by_code, **kwargs):
             stub["yahoo"].append(price_by_code)
             return 1, [], ["artc0486"]
 

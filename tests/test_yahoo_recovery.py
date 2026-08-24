@@ -41,7 +41,7 @@ def test_process_next_updates_only_safe_prices(monkeypatch):
     monkeypatch.setattr(yr, "fetch_rakuten_parent_price", _fetch)
     monkeypatch.setattr(yr.yahoo_client, "access_token", lambda: "token")
     monkeypatch.setattr(yr.yahoo_items, "update_prices_checked",
-                        lambda prices: (1, [], ["missing001"]))
+                        lambda prices, **kwargs: (1, [], ["missing001"]))
     published = []
     monkeypatch.setattr(yr.yahoo_items, "reserve_publish",
                         lambda: published.append(True) or [])
@@ -63,7 +63,7 @@ def test_yahoo_failure_is_recorded_without_publish(monkeypatch):
     monkeypatch.setattr(yr, "fetch_rakuten_parent_price", lambda code: (1200, ""))
     monkeypatch.setattr(yr.yahoo_client, "access_token", lambda: "token")
     monkeypatch.setattr(yr.yahoo_items, "update_prices_checked",
-                        lambda prices: (0, ["HTTP 503"], []))
+                        lambda prices, **kwargs: (0, ["HTTP 503"], []))
     monkeypatch.setattr(yr.yahoo_items, "reserve_publish",
                         lambda: (_ for _ in ()).throw(AssertionError("must not publish")))
 

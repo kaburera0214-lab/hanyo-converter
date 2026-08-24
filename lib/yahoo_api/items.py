@@ -17,7 +17,7 @@ import xml.etree.ElementTree as ET
 
 import requests
 
-from . import client
+from . import category_repair, client
 
 PROD_BASE = "https://circus.shopping.yahooapis.jp/ShoppingWebService/V1"
 TEST_BASE = "https://test.circus.shopping.yahooapis.jp/ShoppingWebService/V1"
@@ -107,6 +107,42 @@ def _not_found_positions(text):
     return sorted(set(positions))
 
 
+def _result_error_rows(text):
+    """updateItems応答のエラー行を [{Code, ErrorKey, Message, ...}] で返す。"""
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError:
+        return []
+    rows = []
+    for res in root.iter():
+        if _strip_ns(res.tag) != "Result":
+            continue
+        values = {}
+        for el in res.iter():
+            key = _strip_ns(el.tag)
+            value = (el.text or "").strip()
+            if value:
+                values[key] = value
+        if values.get("Code"):
+            rows.append(values)
+    return rows
+
+
+def _repairable_positions(text):
+    """商品なし(it-02002)とカテゴリ未設定(it-02037)だけなら位置を分類する。"""
+    rows = _result_error_rows(text)
+    if not rows or any(row.get("Code") not in ("it-02002", "it-02037") for row in rows):
+        return None
+    found = {"missing": [], "category": []}
+    for row in rows:
+        key = row.get("ErrorKey", "")
+        if not key.startswith("item") or not key[4:].isdigit():
+            return None
+        group = "missing" if row["Code"] == "it-02002" else "category"
+        found[group].append(int(key[4:]))
+    return {key: sorted(set(value)) for key, value in found.items()}
+
+
 def _update_data(seller, chunk):
     """updateItems 1リクエスト分のPOSTデータを作る。"""
     data = {"seller_id": seller}
@@ -117,7 +153,7 @@ def _update_data(seller, chunk):
     return data
 
 
-def update_prices_checked(price_by_code):
+def update_prices_checked(price_by_code, category_plans=None, on_category_repair=None):
     """Yahoo価格を更新し、商品未登録だけを除外して残りを再送する。
 
     返り値: (成功件数, エラーlist, Yahooに存在しなかった商品コードlist)。
@@ -132,24 +168,45 @@ def update_prices_checked(price_by_code):
     for i in range(0, len(items), MAX_ITEMS):
         pending = items[i:i + MAX_ITEMS]
         while pending:
+            http_error = None
             try:
                 text = _post("/updateItems", _update_data(seller, pending))
             except YahooHTTPError as e:
-                positions = _not_found_positions(e.body)
-                if not positions or any(p < 1 or p > len(pending) for p in positions):
-                    errors.append(str(e))
-                    break
-                missing.extend(pending[p - 1][0] for p in positions)
-                omitted = set(positions)
-                pending = [item for n, item in enumerate(pending, start=1) if n not in omitted]
-                continue
+                http_error = e
+                text = e.body
 
-            positions = _not_found_positions(text)
-            if positions and all(1 <= p <= len(pending) for p in positions):
-                missing.extend(pending[p - 1][0] for p in positions)
-                omitted = set(positions)
+            classified = _repairable_positions(text)
+            if classified is not None:
+                all_positions = classified["missing"] + classified["category"]
+                if any(p < 1 or p > len(pending) for p in all_positions):
+                    errors.append(str(http_error) if http_error else "Yahoo応答の商品位置が不正です。")
+                    break
+
+                missing.extend(pending[p - 1][0] for p in classified["missing"])
+                category_prices = {pending[p - 1][0]: pending[p - 1][1]
+                                   for p in classified["category"]}
+                if category_prices:
+                    saved_plans = None
+                    if category_plans is not None:
+                        saved_plans = {code: category_plans[code] for code in category_prices
+                                       if code in category_plans}
+                    repaired, repair_failures = category_repair.repair_category_prices(
+                        category_prices, plans=saved_plans)
+                    ok += len(repaired)
+                    if on_category_repair:
+                        for code, detail in repaired.items():
+                            on_category_repair(code, detail)
+                    errors.extend(f"{code}: {message}" for code, message in repair_failures.items())
+
+                omitted = set(all_positions)
                 pending = [item for n, item in enumerate(pending, start=1) if n not in omitted]
-                continue
+                if pending:
+                    continue
+                break
+
+            if http_error is not None:
+                errors.append(str(http_error))
+                break
             errs = _errors_from_xml(text)
             if errs:
                 errors.extend(errs)

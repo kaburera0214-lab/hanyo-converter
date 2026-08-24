@@ -14,7 +14,7 @@ def test_yahoo_missing_item_is_skipped_and_valid_item_is_published(monkeypatch):
 
     class _Items:
         @staticmethod
-        def update_prices_checked(price_by_code):
+        def update_prices_checked(price_by_code, **kwargs):
             calls["prices"].append(price_by_code)
             return 1, [], ["missing001"]
 
@@ -47,7 +47,7 @@ def test_yahoo_missing_item_is_skipped_and_valid_item_is_published(monkeypatch):
 def test_yahoo_error_remains_retryable(monkeypatch):
     class _Items:
         @staticmethod
-        def update_prices_checked(price_by_code):
+        def update_prices_checked(price_by_code, **kwargs):
             return 0, ["Yahoo APIエラー HTTP 503: maintenance"], []
 
         @staticmethod
