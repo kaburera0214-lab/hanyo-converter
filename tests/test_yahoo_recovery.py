@@ -84,3 +84,14 @@ def test_permanent_yahoo_validation_failure_is_not_retryable():
     assert yr.retryable_count(state) == 0
     assert yr.reset_retryable(state) == 0
     assert "bad001" in state["results"]
+
+
+def test_yahoo_upload_busy_is_retryable():
+    state = {"results": {
+        "busy001": {"status": "Yahoo更新失敗",
+                    "message": "Yahoo APIエラー HTTP 400: ed-00006 反映またはアップロード中"}
+    }}
+
+    assert yr.retryable_count(state) == 1
+    assert yr.reset_retryable(state) == 1
+    assert state["results"] == {}

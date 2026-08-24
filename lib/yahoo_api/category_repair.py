@@ -19,6 +19,8 @@ SEARCH_URL = "https://shopping.yahooapis.jp/ShoppingWebService/V3/itemSearch"
 TIMEOUT = (10, 25)
 LYP_MEMBER_RATE = 0.98
 MIN_INTERVAL = 1.05
+UPLOAD_SETTLE_TIMEOUT = 180
+UPLOAD_SETTLE_INTERVAL = 5
 _last_request = {}
 
 
@@ -244,6 +246,33 @@ def upload_category_prices(plans, price_by_code):
     return _xml_messages(res.text)
 
 
+def wait_for_category_updates(plans, timeout=UPLOAD_SETTLE_TIMEOUT,
+                              interval=UPLOAD_SETTLE_INTERVAL):
+    """項目指定CSVの非同期処理が完了し、カテゴリが読めるまで待つ。"""
+    remaining = {code: int(plan["category_id"]) for code, plan in plans.items()}
+    deadline = time.monotonic() + max(0, timeout)
+    last_errors = {}
+    while remaining:
+        for code, expected in list(remaining.items()):
+            try:
+                item = get_item(code)
+                if int(item.get("product_category") or 0) == expected:
+                    remaining.pop(code, None)
+                    last_errors.pop(code, None)
+            except Exception as e:  # noqa: BLE001
+                last_errors[code] = str(e)
+        if not remaining:
+            break
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(max(0, interval))
+    return {
+        code: ("YahooカテゴリCSVの処理完了を確認できませんでした"
+               + (f"（最終確認: {last_errors[code]}）" if code in last_errors else ""))
+        for code in remaining
+    }
+
+
 def repair_category_prices(price_by_code, plans=None, on_progress=None):
     """カテゴリを推定し、推定できた商品だけカテゴリ＋価格を項目指定更新する。"""
     normalized = {str(k).strip().lower(): int(v) for k, v in price_by_code.items()}
@@ -255,4 +284,6 @@ def repair_category_prices(price_by_code, plans=None, on_progress=None):
     errors = upload_category_prices(plans, normalized)
     if errors:
         return {}, {code: "／".join(errors[:5]) for code in normalized}
-    return plans, failures
+    wait_failures = wait_for_category_updates(plans)
+    repaired = {code: plan for code, plan in plans.items() if code not in wait_failures}
+    return repaired, {**failures, **wait_failures}

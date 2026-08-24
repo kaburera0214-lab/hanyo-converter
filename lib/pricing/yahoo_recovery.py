@@ -25,7 +25,8 @@ RETRYABLE_STATUSES = {"楽天取得失敗", "Yahoo反映予約失敗"}
 _TRANSIENT_YAHOO_MARKERS = (
     "http 408", "http 429", "http 500", "http 502", "http 503", "http 504",
     "timeout", "timed out", "connection", "temporarily", "service unavailable",
-    "rate limit", "一時", "タイムアウト", "接続",
+    "rate limit", "一時", "タイムアウト", "接続", "ed-00006",
+    "反映またはアップロード中",
 )
 
 

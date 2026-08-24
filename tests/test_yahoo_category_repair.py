@@ -55,6 +55,7 @@ def test_repair_uses_saved_plan_without_reinferring(monkeypatch):
                         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not infer")))
     monkeypatch.setattr(cr, "upload_category_prices",
                         lambda plans, prices: uploaded.update(plans) or [])
+    monkeypatch.setattr(cr, "wait_for_category_updates", lambda plans: {})
 
     repaired, failures = cr.repair_category_prices(
         {"artc0001": 1000}, plans={"artc0001": plan})
@@ -62,3 +63,15 @@ def test_repair_uses_saved_plan_without_reinferring(monkeypatch):
     assert failures == {}
     assert repaired == {"artc0001": plan}
     assert uploaded == repaired
+
+
+def test_wait_for_category_updates_retries_until_csv_is_applied(monkeypatch):
+    reads = iter(["", "34649"])
+    monkeypatch.setattr(cr, "get_item", lambda code: {
+        "code": code, "product_category": next(reads)})
+    monkeypatch.setattr(cr.time, "sleep", lambda seconds: None)
+
+    failures = cr.wait_for_category_updates(
+        {"artc3132": {"category_id": 34649}}, timeout=30, interval=0)
+
+    assert failures == {}
