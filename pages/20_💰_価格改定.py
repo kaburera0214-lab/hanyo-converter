@@ -92,8 +92,7 @@ with st.expander("🛠️ 旧Yahoo価格キューを楽天価格で復旧（管�
         else:
             st.success("楽天価格での確認・Yahoo反映処理が全件完了しました。"
                        "旧キューはまだ削除していません。")
-        _retry_n = sum(v for k, v in _rs["counts"].items()
-                       if k in yahoo_recovery.RETRYABLE_STATUSES)
+        _retry_n = yahoo_recovery.retryable_count(_recovery_state)
         if _retry_n and st.button(f"一時的なAPI失敗を再試行する（{_retry_n}件）",
                                   key="yahoo_recovery_retry"):
             yahoo_recovery.reset_retryable(_recovery_state)

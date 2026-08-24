@@ -21,7 +21,12 @@ from lib.yahoo_api import client as yahoo_client, items as yahoo_items
 STATE_NAME = "yahoo_price_recovery_20260824.json"
 AUDIT_NAME = "yahoo_price_recovery_20260824.csv"
 BATCH_SIZE = 50
-RETRYABLE_STATUSES = {"楽天取得失敗", "Yahoo更新失敗", "Yahoo反映予約失敗"}
+RETRYABLE_STATUSES = {"楽天取得失敗", "Yahoo反映予約失敗"}
+_TRANSIENT_YAHOO_MARKERS = (
+    "http 408", "http 429", "http 500", "http 502", "http 503", "http 504",
+    "timeout", "timed out", "connection", "temporarily", "service unavailable",
+    "rate limit", "一時", "タイムアウト", "接続",
+)
 
 
 def _now():
@@ -130,11 +135,26 @@ def summary(queue_df, state):
             "remaining": len(remaining_codes(queue_df, state)), "counts": counts}
 
 
+def is_retryable_result(row):
+    """再実行で改善し得る失敗だけを返す。Yahooの入力値エラーは対象外。"""
+    status = row.get("status")
+    if status in RETRYABLE_STATUSES:
+        return True
+    if status != "Yahoo更新失敗":
+        return False
+    message = str(row.get("message") or "").lower()
+    return any(marker in message for marker in _TRANSIENT_YAHOO_MARKERS)
+
+
+def retryable_count(state):
+    return sum(1 for row in (state.get("results") or {}).values()
+               if is_retryable_result(row))
+
+
 def reset_retryable(state):
     """一時的なAPI失敗だけを未処理へ戻す。商品なし・SKU価格差は戻さない。"""
     results = state.get("results") or {}
-    retry = [code for code, row in results.items()
-             if row.get("status") in RETRYABLE_STATUSES]
+    retry = [code for code, row in results.items() if is_retryable_result(row)]
     for code in retry:
         results.pop(code, None)
     return len(retry)

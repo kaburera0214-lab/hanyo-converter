@@ -73,3 +73,14 @@ def test_yahoo_failure_is_recorded_without_publish(monkeypatch):
     assert "HTTP 503" in state["results"]["good001"]["message"]
     assert yr.reset_retryable(state) == 1
     assert yr.remaining_codes(queue, state) == ["good001"]
+
+
+def test_permanent_yahoo_validation_failure_is_not_retryable():
+    state = {"results": {
+        "bad001": {"status": "Yahoo更新失敗",
+                   "message": "プロダクトカテゴリが設定されていないため、更新できません。"}
+    }}
+
+    assert yr.retryable_count(state) == 0
+    assert yr.reset_retryable(state) == 0
+    assert "bad001" in state["results"]
