@@ -120,13 +120,19 @@ with st.expander("🛠️ 旧Yahoo価格キューを楽天価格で復旧（管�
             st.caption(f"カテゴリ候補: {len(_planned)}/{len(_category_codes)}件。"
                        "同一JANを優先し、無ければYahooの商品名類似検索を使います。")
             if _planned:
-                st.dataframe(pd.DataFrame([{
+                _plan_df = pd.DataFrame([{
                     "code": p["code"], "商品名": p.get("name", ""),
                     "候補カテゴリID": p["category_id"],
                     "候補カテゴリ名": p.get("category_name", ""),
                     "根拠": p.get("reason", ""),
                     "類似商品": p.get("candidate_name", ""),
-                } for p in _planned]), use_container_width=True, hide_index=True, height=300)
+                } for p in _planned])
+                st.dataframe(_plan_df, use_container_width=True, hide_index=True, height=300)
+                st.download_button(
+                    "カテゴリ候補CSVをダウンロード",
+                    _plan_df.to_csv(index=False).encode("utf-8-sig"),
+                    "yahoo_category_plan_20260824.csv", "text/csv",
+                    key="yahoo_category_plan_download")
             _plan_failures = _recovery_state.get("category_plan_failures") or {}
             if _plan_failures:
                 st.warning("候補を作れなかった商品: " + "／".join(
