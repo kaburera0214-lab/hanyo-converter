@@ -35,10 +35,76 @@ st.caption("インプットCSV（JAN・新下代）→ 新販売価格を計算�
 from lib import master_store
 from lib.invoice import csv_import
 from lib.ne_api import client as ne_client, goods as ne_goods, usage as ne_usage
-from lib.pricing import apply, calc, export as ex, masters, pipeline, rakuten_price
+from lib.pricing import (apply, calc, export as ex, masters, pipeline, rakuten_price,
+                         yahoo_recovery)
+from lib.receiving import yahoo_queue as yq
 from lib.yahoo_api import client as yahoo_client
 
 product_folder = master_store.folder_id()
+
+
+# ══ 旧Yahoo価格キューの復旧（2026-08-24・管理者用） ══════════
+# 過去キューの価格自体は信用せず、楽天の現在価格を取得できた商品だけをYahooへ反映する。
+# 50件ずつ・Driveへ結果保存なので、中断しても同じボタンで続きから再開できる。
+
+with st.expander("🛠️ 旧Yahoo価格キューを楽天価格で復旧（管理者用）", expanded=False):
+    st.caption("旧キューの価格は使いません。各親商品コードを楽天RMSで参照し、"
+               "全SKUが同額の商品だけYahooへ50件ずつ反映します。楽天未登録・SKU価格差・"
+               "Yahoo未登録・API失敗は対象外／失敗としてDriveの監査CSVに残します。"
+               "旧キューCSVは削除・変更しません。")
+    try:
+        _recovery_queue = yq.load_prices(product_folder)
+        _recovery_state = yahoo_recovery.load_state(product_folder)
+    except Exception as e:  # noqa: BLE001
+        _recovery_queue, _recovery_state = pd.DataFrame(), None
+        st.error(f"復旧データの読込に失敗しました: {e}")
+
+    if _recovery_state is None and len(_recovery_queue):
+        if st.button(f"復旧処理を開始する（{len(_recovery_queue)}件）",
+                     key="yahoo_recovery_start", type="primary"):
+            _recovery_state = yahoo_recovery.new_state(_recovery_queue)
+            yahoo_recovery.save_state(product_folder, _recovery_queue, _recovery_state)
+            st.rerun()
+    elif _recovery_state is not None:
+        _rs = yahoo_recovery.summary(_recovery_queue, _recovery_state)
+        _rc1, _rc2, _rc3 = st.columns(3)
+        _rc1.metric("全体", f"{_rs['total']}件")
+        _rc2.metric("処理済み", f"{_rs['processed']}件")
+        _rc3.metric("残り", f"{_rs['remaining']}件")
+        if _rs["counts"]:
+            st.caption("／".join(f"{k}: {v}件" for k, v in _rs["counts"].items()))
+        if _rs["remaining"]:
+            if st.button(f"次の{min(yahoo_recovery.BATCH_SIZE, _rs['remaining'])}件を"
+                         "楽天価格でYahooへ反映", key="yahoo_recovery_next", type="primary"):
+                _bar = st.progress(0.0, text="楽天価格を取得中…")
+                try:
+                    yahoo_recovery.process_next(
+                        _recovery_queue, _recovery_state,
+                        on_progress=lambda done, total, msg: _bar.progress(
+                            done / max(total, 1), text=msg))
+                except Exception as e:  # noqa: BLE001
+                    st.error(f"バッチ処理を中断しました（状態は保存済み分から再開できます）: {e}")
+                finally:
+                    yahoo_recovery.save_state(
+                        product_folder, _recovery_queue, _recovery_state)
+                _bar.empty()
+                st.rerun()
+        else:
+            st.success("楽天価格での確認・Yahoo反映処理が全件完了しました。"
+                       "旧キューはまだ削除していません。")
+        _retry_n = sum(v for k, v in _rs["counts"].items()
+                       if k in yahoo_recovery.RETRYABLE_STATUSES)
+        if _retry_n and st.button(f"一時的なAPI失敗を再試行する（{_retry_n}件）",
+                                  key="yahoo_recovery_retry"):
+            yahoo_recovery.reset_retryable(_recovery_state)
+            yahoo_recovery.save_state(product_folder, _recovery_queue, _recovery_state)
+            st.rerun()
+        _audit = yahoo_recovery.audit_df(_recovery_queue, _recovery_state)
+        st.dataframe(_audit.tail(100), use_container_width=True, hide_index=True, height=260)
+        st.download_button("監査結果CSVをダウンロード", _audit.to_csv(index=False).encode("utf-8-sig"),
+                           yahoo_recovery.AUDIT_NAME, "text/csv", key="yahoo_recovery_audit")
+    elif _recovery_queue.empty:
+        st.caption("旧Yahoo価格キューは空です。")
 
 
 # ══ バックアップへのショートカット（常時表示） ══════════════
