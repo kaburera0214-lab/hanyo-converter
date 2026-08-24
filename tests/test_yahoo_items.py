@@ -34,6 +34,10 @@ CATEGORY_XML = """<ResultSet>
   </Result>
 </ResultSet>"""
 
+CATEGORY_MESSAGE_ONLY_XML = """<ResultSet><Status>NG</Status><Result>
+  <Error><Message>プロダクトカテゴリが設定されていないため、更新できません。</Message></Error>
+</Result></ResultSet>"""
+
 
 def test_update_prices_checked_omits_missing_and_retries(monkeypatch):
     """一括更新を止めた未登録商品だけを除外し、残りを再送する。"""
@@ -97,3 +101,31 @@ def test_update_prices_checked_repairs_missing_category_and_price(monkeypatch):
 
     assert (ok, errors, missing) == (1, [], [])
     assert repaired["good001"]["category_id"] == 1234
+
+
+def test_update_prices_checked_probes_item_when_error_has_no_position(monkeypatch):
+    """実応答にErrorKey/Codeが無くても、商品参照で空欄商品だけを補修する。"""
+    calls = []
+
+    def _post(path, data):
+        calls.append(dict(data))
+        if len(calls) == 1:
+            return CATEGORY_MESSAGE_ONLY_XML
+        return "<ResultSet><Status>OK</Status></ResultSet>"
+
+    monkeypatch.setattr(client, "seller_id", lambda: "test-store")
+    monkeypatch.setattr(items, "_post", _post)
+    monkeypatch.setattr(items.category_repair, "get_item", lambda code: {
+        "code": code, "product_category": "" if code == "bad001" else "34649"})
+    plan = {"code": "bad001", "category_id": 34649, "category_name": "",
+            "reason": "店内類似商品", "name": "釘", "source": "Yahoo店内類似商品",
+            "candidate_name": "釘", "score": 0.9}
+    monkeypatch.setattr(items.category_repair, "repair_category_prices",
+                        lambda prices, plans=None: ({"bad001": plan}, {}))
+
+    ok, errors, missing = items.update_prices_checked(
+        {"good001": 1000, "bad001": 2000}, category_plans={"bad001": plan})
+
+    assert (ok, errors, missing) == (2, [], [])
+    assert len(calls) == 2
+    assert "item_code=good001" in calls[1]["item1"]

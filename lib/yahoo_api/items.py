@@ -143,6 +143,24 @@ def _repairable_positions(text):
     return {key: sorted(set(value)) for key, value in found.items()}
 
 
+def _probe_category_missing_positions(text, pending):
+    """it-02037の位置が応答に無い場合、商品参照APIでカテゴリ空欄だけを特定する。"""
+    messages = _errors_from_xml(text)
+    if not any("プロダクトカテゴリが設定されていない" in message for message in messages):
+        return None
+    positions = []
+    for position, (code, _) in enumerate(pending, start=1):
+        try:
+            item = category_repair.get_item(code)
+            if int(item.get("product_category") or 0) <= 0:
+                positions.append(position)
+        except Exception:  # noqa: BLE001
+            continue
+    if not positions:
+        return None
+    return {"missing": [], "category": positions}
+
+
 def _update_data(seller, chunk):
     """updateItems 1リクエスト分のPOSTデータを作る。"""
     data = {"seller_id": seller}
@@ -176,6 +194,8 @@ def update_prices_checked(price_by_code, category_plans=None, on_category_repair
                 text = e.body
 
             classified = _repairable_positions(text)
+            if classified is None:
+                classified = _probe_category_missing_positions(text, pending)
             if classified is not None:
                 all_positions = classified["missing"] + classified["category"]
                 if any(p < 1 or p > len(pending) for p in all_positions):
