@@ -85,6 +85,8 @@ def _ne_provider():
         "touch": client.keep_alive,
         "is_configured": lambda: True,           # NEは常に必須（未設定なら失敗として出す）
         "lifetime": "3日",
+        # 再認可はNEのID・パスワードでできる＝倉庫スタッフが自分で完結できる
+        "reauth_audience": "staff",
     }
 
 
@@ -98,6 +100,9 @@ def _yahoo_provider():
         "touch": client.keep_alive,
         "is_configured": client.is_configured,
         "lifetime": "28日",
+        # Yahooの再認可には「店舗オーナーのYahoo ID」が要る。倉庫スタッフは
+        # 持っていないので現場に投げても動けない＝管理者宛にする。
+        "reauth_audience": "admin",
     }
 
 
@@ -167,7 +172,8 @@ def run_one(provider, now=None):
             state["last_alert_date"] = now.date().isoformat()
         save_state(state_name, state)
         return {"key": key, "label": label, "ok": False, "auth": True,
-                "alert": alert, "message": str(exc), "state": state}
+                "alert": alert, "message": str(exc), "state": state,
+                "reauth_audience": provider.get("reauth_audience", "staff")}
     except Exception as exc:  # noqa: BLE001
         # バッチ側の不具合。スタッフには直せないので管理者へ
         state.update({"last_run": stamp, "last_result": "error", "last_error": str(exc)})

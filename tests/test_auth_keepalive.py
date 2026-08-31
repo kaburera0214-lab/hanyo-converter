@@ -146,6 +146,24 @@ def test_1つ失敗しても他の接続先は必ず実行される(monkeypatch,
     assert s == {"total": 2, "ok": 1, "skipped": 0, "auth_error": 1, "error": 0}
 
 
+def test_再認可の依頼先が接続先ごとに正しい():
+    """Yahooの再認可には店舗オーナーのYahoo IDが要る。倉庫スタッフは持って
+    いないので、現場に投げると「頼まれたのに動けない」状態になる。"""
+    by_key = {d["key"]: d for d in ak.providers()}
+    assert by_key["ne"]["reauth_audience"] == "staff"     # NEのIDは現場が持っている
+    assert by_key["yahoo"]["reauth_audience"] == "admin"  # 店舗オーナーIDが要る
+
+
+def test_失効結果に依頼先が載る(_no_drive):
+    def _expired():
+        raise _AuthError("expired")
+
+    prov = _provider(touch=_expired)
+    prov["reauth_audience"] = "admin"
+    r = ak.run_one(prov)
+    assert r["reauth_audience"] == "admin"
+
+
 def test_実際の接続先定義が壊れていない():
     """NE・Yahooの定義が組み立てられること（importミスの検出）。"""
     defs = ak.providers()

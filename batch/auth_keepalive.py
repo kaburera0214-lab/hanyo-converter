@@ -60,8 +60,12 @@ def _notify(result):
     label = result["label"]
 
     if result.get("auth"):
-        # 失効の復旧はブラウザでのログインだけ＝現場スタッフが自分でできる
-        _alert(auth_alerts.reauth_body(result["key"], APP_URL), chatwork.STAFF)
+        # 失効の復旧はブラウザでのログインだけ。ただし「誰のIDでログインするか」は
+        # 接続先で違う。NEは倉庫スタッフのIDで完結するが、Yahooは店舗オーナーの
+        # Yahoo IDが要るので現場に投げても動けない＝管理者へ送る。
+        audience = (chatwork.ADMIN if result.get("reauth_audience") == "admin"
+                    else chatwork.STAFF)
+        _alert(auth_alerts.reauth_body(result["key"], APP_URL), audience)
         return
 
     # バッチ側の不具合。スタッフには直せないので管理者にだけ送る
