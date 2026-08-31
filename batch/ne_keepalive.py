@@ -1,20 +1,17 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-毎日バッチ: NEのトークンを延命する（軽いAPIを1回呼ぶだけ）。
+【廃止】2026-08-31。batch/auth_keepalive.py に統合しました。
 
-NEのrefresh_tokenは発行から3日で切れるため、入荷登録を数日使わないと必ず認証切れになる。
-毎日1回これを実行しておけばトークンが更新され続け、再認可はほぼ不要になる。
-GitHub Actions（.github/workflows/ne-keepalive.yml）から実行する。
+このスクリプトはNE専用で、Yahooの認可を延命していなかった。
+2026-08-31、価格改定でYahooが "refresh token has expired" で失敗し、
+延命の対象がNEだけだったことが判明したため、接続先を問わない
+batch/auth_keepalive.py（NE・Yahoo）へ作り直した。
 
-必要な環境変数（GitHub Secrets）:
-  GOOGLE_REFRESH_TOKEN / GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET  … Drive認証
-  NE_CLIENT_ID / NE_CLIENT_SECRET                                … NE認証
-  CHATWORK_API_TOKEN（任意）                                     … 失効時のアラート
-
-NE API消費は1日1回＝月30回（無料枠1000回/月）。
-※既に3日以上放置して失効している場合は、ブラウザでの再認可が必要（NE仕様）。
-  その場合はChatworkにタスクを作って知らせる。
+呼び出していた .github/workflows/ne-keepalive.yml も
+.github/workflows-retired/ へ退避済みなので、このファイルは実行されない。
+経緯を残すために消していないだけで、**新しく参照しないこと**。
+NEだけを延命したい場合も auth_keepalive.py を使う。
 """
 import os
 import sys

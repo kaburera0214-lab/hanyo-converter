@@ -1,0 +1,57 @@
+name: auth-keepalive-daily
+
+# 各接続先の認可を延命する（ネクストエンジン・Yahoo）。
+#
+# トークンは一定期間使わないと失効し、ブラウザでの再認可が必要になる。
+#   NE    … refresh_token は3日（access_tokenは1日）
+#   Yahoo … refresh_token は28日（ストアクリエイターProに公開鍵登録済みの場合。
+#           未登録は12時間。公開鍵は2026-05-06発行・2027-05-06まで有効）
+# 価格改定も入荷登録も「都度」の不定期利用なので、放置すると必ず失効する。
+# 軽いAPIを1日2回呼んでトークンを転がし続ける（1回でも足りるが、実行が飛んでも
+# NEの3日以内に必ず成功するよう余裕をとる）。消費はNE APIの月60回（無料枠1000回）。
+#
+# 2026-08-31 に ne-keepalive.yml（NE専用）から移行。
+# NEのトークンは新旧が同時に発行されると旧側が即失効するため、
+# concurrency group は旧ワークフローと同じ "ne-keepalive" のままにして排他する。
+
+on:
+  schedule:
+    - cron: "0 20 * * *"   # 毎日 20:00 UTC = 翌05:00 JST
+    - cron: "0 8 * * *"    # 毎日 08:00 UTC =   17:00 JST
+  workflow_dispatch: {}     # 手動実行も可（再認可の直後に動作確認する用）
+
+concurrency:
+  group: ne-keepalive       # ← 旧 ne-keepalive.yml と同じ。二重実行でトークンを壊さない
+  cancel-in-progress: false
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # libの依存（streamlitはシムで置換するため不要）。
+      # pandasは lib/master_store → lib/invoice/csv_import が読むため必須
+      # （Drive保存先フォルダIDの解決経路。外すと "No module named 'pandas'" で落ちる）。
+      - run: pip install pandas requests google-api-python-client google-auth
+
+      - name: Keep auth tokens alive
+        env:
+          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          NE_CLIENT_ID: ${{ secrets.NE_CLIENT_ID }}
+          NE_CLIENT_SECRET: ${{ secrets.NE_CLIENT_SECRET }}
+          # Yahooはこの2つだけで延命できる（SELLER_IDはAPI呼び出し用、
+          # REDIRECT_URIは初回認可用なので延命には不要）。
+          # 未登録なら空文字が入り、Yahoo分はスキップされる（NEは通常どおり延命される）。
+          YAHOO_CLIENT_ID: ${{ secrets.YAHOO_CLIENT_ID }}
+          YAHOO_CLIENT_SECRET: ${{ secrets.YAHOO_CLIENT_SECRET }}
+          CHATWORK_API_TOKEN: ${{ secrets.CHATWORK_API_TOKEN }}
+          APP_URL: ${{ secrets.APP_URL }}
+        run: python batch/auth_keepalive.py

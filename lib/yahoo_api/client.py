@@ -177,3 +177,31 @@ def access_token():
             raise YahooAuthError("Yahooのリフレッシュトークンがありません。再認可してください。")
         tokens = _refresh(tokens["refresh_token"])
     return tokens["access_token"]
+
+
+def keep_alive():
+    """トークン延命のための強制リフレッシュ（batch/auth_keepalive.py から毎日実行する）。
+
+    Yahooのrefresh_tokenは、ストアクリエイターProに公開鍵を登録済みなら28日有効
+    （未登録は12時間）。価格改定は「下代変更の都度」の不定期利用なので、放っておくと
+    28日の空白ができて失効する＝使いたいときに「refresh token has expired」になる。
+
+    access_token() は期限が近いときしか更新しないため、延命には使わない。
+    ここでは必ず _refresh() を呼んで、リフレッシュトークンの28日を確実に巻き直す
+    （Yahooは更新のたびに新しいrefresh_tokenを返すので、期限がそこから再計算される）。
+
+    返り値: {ok, rotated, saved_at, expires_at}。
+    認証切れ（＝既に28日以上放置された）は YahooAuthError のまま投げる
+    ＝ブラウザでの再認可が必要で、これは自動化できない。
+    """
+    tokens = _load_tokens()
+    if not tokens:
+        raise YahooAuthError("Yahoo APIが未認可です。🔐「Yahoo API接続」から認可してください。")
+    before = tokens.get("refresh_token", "")
+    if not before:
+        raise YahooAuthError("Yahooのリフレッシュトークンがありません。再認可してください。")
+    after = _refresh(before)
+    return {"ok": True,
+            "rotated": bool(after.get("refresh_token") and after["refresh_token"] != before),
+            "saved_at": after.get("saved_at", ""),
+            "expires_at": after.get("expires_at", "")}
