@@ -307,8 +307,16 @@ else:
 
 # ── 資材ナンバー・ロケーションのプルダウン選択肢＝入荷登録マスタ（Drive・画面で編集） ──
 # 誤登録が混ざるNEの既存値ではなく、この画面で管理する専用マスタを正本にする。
+# session_state["recv_master"] は **Driveに入っている＝保存済みの内容**。編集中の内容は
+# "recv_master_edit" に分けて持つ。ここを毎回の再描画で編集後の値に上書きしてしまうと、
+# 「保存済み」と「編集後」が同じ内容になり💾保存ボタンが押せないまま（disabled）になる。
+# ＝画面上は反映されるのにDriveに書かれず、別タブ（新セッション）で消える。
 if "recv_master" not in st.session_state:
-    rm = recv_master.load(product_folder)
+    load_err = ""
+    try:
+        rm = recv_master.load(product_folder)
+    except Exception as e:  # noqa: BLE001
+        rm, load_err = {"materials": [], "locations": []}, str(e)
     seeded = False
     if not rm["materials"]:
         rm["materials"] = list(recv_master.DEFAULT_MATERIALS)      # 初期19種
@@ -317,13 +325,27 @@ if "recv_master" not in st.session_state:
         rm["locations"] = recv_master.load_bundled_locations()     # 同梱のロケ一覧
         seeded = True
     st.session_state["recv_master"] = rm
-    st.session_state["recv_master_seeded"] = seeded
+    # 「未登録だから空」と「読めなくて空」は別物。読めなかったときは作業できるよう初期値を
+    # 表示するが、保存は止める（初期値でDriveの正本を上書きしてしまうのを防ぐ）。
+    st.session_state["recv_master_error"] = load_err
+    st.session_state["recv_master_seeded"] = seeded and not load_err
+    st.session_state["recv_master_nonce"] = 0
 
-recv_m = st.session_state["recv_master"]
-material_opts = recv_m["materials"]
-loc_rows = recv_m["locations"]
+recv_m = st.session_state["recv_master"]                   # 保存済み（＝比較の基準）
+_recv_m_err = st.session_state.get("recv_master_error", "")
+_recv_m_nonce = st.session_state.get("recv_master_nonce", 0)
+_recv_m_edit = st.session_state.get("recv_master_edit", recv_m)
+material_opts = _recv_m_edit["materials"]
+loc_rows = _recv_m_edit["locations"]
+_recv_m_flash = st.session_state.pop("recv_master_saved_msg", "")
+# 保存直後・読み込み失敗・未保存の変更があるときは開いた状態で出す
+# （閉じたままだと「保存できた／できていない」が現場に見えない）
+_recv_m_open = bool(_recv_m_flash or _recv_m_err
+                    or _recv_m_edit["materials"] != recv_m["materials"]
+                    or _recv_m_edit["locations"] != recv_m["locations"])
 
-with st.expander("🗂 資材ナンバー・ロケーションマスタ（プルダウンの選択肢をここで管理）", expanded=False):
+with st.expander("🗂 資材ナンバー・ロケーションマスタ（プルダウンの選択肢をここで管理）",
+                 expanded=_recv_m_open):
     st.caption("入荷登録のプルダウンは、このマスタの内容で決まります。"
                "ロケーションは**3階層**（第一階層＝エリア／第二階層＝棚・列／第三階層＝段）で、"
                "作業者は上から順に選びます。**NEに登録されるのは最下層の値**"
@@ -332,16 +354,26 @@ with st.expander("🗂 資材ナンバー・ロケーションマスタ（プル
                "**編集したら「💾 保存」を押してください**（保存前でもこの画面のプルダウンには反映されます）。"
                "**頻度**: 新しい棚・資材が増えたときだけ。"
                "※ロケ不要棚「FAST」（受発注品）は第一階層に自動で常時表示されます（ここに登録不要）。")
-    if st.session_state.get("recv_master_seeded"):
+    if _recv_m_err:
+        st.error("Driveのマスタを読めませんでした。いま表示しているのは初期値です"
+                 "（このまま保存すると正本を上書きしてしまうため、保存を止めています）。"
+                 f"ページを再読み込みしてください。エラー: {_recv_m_err}")
+    elif st.session_state.get("recv_master_seeded"):
         st.info("初期値をセットしました（資材ナンバー19種・ロケーション一覧）。"
                 "内容を確認して「💾 保存」でDriveに確定してください。")
+    if _recv_m_flash:
+        st.success(_recv_m_flash)
     mcol, lcol = st.columns([1, 3])
+    # 表に渡すのは常に「保存済みの内容」。編集後の値を渡すと data_editor の編集差分
+    # （追加行・削除行のindex）が二重適用・ずれを起こす。
     mat_edit = mcol.data_editor(
-        pd.DataFrame({"資材ナンバー": material_opts}), key="recv_mat_editor",
+        pd.DataFrame({"資材ナンバー": recv_m["materials"]}),
+        key=f"recv_mat_editor_{_recv_m_nonce}",
         num_rows="dynamic", hide_index=True, use_container_width=True,
         column_config={"資材ナンバー": st.column_config.TextColumn("資材ナンバー", required=True)})
     loc_edit = lcol.data_editor(
-        recv_master.locations_to_df(loc_rows), key="recv_loc_editor",
+        recv_master.locations_to_df(recv_m["locations"]),
+        key=f"recv_loc_editor_{_recv_m_nonce}",
         num_rows="dynamic", hide_index=True, use_container_width=True, height=320,
         column_config={
             "第一階層": st.column_config.TextColumn("第一階層（エリア）", required=True),
@@ -351,18 +383,26 @@ with st.expander("🗂 資材ナンバー・ロケーションマスタ（プル
     _new_mats = recv_master._norm_list(mat_edit["資材ナンバー"].tolist())
     _new_locs = recv_master.norm_locations(
         loc_edit[recv_master.LOC_COLUMNS].itertuples(index=False, name=None))
-    # 編集内容は保存前でも即プルダウンに反映（この描画内で使う変数を更新）
-    st.session_state["recv_master"] = {"materials": _new_mats, "locations": _new_locs}
+    # 編集内容は保存前でも即プルダウンに反映（保存済みの正本とは別のキーに持つ）
+    st.session_state["recv_master_edit"] = {"materials": _new_mats, "locations": _new_locs}
     material_opts, loc_rows = _new_mats, _new_locs
     _dirty = (_new_mats != recv_m["materials"] or _new_locs != recv_m["locations"]
               or st.session_state.get("recv_master_seeded"))
+    if _dirty and not _recv_m_err:
+        st.warning("未保存の変更があります。「💾 保存（Driveに確定）」を押すまで、"
+                   "この画面を閉じると元に戻ります。")
     if st.button("💾 保存（Driveに確定）", key="recv_master_save", type="primary",
-                 disabled=not _dirty):
+                 disabled=bool(_recv_m_err) or not _dirty):
         try:
-            recv_master.save(_new_mats, _new_locs, product_folder)
+            saved = recv_master.save(_new_mats, _new_locs, product_folder)
+            st.session_state["recv_master"] = saved            # 保存済み＝新しい基準
+            st.session_state.pop("recv_master_edit", None)
             st.session_state["recv_master_seeded"] = False
-            st.success(f"保存しました（資材ナンバー {len(_new_mats)}種・"
-                       f"ロケーション {len(_new_locs)}件）。")
+            # エディタの編集差分（追加行・削除行）を捨てて表を作り直す
+            st.session_state["recv_master_nonce"] = _recv_m_nonce + 1
+            st.session_state["recv_master_saved_msg"] = (
+                f"保存しました（資材ナンバー {len(saved['materials'])}種・"
+                f"ロケーション {len(saved['locations'])}件）。")
             st.rerun()
         except Exception as e:  # noqa: BLE001
             st.error(f"Driveへの保存に失敗しました: {e}")

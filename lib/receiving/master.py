@@ -128,16 +128,16 @@ def flat_options(rows):
 
 
 def load(folder_id):
-    """入荷登録マスタ {materials:[...], locations:[(l1,l2,l3)…]} を読む。無ければ空の構造。"""
-    try:
-        f = drive_master.find_file(MASTER_NAME, folder_id)
-        if f:
-            data = json.loads(drive_master.download_bytes(f["id"]).decode("utf-8"))
-            return {"materials": _norm_list(data.get("materials", [])),
-                    "locations": norm_locations(data.get("locations", []))}
-    except Exception:  # noqa: BLE001
-        pass
-    return {"materials": [], "locations": []}
+    """入荷登録マスタ {materials:[...], locations:[(l1,l2,l3)…]} を読む。
+    **まだ登録が無い（ファイルが無い）ときだけ空の構造を返す。**
+    Drive障害・破損JSONなどの読み取り失敗は例外のまま投げる＝呼び出し側で「未登録」と
+    区別できるようにする（失敗を空に丸めると、初期値でDriveの正本を上書きしてしまう）。"""
+    f = drive_master.find_file(MASTER_NAME, folder_id)
+    if not f:
+        return {"materials": [], "locations": []}
+    data = json.loads(drive_master.download_bytes(f["id"]).decode("utf-8"))
+    return {"materials": _norm_list(data.get("materials", [])),
+            "locations": norm_locations(data.get("locations", []))}
 
 
 def save(materials, locations, folder_id):

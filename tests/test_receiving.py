@@ -322,6 +322,30 @@ def test_bundled_locations():
     assert set(tree) == {"トイプー", "シュナ", "ポメ", "梱包室", "事務所", "TeamEC"}
 
 
+def test_receiving_master_load_distinguishes_missing_from_failure():
+    """「未登録で空」と「読めなくて空」を区別する（失敗を空に丸めると、
+    初期値でDriveの正本を上書きしてしまう）。"""
+    from lib.invoice import drive_master
+    from lib.receiving import master as rm
+
+    orig_find = drive_master.find_file
+    try:
+        drive_master.find_file = lambda name, folder_id: None       # 未登録
+        assert rm.load("folder") == {"materials": [], "locations": []}
+
+        def _boom(name, folder_id):
+            raise RuntimeError("Drive timeout")
+        drive_master.find_file = _boom                              # 読み取り失敗
+        try:
+            rm.load("folder")
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("読み取り失敗が空の結果に丸められている")
+    finally:
+        drive_master.find_file = orig_find
+
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in sorted(globals().items()):
