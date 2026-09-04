@@ -255,7 +255,12 @@ def main():
         f.write(blob)
     print("[out] " + os.path.join(out_dir, name), flush=True)
 
-    if not args.no_drive:
+    # 欠測があるCSVをDriveに置くと、後から見た人が完全なデータだと思ってしまう。
+    # 途中で落ちた分はArtifactとローカルにだけ残し、Driveは完走時のみ更新する。
+    if failed:
+        print("[warn] 取得できなかった年があるため、Driveには保存しません"
+              "（途中結果はArtifactにあります）。", flush=True)
+    elif not args.no_drive:
         try:
             from lib.invoice import drive_master
             from lib import master_store
