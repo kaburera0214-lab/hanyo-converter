@@ -1,0 +1,65 @@
+name: ne-sales-history
+
+# ネクストエンジンの受注から、過去の月次売上（店舗別）を集計して取り出す手動バッチ。
+# 会計データがEC/非ECで分かれていないため、EC単体の過去売上はここからしか出せない。
+#
+# 定期実行しない（過去分の棚卸し用）。必要なときに Run workflow で期間を指定して回す。
+#
+# concurrency group は auth-keepalive.yml と同じ "ne-keepalive"。
+# NEはトークンが再発行されると旧トークンが即失効するため、延命バッチと同時に走らせない。
+
+on:
+  workflow_dispatch:
+    inputs:
+      from:
+        description: "開始年月 (YYYY-MM)"
+        required: true
+        default: "2017-01"
+      to:
+        description: "終了年月 (YYYY-MM)"
+        required: true
+        default: "2019-12"
+      probe:
+        description: "項目の確認だけして終わる（API 1回・集計しない）"
+        type: boolean
+        default: false
+
+concurrency:
+  group: ne-keepalive
+  cancel-in-progress: false
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # auth-keepalive.yml と同じ依存。streamlitはシムで置換するため不要。
+      - run: pip install pandas requests google-api-python-client google-auth
+
+      - name: Export monthly sales from Next Engine
+        env:
+          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          NE_CLIENT_ID: ${{ secrets.NE_CLIENT_ID }}
+          NE_CLIENT_SECRET: ${{ secrets.NE_CLIENT_SECRET }}
+        run: |
+          python batch/ne_sales_history.py \
+            --from "${{ inputs.from }}" \
+            --to "${{ inputs.to }}" \
+            ${{ inputs.probe && '--probe' || '' }}
+
+      # 集計が落ちても、そこまでのCSVは持ち帰れるようにする
+      - name: Upload CSV
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ne-monthly-sales
+          path: output/ne_monthly_sales_*.csv
+          if-no-files-found: warn
