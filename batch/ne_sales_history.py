@@ -40,66 +40,38 @@ st_shim.install()                                      # libのimportより前�
 from lib.ne_api import client, usage                   # noqa: E402
 
 SEARCH_EP = "api_v1_receiveorder_base/search"
-INFO_EP = "api_v1_receiveorder_base/info"
 SHOP_EP = "api_v1_master_shop/search"
 
 CALL_BUDGET = 120        # このバッチ1回で使ってよいNE API呼び出しの上限（無料枠1000/月に対する保険）
-PAGE_LIMIT = 10000       # NE searchの1回あたり取得件数。弾かれたらFALLBACK_LIMITへ落とす
+PAGE_LIMIT = 10000       # NE searchの1回あたり取得件数（公式: 省略時10000）
 FALLBACK_LIMIT = 1000
 
-# NEの項目名は環境・バージョンで揺れるため、/info で実在を確かめてから使う。
-# 先に書いたものを優先し、無ければ次の候補へ。全滅した項目は「取れない」として明示する。
-CANDIDATES = {
-    "id":     ["receive_order_base_receive_order_id"],
-    "date":   ["receive_order_base_date"],
-    "total":  ["receive_order_base_total_amount"],
-    "goods":  ["receive_order_base_goods_amount"],
-    "shop":   ["receive_order_base_shop_id", "receive_order_base_shop_cut_form_id"],
-    "cancel": ["receive_order_base_cancel_type_id",
-               "receive_order_base_receive_order_cancel_type_id"],
-    "delete": ["receive_order_base_deleted_flag", "receive_order_base_delete_flag"],
+# 受注伝票のフィールド名（公式ドキュメント api_v1_receiveorder_base/search）。
+# 接頭辞は receive_order_ であって receive_order_base_ ではない。
+# 2026-09-04: receive_order_base_* で 004002「指定不可能」となり実行に失敗したため修正。
+# なお api_v1_receiveorder_base/info は存在しない（000001 存在しないパス）ので、
+# 項目の実在確認は --probe（limit=1の実検索）で行う。
+FIELDS = {
+    "id":     "receive_order_id",
+    "date":   "receive_order_date",              # 店舗側で受注した日
+    "total":  "receive_order_total_amount",      # 商品計+税+手数料+送料+他費用-ポイント
+    "goods":  "receive_order_goods_amount",      # 商品計
+    "shop":   "receive_order_shop_id",
+    "cancel": "receive_order_cancel_type_id",
+    "delete": "receive_order_deleted_flag",
 }
 
 
-def _collect_field_names(obj, out):
-    """/info のレスポンス構造は決め打ちできないので、再帰で項目名らしき文字列を拾う。"""
-    if isinstance(obj, dict):
-        for v in obj.values():
-            _collect_field_names(v, out)
-    elif isinstance(obj, list):
-        for v in obj:
-            _collect_field_names(v, out)
-    elif isinstance(obj, str) and obj.startswith("receive_order_base_"):
-        out.add(obj)
-
-
-def resolve_fields(calls):
-    """/info で使える項目を確定する。取れなければ第1候補で突っ込む（その旨を出す）。"""
-    try:
-        info = client.call(INFO_EP)
-        calls[0] += 1
-    except Exception as e:                                          # noqa: BLE001
-        print("[warn] {} が使えません（{}）。項目は第1候補で決め打ちします。".format(INFO_EP, e),
-              flush=True)
-        return {k: v[0] for k, v in CANDIDATES.items()}, set()
-
-    avail = set()
-    _collect_field_names(info, avail)
-    print("[info] 受注伝票で使える項目 {} 件".format(len(avail)), flush=True)
-    if not avail:                       # /info は通ったが構造が想定外＝判定できていない
-        print("[warn] /info から項目名を読み取れませんでした。第1候補で決め打ちします。", flush=True)
-        return {k: v[0] for k, v in CANDIDATES.items()}, set()
-
-    chosen, missing = {}, set()
-    for key, cands in CANDIDATES.items():
-        hit = next((c for c in cands if c in avail), None)
-        if hit:
-            chosen[key] = hit
-        else:
-            missing.add(key)
-            print("[warn] {} に使える項目がありません（候補: {}）".format(key, ", ".join(cands)),
-                  flush=True)
-    return chosen, missing
+def probe(fields, start, end, calls):
+    """limit=1で1件だけ引いて、実データのキーを出す（項目名の答え合わせ用）。"""
+    rows = fetch_range(fields, start, end, calls, limit=1, single_page=True)
+    if not rows:
+        print("[probe] この期間に受注が1件も返りませんでした。"
+              "APIは通っているので、期間かNE側のデータを確認してください。", flush=True)
+        return
+    print("[probe] 実データのキー一覧:", flush=True)
+    for k in sorted(rows[0]):
+        print("  - {} = {}".format(k, rows[0][k]), flush=True)
 
 
 def shop_names(calls):
@@ -114,7 +86,7 @@ def shop_names(calls):
             for r in res.get("data") or []}
 
 
-def fetch_range(fields, start, end, calls, limit=PAGE_LIMIT):
+def fetch_range(fields, start, end, calls, limit=PAGE_LIMIT, single_page=False):
     """[start, end] の受注を全件取る。件数上限で打ち切らない（古い分を捨てない）。"""
     date_field = fields["date"]
     rows, offset = [], 0
@@ -131,16 +103,22 @@ def fetch_range(fields, start, end, calls, limit=PAGE_LIMIT):
             res = client.call(SEARCH_EP, params)
             calls[0] += 1
         except client.NEError as e:
-            if limit > FALLBACK_LIMIT and "limit" in str(e).lower():
+            msg = str(e)
+            if offset == 0 and limit > FALLBACK_LIMIT and ("limit" in msg.lower() or "件数" in msg):
                 print("[warn] limit={} が拒否されたため {} で取り直します。".format(
                     limit, FALLBACK_LIMIT), flush=True)
-                return fetch_range(fields, start, end, calls, limit=FALLBACK_LIMIT)
+                return fetch_range(fields, start, end, calls,
+                                   limit=FALLBACK_LIMIT, single_page=single_page)
+            if "004002" in msg:         # フィールド名が違う。当て推量で握りつぶさず原因を出す
+                print("[error] 指定したフィールド名がNEに受け付けられませんでした。"
+                      "FIELDS の見直しが必要です → {}".format(
+                          json.dumps(fields, ensure_ascii=False)), file=sys.stderr, flush=True)
             raise
         data = res.get("data") or []
         rows.extend(data)
         print("[fetch] {}〜{} offset={} → {}件（累計{}）".format(
             start, end, offset, len(data), len(rows)), flush=True)
-        if len(data) < limit:
+        if single_page or len(data) < limit:
             return rows
         offset += limit
 
@@ -229,14 +207,12 @@ def main():
     p.add_argument("--no-drive", action="store_true", help="Driveへ保存しない（ログ出力のみ）")
     args = p.parse_args()
 
-    calls = [0]
-    fields, missing = resolve_fields(calls)
+    calls, fields, missing = [0], dict(FIELDS), set()
     print("[info] 使う項目: " + json.dumps(fields, ensure_ascii=False), flush=True)
-    if "date" not in fields or "total" not in fields:
-        print("[error] 受注日か金額の項目が特定できないため集計できません。", file=sys.stderr, flush=True)
-        return 1
+
     if args.probe:
-        print("[info] --probe のためここで終了します。", flush=True)
+        probe(fields, args.frm + "-01", _month_end(args.to).isoformat(), calls)
+        print("[info] --probe のためここで終了します（API {}回）。".format(calls[0]), flush=True)
         return 0
 
     names = shop_names(calls)
