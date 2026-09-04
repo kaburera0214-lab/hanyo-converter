@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pandas as pd  # noqa: E402
 
-from lib.pricing import calc, export as ex, masters, pipeline  # noqa: E402
+from lib.pricing import calc, export as ex, masters, pipeline, rakuten_price  # noqa: E402
 
 P = dict(calc.DEFAULT_PARAMS)
 
@@ -317,6 +317,161 @@ def test_overrides():
     rows = pipeline.build_price_rows(matched, "新下代", cost_table, P,
                                      overrides={"artc9999": 3300}, cur_prices=RK_PRICES)
     assert rows[0]["新販売価格"] == 3300 and rows[0]["適用ルール"] == "手修正"
+
+
+# ══ 楽天の商品管理番号の解決（2026-09-04 #1256） ═══════════════
+
+# 実物の構造。楽天の商品管理番号は maru0260 で、NEコードの頭 maru0542 は「商品番号」の方。
+# 価格は全SKU一律9,350円で、SKU側ではなく商品側に入っている。
+_MARU_ITEMS = {
+    "maru0260": {
+        "manageNumber": "maru0260",
+        "itemNumber": "maru0542",
+        "standardPrice": 9350,
+        "variants": {
+            "4650": {"merchantDefinedSkuId": "maru0542-01"},
+            "4652": {"merchantDefinedSkuId": "maru0542-03"},
+            "4653": {"merchantDefinedSkuId": "maru0542-04"},
+            "4655": {"merchantDefinedSkuId": "maru0542-06"},
+            "6712": {"merchantDefinedSkuId": "maru0542-09"},
+        },
+    },
+}
+
+
+def _rms_stub(items, searchable=True):
+    """RMS Item API 2.0 のスタブ。items={商品管理番号: 商品dict}。
+    searchable=False は商品検索APIが使えない店舗（403）を再現する。
+    返り値: (get関数, 呼び出しログ)"""
+    from lib.event import rms_api
+    calls = []
+
+    def _get(path, params=None):
+        params = dict(params or {})
+        calls.append((path, params))
+        if path == rakuten_price.ITEM_SEARCH_PATH:
+            if not searchable:
+                raise rms_api.RMSError("RMS APIエラー HTTP 403: item.search は利用できません")
+            hits = []
+            for mn, item in items.items():
+                variants = item.get("variants") or {}
+                if params.get("itemNumber") and \
+                        str(params["itemNumber"]) == str(item.get("itemNumber", "")):
+                    hits.append(mn)
+                if params.get("merchantDefinedSkuId") and \
+                        any(v.get("merchantDefinedSkuId") == params["merchantDefinedSkuId"]
+                            for v in variants.values()):
+                    hits.append(mn)
+            return {"numFound": len(hits),
+                    "results": [{"item": {"manageNumber": mn}} for mn in dict.fromkeys(hits)]}
+        mn = path.rsplit("/", 1)[-1]
+        if mn not in items:
+            raise rms_api.RMSError("RMS APIエラー HTTP 404: item not found")
+        return {"item": items[mn]}
+
+    return _get, calls
+
+
+def _with_rms(get, fn):
+    """rms_api.get / is_configured を差し替えて fn() を実行する。"""
+    from lib.event import rms_api
+    orig_get, orig_cfg = rms_api.get, rms_api.is_configured
+    rms_api.get, rms_api.is_configured = get, (lambda: True)
+    try:
+        return fn()
+    finally:
+        rms_api.get, rms_api.is_configured = orig_get, orig_cfg
+
+
+def test_fetch_for_codes_resolves_manage_number_by_search():
+    """2026-09-04の実障害(#1256): 楽天の商品管理番号(maru0260)がNEコード(maru0542-xx)から
+    導けず、RMSに登録済み・システム連携用SKU番号もあるのに「楽天未登録」として
+    価格改定の対象から落ちていた。商品検索APIで管理番号まで辿り着けること。"""
+    get, calls = _rms_stub(_MARU_ITEMS)
+    codes = ["maru0542-06", "maru0542-04", "maru0542-03", "maru0542-01", "maru0542-09"]
+    info, errors, warnings = _with_rms(
+        get, lambda: rakuten_price.fetch_for_codes(codes, {}))
+
+    assert errors == {} and warnings == []
+    assert rakuten_price.to_prices(info) == {c: 9350 for c in codes}   # 商品単位の一律価格
+    table = rakuten_price.to_sku_table(info)
+    assert table["maru0542-06"] == ("maru0260", "4655", "maru0542-06")
+    assert table["maru0542-09"] == ("maru0260", "6712", "maru0542-09")
+    # 5コードでも商品の取得は1回だけ（1件解決したら残りは取得済みvariantsで照合する）
+    assert len([p for p, _ in calls if p.endswith("manage-numbers/maru0260")]) == 1
+
+
+def test_candidate_manage_numbers_uses_sibling_code():
+    """兄弟コードが対応表にあれば、コードから導けない管理番号でも候補に出る（API呼び出し前）"""
+    table = {"maru0542-02": ("maru0260", "4651", "maru0542-02")}
+    cands = rakuten_price.candidate_manage_numbers("maru0542-06", table)
+    assert cands[0] == "maru0260"
+    assert "maru0542" in cands                     # 従来の推定も候補として残す
+    # 別商品の管理番号は混ぜない
+    assert rakuten_price.candidate_manage_numbers("kei0001-01", table) == \
+        ["kei0001", "kei0001-01"]
+
+
+def test_fetch_for_codes_uses_saved_sku_table_without_search():
+    """一度解決すれば対応表に載るので、次回からは検索なしで当たる"""
+    get, calls = _rms_stub(_MARU_ITEMS)
+    table = {"maru0542-01": ("maru0260", "4650", "maru0542-01")}
+    info, errors, _ = _with_rms(
+        get, lambda: rakuten_price.fetch_for_codes(["maru0542-06"], table))
+    assert errors == {} and info["maru0542-06"]["parent"] == "maru0260"
+    assert not [p for p, _ in calls if p == rakuten_price.ITEM_SEARCH_PATH]
+
+
+def test_fetch_for_codes_distinguishes_unverifiable_from_missing():
+    """「楽天に無い」と「こちらが確かめられていない」を同じ文言にしない。
+    同じにすると、登録済みの商品が黙って改定対象から外れる（#1256の再発防止）。"""
+    get, _ = _rms_stub(_MARU_ITEMS, searchable=False)
+    info, errors, warnings = _with_rms(
+        get, lambda: rakuten_price.fetch_for_codes(["maru0542-06"], {}))
+    assert info == {}
+    assert "確認できません" in errors["maru0542-06"]      # 「見つかりません」で終わらせない
+    assert warnings and "商品検索API" in warnings[0]
+
+    # 検索が使える環境で本当に無いコードは、はっきり「見つかりません」と言い切る
+    get, _ = _rms_stub(_MARU_ITEMS)
+    info, errors, warnings = _with_rms(
+        get, lambda: rakuten_price.fetch_for_codes(["zzzz9999-01"], {}))
+    assert info == {} and warnings == []
+    assert "見つかりません" in errors["zzzz9999-01"]
+
+
+def test_fetch_for_codes_reports_sku_mismatch_separately():
+    """商品はあるがSKUが一致しない場合は、未登録ではなくSKU番号の問題として出す"""
+    get, _ = _rms_stub(_MARU_ITEMS)
+    info, errors, _ = _with_rms(
+        get, lambda: rakuten_price.fetch_for_codes(["maru0260-99"], {}))
+    assert info == {}
+    assert "一致するSKUがありません" in errors["maru0260-99"]
+
+
+def test_match_variants_falls_back_to_item_price():
+    """価格を全SKU一律で持つ商品はSKU側に価格が入らないことがある（maru0542は9,350円で一律）"""
+    variants = {"4655": {"merchantDefinedSkuId": "maru0542-06"}}
+    out = rakuten_price.match_variants(["maru0542-06"], "maru0260", variants, 9350)
+    assert out["maru0542-06"]["price"] == 9350
+    # SKU側に価格があればそちらが優先
+    variants["4655"]["standardPrice"] = 8800
+    out = rakuten_price.match_variants(["maru0542-06"], "maru0260", variants, 9350)
+    assert out["maru0542-06"]["price"] == 8800
+    # どちらにも無ければ None のまま（0円に丸めない）
+    out = rakuten_price.match_variants(["kei0018"], "kei0018", {"kei0018": {}})
+    assert out["kei0018"]["price"] is None
+
+
+def test_fetch_for_codes_reports_missing_price_separately():
+    """SKUは見つかったのに価格だけ取れない場合を「未登録」に混ぜない"""
+    items = {"kei0018": {"manageNumber": "kei0018", "variants": {"kei0018": {}}}}
+    get, _ = _rms_stub(items)
+    info, errors, _ = _with_rms(
+        get, lambda: rakuten_price.fetch_for_codes(["kei0018"], {}))
+    assert info["kei0018"]["sku"] == "kei0018" and info["kei0018"]["price"] is None
+    assert "販売価格を取得できませんでした" in errors["kei0018"]
+    assert rakuten_price.to_prices(info) == {}          # 計算には使わせない
 
 
 if __name__ == "__main__":

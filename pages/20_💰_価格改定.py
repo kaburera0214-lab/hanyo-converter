@@ -369,12 +369,11 @@ def rakuten_price_controls(matched, key):
         st.session_state.setdefault("pricing_rk_attempted", set()).update(
             str(c).lower() for c in codes)
         st.session_state["pricing_sku_table"].update(rakuten_price.to_sku_table(info))
+        # 直後の st.rerun() でこの場の描画は消えるため、結果は session_state に持ち越す
+        # （以前はここで st.warning していたので、取れなかった理由が誰にも見えていなかった）
+        st.session_state["pricing_rk_warnings"] = list(warnings)
+        st.session_state["pricing_rk_errors"] = dict(errors)
         _save_sku_table()
-        for w in warnings:
-            st.warning(w)
-        if errors:
-            st.warning(f"取得できなかった商品 {len(errors)}件: "
-                       + ", ".join(list(errors)[:10]) + (" …" if len(errors) > 10 else ""))
         st.rerun()
     if not rakuten_price.is_configured():
         c2.caption("⚠️ RMSキー（RMS_SERVICE_SECRET / RMS_LICENSE_KEY）未設定のため取得できません。"
@@ -382,7 +381,32 @@ def rakuten_price_controls(matched, key):
     else:
         c2.caption(f"楽天価格 取得済み {have}/{len(codes)}件。"
                    "**現販売価格は楽天から取得したものだけを使います**（未取得の商品は計算不可）。")
+    _show_rakuten_fetch_result(codes)
     return cache
+
+
+def rakuten_fetch_errors():
+    """直前の📡取得で取れなかった商品と、その理由 {商品コード小文字: 理由}。"""
+    return st.session_state.get("pricing_rk_errors") or {}
+
+
+def _show_rakuten_fetch_result(codes):
+    """📡取得の結果（警告・取れなかった理由）を出す。
+
+    理由を1行に丸めない。「楽天に無い」と「こちらが確かめられていない」を同じ見た目に
+    すると、RMSに登録済みの商品が黙って価格改定の対象から外れる（2026-09-04 #1256）。"""
+    for w in st.session_state.get("pricing_rk_warnings") or []:
+        st.warning(w)
+    target = {str(c).lower() for c in codes}
+    errors = {k: v for k, v in rakuten_fetch_errors().items() if k in target}
+    if not errors:
+        return
+    st.warning(f"⚠️ 楽天価格を取得できなかった商品が {len(errors)}件 あります。"
+               "理由を確認してください（このままだと価格改定の対象から外れます）。")
+    with st.expander(f"取得できなかった理由を見る（{len(errors)}件）", expanded=True):
+        st.dataframe(pd.DataFrame([{"商品コード": c, "理由": r}
+                                   for c, r in sorted(errors.items())]),
+                     use_container_width=True, hide_index=True)
 
 
 def _drop_blank_rows(df):
@@ -403,26 +427,33 @@ def show_unmatched(unmatched):
 
 
 def exclude_not_on_rakuten(matched, cur_prices, in_df_price_col=None):
-    """📡取得を試みても楽天から価格が取れなかった商品＝楽天に未登録の可能性が高いので
-    価格変更の対象から除外する。除外した商品は別枠で一覧表示する。"""
+    """📡取得を試みても楽天から価格が取れなかった商品を価格変更の対象から除外する。
+    除外した商品は理由付きで一覧表示する。
+
+    「取れなかった＝楽天未登録」と言い切らないこと。楽天に登録済みでも、商品管理番号が
+    商品コードから導けないなどの理由でこちらが見つけられていない場合がある
+    （2026-09-04 #1256: maru0542-xx の管理番号は maru0260 だった）。"""
     attempted = st.session_state.get("pricing_rk_attempted") or set()
     if not attempted:
         return matched
+    reasons = rakuten_fetch_errors()
     target, excluded = [], []
     for r, info in matched:
         code = info["商品コード"].lower()
         has_csv_price = (in_df_price_col is not None
                          and calc.to_number(r[in_df_price_col]) is not None)
         if code in attempted and code not in cur_prices and not has_csv_price:
-            excluded.append({"商品コード": info["商品コード"], "商品名": info.get("商品名", "")})
+            excluded.append({"商品コード": info["商品コード"], "商品名": info.get("商品名", ""),
+                             "理由": reasons.get(code, "楽天から現在価格を取得できませんでした")})
         else:
             target.append((r, info))
     if excluded:
-        st.warning(f"🛑 楽天から現在価格を取得できなかった {len(excluded)}件 は"
-                   "**楽天に登録されていない可能性が高いため、価格変更の対象から除外**しました"
-                   "（CSVにも含まれません）。誤判定と思われる場合は📡「楽天から現在価格を取得」を"
-                   "もう一度押すと再判定されます。")
-        with st.expander(f"対象外にした商品を見る（{len(excluded)}件）", expanded=False):
+        st.warning(f"🛑 楽天から現在価格を取得できなかった {len(excluded)}件 を"
+                   "**価格変更の対象から除外**しました（CSVにも含まれません）。"
+                   "**楽天未登録とは限りません**。理由を確認し、RMSに登録があるのに"
+                   "除外されている場合は商品管理番号・システム連携用SKU番号を確認してください。"
+                   "📡「楽天から現在価格を取得」をもう一度押すと再判定されます。")
+        with st.expander(f"対象外にした商品と理由を見る（{len(excluded)}件）", expanded=True):
             st.dataframe(pd.DataFrame(excluded), use_container_width=True, hide_index=True)
     return target
 
