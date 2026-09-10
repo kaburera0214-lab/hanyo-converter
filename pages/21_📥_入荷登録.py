@@ -326,12 +326,17 @@ with st.expander("🟡 Yahoo配送グループ 反映確認待ち（通常は操
                     else:
                         _judge = "反映済み" if str(_cur).strip() == _want else "未反映"
                         _shown = _cur or "（未設定）"
+                    # カテゴリはアップロードが弾かれる主因（U-001-0363）なので一緒に出す。
+                    # 「空」と「値はあるが無効なID」は原因も対処も違い、値を見ないと分からない。
+                    _cat = _info.get("product_category")
                     _rows.append({
                         "code": _r["code"],
                         "便種": _bin,
                         "あるべきNo": _want or "（未設定）",
                         "Yahooの現在値": _shown,
                         "判定": _judge,
+                        "プロダクトカテゴリ": ("（読めず）" if _cat is None
+                                              else (_cat or "（未設定）")),
                         "メッセージ": _info.get("message", ""),
                     })
                 st.session_state["yq_dv_verify_rows"] = _rows
