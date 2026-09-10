@@ -70,6 +70,12 @@ def get_item(code):
                        params={"seller_id": seller, "item_code": code}, timeout=TIMEOUT)
     if res.status_code in (401, 403):
         raise client.YahooAuthError(f"Yahoo APIの認証に失敗しました（HTTP {res.status_code}）。")
+    if res.status_code == 400:
+        # getItem で可変なのは item_code だけなので、400は実質「そのコードの商品が無い」。
+        # 2026-09-10 nssk0098 で確認（ストアの商品検索でも該当なし）。
+        # 本文はそのまま残す（丸めた結果、別の原因を見落とさないため）。
+        raise YahooItemNotFound(
+            f"Yahooにこの商品が登録されていません（getItem HTTP 400）: {res.text[:500]}")
     if res.status_code >= 400:
         raise client.YahooError(f"Yahoo商品参照に失敗しました（HTTP {res.status_code}）: {res.text[:500]}")
     try:

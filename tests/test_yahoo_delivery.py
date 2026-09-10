@@ -84,3 +84,30 @@ def test_upload_csv_shape():
     csv = ydv.upload_csv([{"code": "kawa1370", "便種": "宅配便", "no": "1", "現在No": "2"}])
     lines = csv.decode("cp932").splitlines()
     assert lines[0] == "code,postage-set" and lines[1] == "kawa1370,1"
+
+
+def test_not_found_is_reported_as_unregistered(monkeypatch):
+    """getItem の HTTP 400 は「Yahoo未登録」として扱う（2026-09-10 nssk0098 で確認）。
+
+    「読めなかった」に丸めると、登録しない限り解消しないものを反映待ちとして
+    抱え続けることになる。
+    """
+    import requests
+
+    from lib.yahoo_api import category_repair, client
+
+    class _Res:
+        status_code = 400
+        text = '<?xml version="1.0" encoding="UTF-8" ?><Error><Message>Bad Request</Message></Error>'
+
+    monkeypatch.setattr(client, "access_token", lambda: "dummy")
+    monkeypatch.setattr(client, "seller_id", lambda: "seller")
+    monkeypatch.setattr(category_repair, "_rate_limit", lambda _k: None)
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _Res())
+
+    try:
+        category_repair.get_item("nssk0098")
+        raise AssertionError("例外にならなかった")
+    except category_repair.YahooItemNotFound as e:
+        assert "登録されていません" in str(e)
+        assert "Bad Request" in str(e)      # 応答本文は丸めずに残す

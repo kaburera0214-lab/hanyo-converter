@@ -277,11 +277,18 @@ def _yahoo_delivery(task, results, failed, on_step):
             return
         if on_step:
             on_step("⑥ Yahoo: 反映予約API(reservePublish)を呼び出し中…")
-        perr = yitems.reserve_publish()
+        try:
+            perr = yitems.reserve_publish()
+        except Exception as e:  # noqa: BLE001
+            # ここで外のexceptに落とすと「送信は成功したのか」が結果表から読めなくなる
+            # （対象がキュー全体の件数になり、失敗の場所も分からない）。送信済みは明示する。
+            perr = [f"HTTPエラー: {e}"]
         if perr:
             results.append({
                 "ステップ": STEP_YAHOO_DELIVERY, "対象": f"{len(plan.to_update)}件（{shown}）",
-                "状態": "失敗", "メッセージ": "送信OKだが反映予約に失敗: " + "／".join(perr[:5])})
+                "状態": "失敗",
+                "メッセージ": "**アップロードは成功しています**が、反映予約(reservePublish)に"
+                             "失敗しました。店頭反映が保留のままです: " + "／".join(perr[:5])})
             failed["yahoo_delivery"] = dict(task, rows=plan.to_update)
             return
         results.append({

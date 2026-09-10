@@ -338,6 +338,12 @@ with st.expander("🟡 Yahoo配送グループ 反映確認待ち（通常は操
         _vrows = st.session_state.get("yq_dv_verify_rows")
         if _vrows:
             st.dataframe(pd.DataFrame(_vrows), use_container_width=True, hide_index=True)
+            _vmsg = [r for r in _vrows if r.get("メッセージ")]
+            if _vmsg:
+                with st.expander("参照できなかった理由（全文）", expanded=False):
+                    for _r in _vmsg:
+                        st.markdown(f"**{_r['code']}**")
+                        st.code(str(_r["メッセージ"]))
             _left = [r for r in _vrows if r["判定"] != "反映済み"]
             if _left:
                 st.warning(f"⚠️ {len(_left)}件がまだ反映されていません"
@@ -372,6 +378,13 @@ with st.expander("🟡 Yahoo配送グループ 反映確認待ち（通常は操
         if _srows:
             st.markdown("**送信結果**")
             st.dataframe(pd.DataFrame(_srows), use_container_width=True, hide_index=True)
+            # 表はメッセージが切れる。原因の特定にはYahooの応答本文が要るので全文を出す。
+            _sfail = [r for r in _srows if r.get("状態") == "失敗"]
+            if _sfail:
+                with st.expander("❌ 失敗の詳細（メッセージ全文）", expanded=True):
+                    for _r in _sfail:
+                        st.markdown(f"**{_r.get('対象')}**")
+                        st.code(str(_r.get("メッセージ", "")))
             st.caption("反映は非同期です。実際に反映されたかは毎朝の点検（または上の🔍）で"
                        "確認し、確認できた分がこの一覧から消えます。")
 
