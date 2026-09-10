@@ -223,3 +223,26 @@ def test_response_is_decoded_as_utf8_not_latin1():
         content = "反映またはアップロード中のため更新ができません。".encode("utf-8")
 
     assert client.decode(_Res()) == "反映またはアップロード中のため更新ができません。"
+
+
+def test_category_zero_counts_as_unset():
+    """Yahooは未設定を "0" で返す。空文字だけを見ると補完が起動しない。
+
+    2026-09-10: この取りこぼしで artc4168 の補完が一度も走らず、
+    U-001-0363 のまま反映されない状態が続いた。
+    """
+    assert ydv.has_category("13457") is True
+    for unset in ("0", "", "   ", None, "abc"):
+        assert ydv.has_category(unset) is False, unset
+
+    to_update = [{"code": "artc4168", "便種": "メール便", "no": "2",
+                  "現在No": "1", "カテゴリ": "0"}]
+    assert ydv.needs_category(to_update) == ["artc4168"]
+
+
+def test_force_category_ignores_existing_value():
+    """廃止済みIDが入っている商品は、既存値を無視して推定し直せること。"""
+    to_update = [{"code": "artc4168", "便種": "メール便", "no": "2",
+                  "現在No": "1", "カテゴリ": "99999"}]
+    assert ydv.needs_category(to_update) == []
+    assert ydv.needs_category(to_update, force=True) == ["artc4168"]

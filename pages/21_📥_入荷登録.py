@@ -361,6 +361,11 @@ with st.expander("🟡 Yahoo配送グループ 反映確認待ち（通常は操
         # 反映されなかったぶんの再送。⑥と同じ判定・同じAPIを通すので、
         # 「すでに同じ便種（＝触ってはいけない）」はここでも自動的に対象外になり、
         # 控えからも外れる（旧仕様で積まれた行の片付けも兼ねる）。
+        _force_cat = st.checkbox(
+            "プロダクトカテゴリを推定し直して送る（既存値を無視）", key="yq_dv_forcecat",
+            help="Yahooの画面で「プロダクトカテゴリが存在しません」と出るのに、"
+                 "現在値には数字が入っている場合に使います。廃止されたカテゴリIDが"
+                 "残っていると、値があるので自動補完が働きません。")
         if st.button("▶️ 未反映を今すぐ送信（項目指定アップロード）", key="yq_dv_resend",
                      type="primary", disabled=not yahoo_client.api_enabled()):
             _rows = [{"code": str(r["code"]).strip(),
@@ -370,7 +375,7 @@ with st.expander("🟡 Yahoo配送グループ 反映確認待ち（通常は操
                 _rs, _ = runner.execute({"yahoo_delivery": {
                     "rows": _rows, "group_no": _ygn,
                     "group_bins": _settings.get(mall_routes.YAHOO_GROUP_BINS_KEY) or {},
-                    "folder": product_folder}})
+                    "folder": product_folder, "force_category": _force_cat}})
             # 画面に出しっぱなしにすると、次に別のボタンを押した再実行で消える。
             # 送信という「やり直しの効かない操作」の結果は必ず残す。
             st.session_state["yq_dv_send_rows"] = _rs or [

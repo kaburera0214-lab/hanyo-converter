@@ -268,12 +268,13 @@ def _yahoo_delivery(task, results, failed, on_step):
         # プロダクトカテゴリ未設定の商品は、配送グループだけ送っても
         # U-001-0363 で行ごと弾かれる。価格改定と同じ推定を使って一緒に埋める。
         categories, cat_failures, cat_detail = {}, {}, {}
-        _need = ydv.needs_category(plan.to_update)
+        _need = ydv.needs_category(plan.to_update, force=bool(task.get("force_category")))
         if _need:
             from lib.yahoo_api import category_repair as ycat
             if on_step:
                 on_step("⑥ Yahoo: プロダクトカテゴリを推定中…")
-            cat_detail, cat_failures = ycat.plan_categories(_need)
+            cat_detail, cat_failures = ycat.plan_categories(
+                _need, ignore_existing=bool(task.get("force_category")))
             categories = {code: detail["category_id"] for code, detail in cat_detail.items()}
         for code, reason in cat_failures.items():
             results.append({
@@ -336,11 +337,9 @@ def _yahoo_delivery(task, results, failed, on_step):
                              "失敗しました。店頭反映が保留のままです: " + "／".join(perr[:5])})
             failed["yahoo_delivery"] = dict(task, rows=plan.to_update)
             return
-        message = ("送信＋反映予約 完了（反映は非同期です。実際に反映されたかは"
-                   "日次の点検でgetItemを読んで確認します）")
-        results.append({
-            "ステップ": STEP_YAHOO_DELIVERY, "対象": f"{len(sent)}件（{shown}）",
-            "状態": "成功", "メッセージ": message})
+        # 送りっぱなしにしない。ここで読み直して、反映されたかを結果に書く。
+        # 「送った」で終わらせると、本当に反映されたかを人が別途確かめる往復が要る。
+        _verify_delivery(yitems, plan.to_update, sent, task, results, on_step)
     except Exception as e:  # noqa: BLE001（認可切れ等もここで拾う）
         results.append({"ステップ": STEP_YAHOO_DELIVERY, "対象": target, "状態": "失敗",
                         "メッセージ": str(e)})
@@ -373,3 +372,57 @@ def _resolve_delivery(folder, codes):
         yq.resolve_delivery(codes, folder)
     except Exception:  # noqa: BLE001
         pass
+
+
+def _verify_delivery(yitems, to_update, sent, task, results, on_step, attempts=3, wait_seconds=6):
+    """送った内容がYahooに入ったかを読み直して確かめ、結果に書く。
+
+    反映は非同期なので数秒待って読み直す。それでも入っていなければ、
+    現在の配送グループNoとプロダクトカテゴリをそのまま出す（推測しない）。
+    弾かれる原因はほぼカテゴリなので、値が見えれば次の一手が決まる。
+    """
+    import time
+
+    want = {r["code"]: r["no"] for r in to_update if r["code"] in set(sent)}
+    if not want:
+        return
+    current = {}
+    for attempt in range(1, attempts + 1):
+        if on_step:
+            on_step(f"⑥ Yahoo: 反映を確認中…（{attempt}/{attempts}）")
+        current = yitems.get_item_status(list(want))
+        done = [c for c, no in want.items()
+                if (current.get(c) or {}).get("state") == yitems.STATE_OK
+                and str((current.get(c) or {}).get("postage_set") or "").strip() == no]
+        if len(done) == len(want):
+            _resolve_delivery(task.get("folder"), done)
+            results.append({
+                "ステップ": STEP_YAHOO_DELIVERY, "対象": f"{len(done)}件（{'、'.join(done)}）",
+                "状態": "成功", "メッセージ": "送信・反映まで確認しました（getItemで読み直して一致）。"})
+            return
+        if attempt < attempts:
+            time.sleep(wait_seconds)
+
+    done, pending = [], []
+    for code, no in want.items():
+        info = current.get(code) or {}
+        cur = str(info.get("postage_set") or "").strip()
+        if info.get("state") == yitems.STATE_OK and cur == no:
+            done.append(code)
+        else:
+            cat = info.get("product_category")
+            pending.append(f"{code}: 現在No.{cur or '未設定'}（あるべきNo.{no}）"
+                           f"／プロダクトカテゴリ={cat if cat not in (None, '') else '未設定'}")
+    if done:
+        _resolve_delivery(task.get("folder"), done)
+        results.append({
+            "ステップ": STEP_YAHOO_DELIVERY, "対象": f"{len(done)}件（{'、'.join(done)}）",
+            "状態": "成功", "メッセージ": "送信・反映まで確認しました。"})
+    if pending:
+        results.append({
+            "ステップ": STEP_YAHOO_DELIVERY, "対象": f"{len(pending)}件",
+            "状態": "失敗",
+            "メッセージ": "アップロードは受け付けられましたが、"
+                         f"{wait_seconds * attempts}秒待っても反映されていません。"
+                         "プロダクトカテゴリが0や無効なIDだと、行ごと弾かれます"
+                         "（U-001-0363）。現在値: " + "／".join(pending[:10])})

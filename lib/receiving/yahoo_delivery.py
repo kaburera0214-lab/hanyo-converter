@@ -81,14 +81,32 @@ def classify(rows, current, group_no, group_bins):
     return plan
 
 
-def needs_category(to_update):
+def has_category(value):
+    """プロダクトカテゴリが設定済みか。
+
+    **Yahooは未設定を "0" で返す。**空文字だけを未設定とみなすと、0の商品を
+    「設定済み」と判断して補完が起動しない（2026-09-10 artc4168 で発生）。
+    価格改定側（lib/yahoo_api/items.py）と同じく数値で判定すること。
+    """
+    try:
+        return int(str(value).strip() or 0) > 0
+    except ValueError:
+        return False
+
+
+def needs_category(to_update, force=False):
     """プロダクトカテゴリが未設定で、このままでは弾かれる商品コード。
 
     カテゴリが無い商品は、配送グループだけのCSVを送っても
     U-001-0363「プロダクトカテゴリが存在しません」で行ごと落ちる
     （2026-09-09 artc4168 で確認）。
+
+    force=True は「値は入っているがYahoo側に存在しないカテゴリID」の救済用。
+    getItemからは有効性が分からないので、人が選んだときだけ既存値を無視する。
     """
-    return [r["code"] for r in to_update if not str(r.get("カテゴリ") or "").strip()]
+    if force:
+        return [r["code"] for r in to_update]
+    return [r["code"] for r in to_update if not has_category(r.get("カテゴリ"))]
 
 
 def upload_batches(to_update, categories=None):

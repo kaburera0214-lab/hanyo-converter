@@ -178,10 +178,14 @@ def _nearest_store_category(item, max_distance=3):
                        f"（商品名類似度 {score:.2f}）")}
 
 
-def infer_product_category(code):
-    """JANを優先し、無ければYahoo類似商品名からカテゴリを推定する。"""
+def infer_product_category(code, ignore_existing=False):
+    """JANを優先し、無ければYahoo類似商品名からカテゴリを推定する。
+
+    ignore_existing=True は「値は入っているがYahoo側に存在しないカテゴリID」の
+    救済用。getItemからは有効性が分からないので、既定では既存値を尊重する。
+    """
     item = get_item(code)
-    existing = int(item.get("product_category") or 0)
+    existing = 0 if ignore_existing else int(item.get("product_category") or 0)
     if existing > 0:
         return {**item, "category_id": existing, "category_name": "",
                 "source": "Yahoo既存値", "candidate_name": "", "score": 1.0,
@@ -215,12 +219,12 @@ def infer_product_category(code):
             "score": round(float(score), 4), "reason": reason}
 
 
-def plan_categories(codes, on_progress=None):
+def plan_categories(codes, on_progress=None, ignore_existing=False):
     plans, failures = {}, {}
     unique = list(dict.fromkeys(str(c).strip().lower() for c in codes if str(c).strip()))
     for index, code in enumerate(unique, start=1):
         try:
-            plans[code] = infer_product_category(code)
+            plans[code] = infer_product_category(code, ignore_existing=ignore_existing)
         except Exception as e:  # noqa: BLE001
             failures[code] = str(e)
         if on_progress:
