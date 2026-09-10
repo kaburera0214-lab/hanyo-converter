@@ -97,3 +97,24 @@ def test_page_docstring_matches_runner_steps():
         assert number in docstring, f"docstringにステップ{number}の説明が無い: {step}"
         head = name.split("（")[0].split("　")[0]
         assert head in docstring, f"docstringのステップ{number}の説明が実装と違う: {step}"
+
+
+def test_seed_yahoo_group_no_fills_only_missing():
+    """配送グループNoは自動投入するが、保存済みの値は絶対に上書きしない。
+
+    現場に手入力させると打ち間違いがそのまま送料設定になるので自動で入れる。
+    一方、店舗側でグループを組み替えて画面から直した値をアプリが戻すと、
+    直したはずが元に戻るという最悪の壊れ方をするので、既存値には触らない。
+    """
+    empty = {}
+    assert mall_routes.seed_yahoo_group_no(empty) == {"yahoo_group_takuhai": "1",
+                                                      "yahoo_group_mail": "2"}
+    assert empty["yahoo_group_takuhai"] == "1" and empty["yahoo_group_mail"] == "2"
+
+    edited = {"yahoo_group_takuhai": "6", "yahoo_group_mail": "5"}
+    assert mall_routes.seed_yahoo_group_no(edited) == {}
+    assert edited == {"yahoo_group_takuhai": "6", "yahoo_group_mail": "5"}
+
+    partial = {"yahoo_group_takuhai": "3"}
+    assert mall_routes.seed_yahoo_group_no(partial) == {"yahoo_group_mail": "2"}
+    assert partial["yahoo_group_takuhai"] == "3"

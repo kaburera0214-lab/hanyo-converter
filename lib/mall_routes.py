@@ -110,6 +110,27 @@ ROUTES = [
 
 _BY_KEY = {r.key: r for r in ROUTES}
 
+# 便種 → Yahoo配送グループNo（2026-09-09にユーザー確定。上の Route のコメント参照）。
+# 現場に手入力させると打ち間違いがそのまま送料設定になるので、未設定のときだけ
+# アプリが自動で保存する（保存済みの値は上書きしない＝画面から変更できる）。
+YAHOO_GROUP_NO_DEFAULT = {"宅配便": "1", "メール便": "2"}
+# Drive の pricing_settings.json 上のキー名
+YAHOO_GROUP_SETTING_KEY = {"宅配便": "yahoo_group_takuhai", "メール便": "yahoo_group_mail"}
+
+
+def seed_yahoo_group_no(settings):
+    """settings に配送グループNoが無ければ確定値を入れる。入れたキーのdictを返す。
+
+    既にある値は絶対に上書きしない（店舗側でグループ番号を組み替えたときに、
+    画面で直した値をアプリが勝手に戻してしまうのを防ぐ）。
+    """
+    seeded = {}
+    for bin_name, key in YAHOO_GROUP_SETTING_KEY.items():
+        if not str(settings.get(key, "")).strip():
+            seeded[key] = YAHOO_GROUP_NO_DEFAULT[bin_name]
+    settings.update(seeded)
+    return seeded
+
 
 def get(mall, field):
     return _BY_KEY[(mall, field)]

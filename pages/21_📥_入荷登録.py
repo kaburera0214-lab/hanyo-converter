@@ -99,11 +99,22 @@ if "pricing_settings" not in st.session_state:
 _settings = st.session_state["pricing_settings"]
 
 
-def _yahoo_group_no():
-    """便種 → Yahooの配送グループNo（店舗ごとの設定値）。未設定は空文字のまま返す。
+# 配送グループNoは現場に手入力させない（打ち間違いがそのまま送料設定になる）。
+# 未設定のときだけ確定値を入れてDriveへ保存する。st.rerun()は呼ばない
+# （保存に失敗し続けたときに再実行ループへ入らないようにするため）。
+_seeded = mall_routes.seed_yahoo_group_no(_settings)
+if _seeded:
+    try:
+        masters.save_settings(_settings, product_folder)
+    except Exception as _e:  # noqa: BLE001
+        st.warning(f"配送グループNoの初期設定をDriveに保存できませんでした（この画面では有効）: {_e}")
 
-    空文字を既定値で埋めないこと。間違ったNoでアップすると、エラーにならずに
-    送料設定だけが静かに変わる。
+
+def _yahoo_group_no():
+    """便種 → Yahooの配送グループNo（Driveの設定値）。未設定は空文字のまま返す。
+
+    空文字を推測値で埋めないこと。間違ったNoでアップすると、エラーにならずに
+    送料設定だけが静かに変わる（初期値の投入は上の seed_yahoo_group_no だけが行う）。
     """
     return {"宅配便": str(_settings.get("yahoo_group_takuhai", "")).strip(),
             "メール便": str(_settings.get("yahoo_group_mail", "")).strip()}
@@ -236,9 +247,11 @@ with st.expander("🟡 Yahoo配送グループ待機キュー（管理者がま�
             st.rerun()
         except Exception as e:  # noqa: BLE001
             st.warning(f"Drive保存に失敗（この画面では有効）: {e}")
-    st.caption("NoはストアクリエイターPro「ストア構築 → 配送設定 → 配送グループ」の"
-               "**No列（1〜20の数字）**です。CSVにはこのNoを書きます"
-               "（`NT`・`メール便`などの名前を書くとアップロードが弾かれます）。")
+    st.caption("**通常は触らなくて構いません**（2026-09-09に確定した値を自動で入れてあります）。"
+               "NoはストアクリエイターPro「ストア構築 → カート設定 → 配送グループ設定」の"
+               "**No列（1〜20の数字）**で、CSVにはこのNoを書きます"
+               "（`NT`・`メール便`などの名前を書くとアップロードが弾かれます）。"
+               "店舗側で配送グループを組み替えたときだけ、ここを直してください。")
 
     _yd = yq.load_delivery(product_folder)
     st.markdown(f"**配送グループの反映待ち: {len(_yd)}件**")
