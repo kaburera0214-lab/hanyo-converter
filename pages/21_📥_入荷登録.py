@@ -34,6 +34,20 @@ import datetime as _dt
 import os as _os
 _build = _dt.datetime.fromtimestamp(_os.path.getmtime(__file__)).strftime("%Y-%m-%d %H:%M")
 from lib import mall_routes   # 反映経路の正本（案内文はここから作る）
+
+# Streamlit Cloud は再デプロイで pages/ を読み直しても、すでに import 済みの lib/ を
+# 載せ替えないことがある。2026-09-10 に実際に発生し、ページは新しいのに
+# lib.mall_routes が古いままで AttributeError（原因が伏字になって現場に伝わらない）。
+# 版ズレは「Rebootしてください」と読める形で止める。
+_STALE = [_n for _n in ("YAHOO_GROUP_BINS_KEY", "YAHOO_GROUP_NO_DEFAULT",
+                        "seed_yahoo_group_no")
+          if not hasattr(mall_routes, _n)]
+if _STALE:
+    st.error("⚠️ アプリの更新が中途半端な状態です（画面は新しいのに内部モジュールが古いまま）。"
+             "**右上の「Manage app」→「Reboot app」で再起動してください。**"
+             f"　（読み込めない項目: {'、'.join(_STALE)}）")
+    st.stop()
+
 st.caption("JANをスキャン → 資材・ロケーション・配送サイズを選んで「🚀 更新を実行」。"
            + mall_routes.summary_line()
            + f"　（app更新: {_build}）")
