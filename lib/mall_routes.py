@@ -76,36 +76,25 @@ ROUTES = [
           api_symbol="lib.yahoo_api.items:update_prices_checked",
           checked="2026-09-09"),
 
-    # ここだけが手動。2026-09-09にYahooの公開仕様で再確認済み。
-    #   - updateItems の更新可能項目に postage_set は無い（価格・表示のみ）
-    #   - editItem には postage_set があるが「省略した項目はデフォルト値で上書き」される
-    #     仕様のため、配送グループだけの部分更新には使えない
-    # CSVの形は 2026-09-09 の実アップロードで確定した（それまで未検証だった）。
-    # 見出し「配送グループ管理番号」／値 NT・NM は U-004-0020
-    # 「フィールド名に誤りがあるか、フィールド名が未設定の項目があります」で弾かれる。
-    # 正しくは半角フィールド名 postage-set ＋ 配送グループの「No」（1〜20の数字）。
-    # Noは店舗ごとの設定なので、入荷登録の⚙️で保存した値を使う。
+    # 2026-09-10: 手動CSV → API へ変更。
+    # updateItems には配送グループの項目が無く、editItem は省略項目をデフォルト値で
+    # 上書きするため使えない——ここまでは正しかったが、**uploadItemFile（商品アップロード
+    # API）の type=4「項目指定」** を見落としていた。これは画面の
+    # 「商品データアップロード → アップロードタイプ＝項目指定」と同じもので、
+    # CSVに書いた列だけを更新する。つまり画面でできることはAPIでもできる。
     #
-    # 2026-09-09にユーザー確定した対応（ストア構築→カート設定→配送グループ設定）:
-    #   宅配便 → No.1「デフォルト設定」（配送方法: 宅配便（NT））
-    #   メール便 → No.2「メール便（NM）」（配送方法: メール便（NM））
-    # キューに入っている内部値 NT/NM は、この画面の配送方法名から取られたもの。
+    # CSVの形（2026-09-09に実アップロードで確定）: 半角フィールド名 code, postage-set。
+    # 値は配送グループの「No」。見出しを日本語にしたり NT/NM のような名前を書くと
+    # U-004-0020「フィールド名に誤りがあるか…」で全件弾かれる。
     #
-    # ⚠️ 既知の制約: この店舗には宅配便のグループが3つ（No.1 NT / No.3 YT / No.6 TF）、
-    # メール便が2つ（No.2 NM / No.5 YM）あり、キャリア・契約が分かれている可能性が高い。
-    # いまの実装は便種だけを見て一律にNo.1/No.2を書くので、**YT・TF・YMのグループで
-    # 運用している商品がサイズ変更されると、便種と一緒にキャリアも変わる**。
-    # 変えたくない場合は、getItemで現在のNoを読んでから同じ系統内で切り替える実装が要る
-    # （読む口は lib.yahoo_api.items:get_postage_sets として用意済み）。
+    # 反映は非同期（uploadItemFileは受付まで／reservePublishで反映予約）。
+    # 「送った」を「反映された」とみなさず、getItemで読み直して確認する。
     Route("Yahoo", "delivery_group", "配送グループ",
-          CSV, "待機キューに貯めて、ストアクリエイターProへ『項目指定』でアップします"
-               "（CSVは `code, postage-set` の2列。値は配送グループのNo）。",
-          why="updateItemsに配送グループの項目が無く、editItemは省略項目を"
-              "デフォルト値で上書きしてしまうため",
-          forbidden_symbols=("lib.yahoo_api.items:update_delivery_groups",
-                             "lib.yahoo_api.items:update_postage_set"),
-          checked="2026-09-09",
-          source="https://developer.yahoo.co.jp/webapi/shopping/updateItems.html"),
+          API, "uploadItemFile（項目指定）で自動更新し、reservePublishで反映予約します"
+               "（反映は非同期なので、getItemで読み直して確認します）。",
+          api_symbol="lib.yahoo_api.item_upload:upload_field_specified",
+          checked="2026-09-10",
+          source="https://developer.yahoo.co.jp/webapi/shopping/uploadItemFile.html"),
 ]
 
 _BY_KEY = {r.key: r for r in ROUTES}
@@ -116,6 +105,15 @@ _BY_KEY = {r.key: r for r in ROUTES}
 YAHOO_GROUP_NO_DEFAULT = {"宅配便": "1", "メール便": "2"}
 # Drive の pricing_settings.json 上のキー名
 YAHOO_GROUP_SETTING_KEY = {"宅配便": "yahoo_group_takuhai", "メール便": "yahoo_group_mail"}
+
+# 配送グループNo → 便種（2026-09-09 ストアクリエイターProの配送グループ設定より）。
+#   1 デフォルト設定（宅配便NT） / 3 宅配便(YT) / 4 予約用（宅配便・予約商品） / 6 宅配便(TF)
+#   2 メール便(NM) / 5 メール便(YM)
+# 「いま宅配便のグループにいる商品を、宅配便へ変えようとしている」＝変更不要、の判定に使う。
+# 表に無いNoは推測せず「要確認」にする（勝手にキャリアを変えないため）。
+YAHOO_GROUP_BINS_DEFAULT = {"1": "宅配便", "2": "メール便", "3": "宅配便",
+                            "4": "宅配便", "5": "メール便", "6": "宅配便"}
+YAHOO_GROUP_BINS_KEY = "yahoo_group_bins"
 
 
 def seed_yahoo_group_no(settings):
@@ -128,6 +126,8 @@ def seed_yahoo_group_no(settings):
     for bin_name, key in YAHOO_GROUP_SETTING_KEY.items():
         if not str(settings.get(key, "")).strip():
             seeded[key] = YAHOO_GROUP_NO_DEFAULT[bin_name]
+    if not settings.get(YAHOO_GROUP_BINS_KEY):
+        seeded[YAHOO_GROUP_BINS_KEY] = dict(YAHOO_GROUP_BINS_DEFAULT)
     settings.update(seeded)
     return seeded
 

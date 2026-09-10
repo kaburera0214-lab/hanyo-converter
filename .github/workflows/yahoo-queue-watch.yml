@@ -23,13 +23,17 @@ jobs:
       # libの依存のみ（streamlitはシムで置換するため不要）
       - run: pip install pandas requests google-api-python-client google-auth
 
-      # 滞留していたら非ゼロ終了 → このジョブが失敗 → 稼働監視ダッシュボードが赤になる。
-      # 「失敗＝Yahooの配送グループが人手待ちのまま放置されている」の意味。
-      - name: Watch Yahoo delivery-group queue
+      # getItemで反映を確認し、確認できた分はキューから外す。残ったまま3日を超えたら
+      # 非ゼロ終了 → このジョブが失敗 → 稼働監視ダッシュボードが赤になる。
+      # 「失敗＝Yahooへ反映されないまま放置されている」の意味（処理エラーではない）。
+      - name: Verify Yahoo delivery-group reflection
         env:
           GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          YAHOO_CLIENT_ID: ${{ secrets.YAHOO_CLIENT_ID }}
+          YAHOO_CLIENT_SECRET: ${{ secrets.YAHOO_CLIENT_SECRET }}
+          YAHOO_SELLER_ID: ${{ secrets.YAHOO_SELLER_ID }}
           CHATWORK_API_TOKEN: ${{ secrets.CHATWORK_API_TOKEN }}
           APP_URL: ${{ secrets.APP_URL }}
         run: python batch/yahoo_queue_watch.py

@@ -12,6 +12,8 @@ tasks（page 21 が組み立てる）:
   ne_price:         [{syohin_code, baika_tnk}]           … NE一括更新②（価格再設定行のみ）
   rakuten_delivery: [{商品管理番号, 旧便種, 新便種, group_id}] … 配送方法セットPATCH
   rakuten_price:    [{商品管理番号, sku_prices, 対象コード}]    … 価格PATCH
+  yahoo_delivery:   {"rows": [{code, 便種}], "group_no": {便種: No},
+                     "group_bins": {No: 便種}}                … 配送グループ（項目指定アップロード）
 
 返り値: (results, failed)
   results: [{ステップ, 対象, 状態(成功/失敗/スキップ), メッセージ}]
@@ -27,6 +29,7 @@ STEP_NE_PRICE = "② NE売価（価格再設定）"
 STEP_RAKUTEN_DELIVERY = "③ 楽天 配送方法セット"
 STEP_RAKUTEN_PRICE = "④ 楽天 販売価格"
 STEP_YAHOO_PRICE = "⑤ Yahoo 販売価格"
+STEP_YAHOO_DELIVERY = "⑥ Yahoo 配送グループ"
 
 
 def _ne_batch(step, rows, results, failed, key, on_step):
@@ -142,6 +145,7 @@ def execute(tasks, on_step=None):
         describe=lambda p: f"{p['商品管理番号']}（{'、'.join(p['対象コード'])}）")
 
     _yahoo_prices(tasks.get("yahoo_price") or {}, results, failed, on_step)
+    _yahoo_delivery(tasks.get("yahoo_delivery") or {}, results, failed, on_step)
 
     return results, failed
 
@@ -206,3 +210,100 @@ def has_auth_error(results):
     """結果に認証切れ（要再認可）が含まれるか（NE/RMSどちらか）。"""
     return any("認証" in str(r.get("メッセージ", "")) or "認可" in str(r.get("メッセージ", ""))
                for r in results if r.get("状態") == "失敗")
+
+
+def _yahoo_delivery(task, results, failed, on_step):
+    """Yahoo配送グループを uploadItemFile（項目指定）で更新する。
+
+    送る前に getItem で現在のグループを読み、**本当に変える必要があるものだけ**に絞る。
+    便種が既に合っている商品（別キャリアのグループにいるだけ）は触らない。
+    反映は非同期なので、成功＝「送信と反映予約まで完了」であり反映確認ではない
+    （確認は batch/yahoo_queue_watch.py が日次で getItem を読んで行う）。
+    """
+    rows = (task or {}).get("rows") or []
+    if not rows:
+        return
+    target = f"{len(rows)}件"
+    try:
+        from lib.yahoo_api import client as yclient, item_upload, items as yitems
+        from lib.receiving import yahoo_delivery as ydv
+
+        if on_step:
+            on_step("⑥ Yahoo: 現在の配送グループを確認中…")
+        yclient.access_token()            # 期限切れ間近なら自動リフレッシュ
+        current = yitems.get_postage_sets([r["code"] for r in rows])
+        plan = ydv.classify(rows, current, task.get("group_no"), task.get("group_bins"))
+
+        if plan.already:
+            shown = "、".join(f"{r['code']}(No.{r['現在No']})" for r in plan.already[:10])
+            results.append({
+                "ステップ": STEP_YAHOO_DELIVERY, "対象": f"{len(plan.already)}件（{shown}）",
+                "状態": "スキップ",
+                "メッセージ": "Yahoo側はすでにこの便種の配送グループです。"
+                             "キャリアを勝手に変えないため対象外にしました。"})
+        if plan.not_found:
+            shown = "、".join(r["code"] for r in plan.not_found[:10])
+            results.append({
+                "ステップ": STEP_YAHOO_DELIVERY, "対象": f"{len(plan.not_found)}件（{shown}）",
+                "状態": "失敗",
+                "メッセージ": "Yahooにこの商品が登録されていません。"
+                             "商品を登録するまで配送グループは反映できません"
+                             "（待っても解消しないので、ここで報告しています）。"})
+        for r in plan.unknown:
+            results.append({
+                "ステップ": STEP_YAHOO_DELIVERY, "対象": r["code"], "状態": "失敗",
+                "メッセージ": r["理由"] + "（推測で書き換えず、対象外にしました）"})
+
+        # 送る前にキューへ積む（＝反映確認待ちの控え）。ここで落ちても控えは残る。
+        # 反映が確認できた行は日次点検(batch/yahoo_queue_watch.py)が外していく。
+        # 「対象外（すでに同じ便種）」は積まない。積むと永久に一致せず赤のままになる。
+        _enqueue_delivery(task.get("folder"), plan)
+
+        if not plan.to_update:
+            return
+        shown = "、".join(f"{r['code']}→No.{r['no']}" for r in plan.to_update[:10])
+        if on_step:
+            on_step("⑥ Yahoo: 商品アップロードAPI(項目指定)を呼び出し中…")
+        ok, errs = item_upload.upload_field_specified(ydv.upload_csv(plan.to_update),
+                                                      filename="yahoo_delivery.csv")
+        if not ok:
+            results.append({
+                "ステップ": STEP_YAHOO_DELIVERY, "対象": f"{len(plan.to_update)}件（{shown}）",
+                "状態": "失敗", "メッセージ": "／".join(errs[:5])})
+            failed["yahoo_delivery"] = dict(task, rows=plan.to_update)
+            return
+        if on_step:
+            on_step("⑥ Yahoo: 反映予約API(reservePublish)を呼び出し中…")
+        perr = yitems.reserve_publish()
+        if perr:
+            results.append({
+                "ステップ": STEP_YAHOO_DELIVERY, "対象": f"{len(plan.to_update)}件（{shown}）",
+                "状態": "失敗", "メッセージ": "送信OKだが反映予約に失敗: " + "／".join(perr[:5])})
+            failed["yahoo_delivery"] = dict(task, rows=plan.to_update)
+            return
+        results.append({
+            "ステップ": STEP_YAHOO_DELIVERY, "対象": f"{len(plan.to_update)}件（{shown}）",
+            "状態": "成功",
+            "メッセージ": "送信＋反映予約 完了（反映は非同期です。実際に反映されたかは"
+                         "日次の点検でgetItemを読んで確認します）"})
+    except Exception as e:  # noqa: BLE001（認可切れ等もここで拾う）
+        results.append({"ステップ": STEP_YAHOO_DELIVERY, "対象": target, "状態": "失敗",
+                        "メッセージ": str(e)})
+        failed["yahoo_delivery"] = task
+
+
+def _enqueue_delivery(folder, plan):
+    """反映確認待ちの控えをDriveのキューへ積む（失敗しても本処理は止めない）。"""
+    if not folder:
+        return
+    try:
+        from lib.pricing import export as ex
+        from lib.receiving import yahoo_queue as yq
+
+        rows = [{"code": r["code"],
+                 yq.DELIVERY_VALUE_COLUMN: ex.YAHOO_DELIVERY_VALUE.get(r["便種"], r["便種"])}
+                for r in (plan.to_update + plan.not_found + plan.unknown)]
+        if rows:
+            yq.append_delivery(rows, folder)
+    except Exception:  # noqa: BLE001
+        pass

@@ -28,6 +28,7 @@ DELIVERY_PENDING = "yahoo_pending_delivery.csv"
 # Yahooへアップするときのフィールド名は別物＝ex.YAHOO_DELIVERY_FIELD）。
 DELIVERY_VALUE_COLUMN = "配送グループ管理番号"
 ARCHIVE_FOLDER = "Yahoo反映済み"
+CRLF = "\r\n"         # YahooのCSVはCRLF
 _ENCODING = "cp932"   # Yahooストアクリエイターは Shift-JIS 系
 # キューCSVの読込は毎rerunで発生する（表示用のexpander内）。この秒数はセッションに
 # キャッシュしてDrive往復を省く（体感速度向上）。書き込み(_save)時はキャッシュ破棄で整合。
@@ -147,6 +148,34 @@ def clear_prices(folder_id):
 def clear_delivery(folder_id):
     return _clear(DELIVERY_PENDING, ["code", DELIVERY_VALUE_COLUMN, "追加日時"],
                   "yahoo_delivery", folder_id)
+
+
+def resolve_delivery(codes, folder_id):
+    """反映が確認できたコードだけをキューから外す（内容はアーカイブへ退避）。
+
+    キュー全体を空にする clear_delivery と違い、**確認できたものだけ**を消す。
+    まとめて空にすると、反映されていない行まで「済んだこと」になってしまう。
+    """
+    codes = {str(c).strip().lower() for c in codes if str(c).strip()}
+    if not codes:
+        return 0
+    cur = _load(DELIVERY_PENDING, folder_id, use_cache=False)
+    if cur.empty or "code" not in cur.columns:
+        return 0
+    hit = cur["code"].astype(str).str.strip().str.lower().isin(codes)
+    if not hit.any():
+        return 0
+    arch_id = drive_master.get_or_create_folder(ARCHIVE_FOLDER, folder_id)
+    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    data = cur[hit].to_csv(index=False, lineterminator=CRLF).encode(_ENCODING, errors="replace")
+    drive_master.upload_bytes(data, f"yahoo_delivery_reflected_{stamp}.csv", arch_id, "text/csv")
+    _save(cur[~hit], DELIVERY_PENDING, folder_id)
+    return int(hit.sum())
+
+
+def expected_no(df_row, group_no):
+    """キューの1行から「あるべき配送グループNo」を求める。分からなければ空文字。"""
+    return str((group_no or {}).get(bin_of(df_row[DELIVERY_VALUE_COLUMN]), "")).strip()
 
 
 def upload_csv_bytes(df, value_col):

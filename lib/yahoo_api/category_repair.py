@@ -56,6 +56,10 @@ def _xml_messages(text):
     return messages
 
 
+class YahooItemNotFound(client.YahooError):
+    """Yahooにその商品コードが存在しない（＝通信失敗とは別物）。"""
+
+
 def get_item(code):
     """商品参照APIからカテゴリ推定に必要な現在情報だけを返す。"""
     seller = client.seller_id()
@@ -74,7 +78,10 @@ def get_item(code):
         raise client.YahooError(f"Yahoo商品参照XMLを解釈できません: {e}") from e
     result = next((el for el in root.iter() if _strip_ns(el.tag) == "Result"), None)
     if result is None:
-        raise client.YahooError(f"Yahooに商品 {code} が見つかりません。")
+        # 「Yahooに商品が無い」と「通信・認証で読めなかった」は意味が違う。
+        # 呼び出し側が区別できるよう専用の例外にする（丸めると、未登録の商品を
+        # いつまでも反映待ちとして抱え続けることになる）。
+        raise YahooItemNotFound(f"Yahooに商品 {code} が見つかりません。")
     values = {}
     for el in result.iter():
         key = _strip_ns(el.tag)

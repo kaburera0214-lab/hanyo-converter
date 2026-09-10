@@ -294,12 +294,16 @@ def get_stock(codes):
     return text, results, errors
 
 
-def get_postage_sets(codes):
-    """{商品コード: 配送グループ管理番号} を商品参照API(getItem)で読む（更新はしない）。
+# 商品参照の結果の種類。「読めなかった」を「未登録」や「一致」に丸めないための区別。
+STATE_OK = "ok"                    # 読めた（value に配送グループNo。未設定なら空文字）
+STATE_NOT_FOUND = "not_found"      # Yahooにその商品が無い（登録しない限り永久に反映できない）
+STATE_ERROR = "error"              # 通信・認証などで読めなかった（実際の状態は不明）
 
-    アップしたCSVが本当に効いたかを確かめるための**確認専用**。参照できなかった
-    コードは値を None にする。「読めなかった」を「一致していない」や「反映済み」に
-    丸めないこと（丸めると、確認しているつもりで何も見ていない状態になる）。
+
+def get_postage_sets(codes):
+    """{商品コード: {"state", "value", "message"}} を商品参照API(getItem)で読む。
+
+    更新はしない**確認専用**。3つの状態を必ず区別する（0件・不明を正常に丸めない）。
     """
     out = {}
     for code in codes:
@@ -307,7 +311,10 @@ def get_postage_sets(codes):
         if not code:
             continue
         try:
-            out[code] = (category_repair.get_item(code).get("postage_set") or "").strip()
-        except client.YahooError:
-            out[code] = None
+            value = (category_repair.get_item(code).get("postage_set") or "").strip()
+            out[code] = {"state": STATE_OK, "value": value, "message": ""}
+        except category_repair.YahooItemNotFound as e:
+            out[code] = {"state": STATE_NOT_FOUND, "value": None, "message": str(e)}
+        except client.YahooError as e:
+            out[code] = {"state": STATE_ERROR, "value": None, "message": str(e)}
     return out

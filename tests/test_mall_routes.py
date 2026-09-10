@@ -90,7 +90,7 @@ def test_page_docstring_matches_runner_steps():
     """
     docstring = io.open(PAGE, encoding="utf-8").read().split('"""')[1]
     steps = [runner.STEP_NE_MAIN, runner.STEP_NE_PRICE, runner.STEP_RAKUTEN_DELIVERY,
-             runner.STEP_RAKUTEN_PRICE, runner.STEP_YAHOO_PRICE]
+             runner.STEP_RAKUTEN_PRICE, runner.STEP_YAHOO_PRICE, runner.STEP_YAHOO_DELIVERY]
     for step in steps:
         number = step[0]                    # ①〜⑤
         name = step[1:].strip()
@@ -107,14 +107,68 @@ def test_seed_yahoo_group_no_fills_only_missing():
     直したはずが元に戻るという最悪の壊れ方をするので、既存値には触らない。
     """
     empty = {}
-    assert mall_routes.seed_yahoo_group_no(empty) == {"yahoo_group_takuhai": "1",
-                                                      "yahoo_group_mail": "2"}
+    seeded = mall_routes.seed_yahoo_group_no(empty)
+    assert seeded["yahoo_group_takuhai"] == "1" and seeded["yahoo_group_mail"] == "2"
+    assert seeded["yahoo_group_bins"]["3"] == "宅配便"     # No→便種の対応表も入る
     assert empty["yahoo_group_takuhai"] == "1" and empty["yahoo_group_mail"] == "2"
 
-    edited = {"yahoo_group_takuhai": "6", "yahoo_group_mail": "5"}
+    edited = {"yahoo_group_takuhai": "6", "yahoo_group_mail": "5",
+              "yahoo_group_bins": {"6": "宅配便"}}
     assert mall_routes.seed_yahoo_group_no(edited) == {}
-    assert edited == {"yahoo_group_takuhai": "6", "yahoo_group_mail": "5"}
+    assert edited["yahoo_group_takuhai"] == "6" and edited["yahoo_group_bins"] == {"6": "宅配便"}
 
-    partial = {"yahoo_group_takuhai": "3"}
+    partial = {"yahoo_group_takuhai": "3", "yahoo_group_bins": {"3": "宅配便"}}
     assert mall_routes.seed_yahoo_group_no(partial) == {"yahoo_group_mail": "2"}
     assert partial["yahoo_group_takuhai"] == "3"
+
+
+# ══ 使ってはいけないAPI ══════════════════════════════════════
+
+FORBIDDEN_YAHOO_APIS = {
+    "editItem": "省略した項目をデフォルト値で上書きする（商品名・価格・カテゴリ・"
+                "説明文などが初期値に戻る）。部分更新には絶対に使わない。",
+    "uploadItemFile type=2": "「上書き（全入れ替え）」＝ストアの商品を全消去して"
+                             "CSVと入れ替える。絶対に使わない。",
+}
+
+
+def test_edit_item_api_is_never_called():
+    """editItem を呼ぶコードが1行も無いこと（2026-09-10 ユーザー決定・恒久禁止）。
+
+    配送グループのようにAPIで部分更新したくなったときの誘惑がここにある。
+    editItemは「商品登録API」という名前で部分更新に見えるが、送らなかった項目を
+    デフォルト値で上書きするので、1回呼ぶだけで商品が壊れる。
+    項目指定で更新したいときは uploadItemFile(type=4) を使う。
+    """
+    import pathlib
+
+    root = pathlib.Path(ROOT)
+    hits = []
+    globs = ["lib/**/*.py", "pages/*.py", "batch/*.py", "tools/*.py"]
+    for pattern in globs:
+        for path in root.glob(pattern):
+            for lineno, line in enumerate(
+                    path.read_text(encoding="utf-8").splitlines(), 1):
+                if "editItem" not in line:
+                    continue
+                if line.lstrip().startswith("#") or "🚫" in line:
+                    continue          # 禁止理由を書いたコメントは可
+                hits.append(f"{path.relative_to(root)}:{lineno}: {line.strip()}")
+    assert not hits, (
+        "editItem を使っているコードがあります。禁止です（"
+        + FORBIDDEN_YAHOO_APIS["editItem"] + "）: " + " / ".join(hits))
+
+
+def test_upload_type_is_field_specified_only():
+    """商品アップロードAPIに渡す type が「項目指定」だけであること。
+
+    type=2（上書き）はストアの商品を全消去して入れ替える。事故ると店が消える。
+    """
+    from lib.yahoo_api import item_upload
+
+    assert item_upload.TYPE_FIELD_SPECIFIED == 4
+    source = io.open(os.path.join(ROOT, "lib", "yahoo_api", "item_upload.py"),
+                     encoding="utf-8").read()
+    body = source.split('"""', 2)[2]
+    assert '"type": str(TYPE_FIELD_SPECIFIED)' in body, \
+        "typeは定数TYPE_FIELD_SPECIFIED（=4 項目指定）以外を渡さないこと"
