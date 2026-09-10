@@ -292,3 +292,22 @@ def get_stock(codes):
         if row:
             results.append(row)
     return text, results, errors
+
+
+def get_postage_sets(codes):
+    """{商品コード: 配送グループ管理番号} を商品参照API(getItem)で読む（更新はしない）。
+
+    アップしたCSVが本当に効いたかを確かめるための**確認専用**。参照できなかった
+    コードは値を None にする。「読めなかった」を「一致していない」や「反映済み」に
+    丸めないこと（丸めると、確認しているつもりで何も見ていない状態になる）。
+    """
+    out = {}
+    for code in codes:
+        code = str(code).strip()
+        if not code:
+            continue
+        try:
+            out[code] = (category_repair.get_item(code).get("postage_set") or "").strip()
+        except client.YahooError:
+            out[code] = None
+    return out

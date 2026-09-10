@@ -174,7 +174,7 @@ def price_tasks(plan, code_info, sku_table):
     return [groups[k] for k in order], missing
 
 
-def evidence_files(plan, dv_rows, code_info, sku_table):
+def evidence_files(plan, dv_rows, code_info, sku_table, yahoo_group_no=None):
     """証跡CSV一式 {ファイル名: bytes}（Drive「価格改定履歴」へ保存する用）。
     形式は価格改定と同じ export.py を流用し、手動アップにも使える内容にする。"""
     from lib.ne_api import goods
@@ -185,7 +185,12 @@ def evidence_files(plan, dv_rows, code_info, sku_table):
     files["ne_location_update.csv"] = goods.build_csv(main_rows).encode("cp932", errors="replace")
     if dv_rows:
         files["rakuten_delivery_update.csv"] = ex.rakuten_delivery_csv(dv_rows)
-        files["yahoo_delivery_update.csv"] = ex.yahoo_delivery_csv(dv_rows)
+        # Yahoo配送グループはNo（店舗設定）が要る。未設定なら証跡だけ落として
+        # 他の証跡は残す（証跡が1つ作れないせいで全部保存されないのを避ける）。
+        try:
+            files["yahoo_delivery_update.csv"] = ex.yahoo_delivery_csv(dv_rows, yahoo_group_no)
+        except ValueError:
+            pass
     ng = [r for r in plan if r.get("新販売価格")]
     if ng:
         mall = [{"商品コード": r["商品コード"], "楽天販売価格": r["新販売価格"],

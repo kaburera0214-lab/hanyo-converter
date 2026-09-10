@@ -152,14 +152,45 @@ def ne_csv(rows):
 
 
 # 梱包サイズ変更: 便種が変わったときのモール配送設定の修正（2026-07-17ユーザー確定）
+# 反映経路（APIか手動か）の正本は lib/mall_routes.py。ここは出力の形だけを持つ。
 RAKUTEN_DELIVERY_SET_NAME = {"宅配便": "宅配便のみ", "メール便": "メール便"}  # 楽天の配送方法セット名
-YAHOO_DELIVERY_COLUMN = "配送グループ管理番号"   # Yahoo側の項目名（実物に合わせて調整可）
+# Yahooの「項目指定」アップロードは、1行目に**半角のフィールド名**を書く。
+# 配送グループのフィールド名は postage-set、値は配送グループの「No」（1〜20の半角数字）。
+# 2026-09-09: 見出し「配送グループ管理番号」／値 NT・NM でアップして
+# U-004-0020「フィールド名に誤りがあるか、フィールド名が未設定の項目があります」で
+# 弾かれたため、この形に修正した（それまで一度もアップされておらず未検証だった）。
+# Noは店舗ごとの設定値なので定数にしない。入荷登録の⚙️で設定した値を group_no で渡す。
+YAHOO_CODE_FIELD = "code"
+YAHOO_DELIVERY_FIELD = "postage-set"
+# 待機キューに保存している内部表記（＝便種の略号）。CSVにはこの値ではなくNoを書く。
 YAHOO_DELIVERY_VALUE = {"宅配便": "NT", "メール便": "NM"}
+YAHOO_BIN_BY_VALUE = {v: k for k, v in YAHOO_DELIVERY_VALUE.items()}
+
+
+def yahoo_delivery_rows(rows, group_no):
+    """[{商品管理番号, 新便種}] → [{code, postage-set}]。
+
+    group_no は {"宅配便": "3", "メール便": "5"} のような配送グループNo。
+    未設定の便種があれば ValueError。**推測値で埋めない**（間違ったNoを入れると、
+    アップロードは成功したのに送料設定だけ静かに壊れる）。
+    """
+    out = []
+    for r in rows:
+        bin_name = r["新便種"]
+        no = str((group_no or {}).get(bin_name, "")).strip()
+        if not no:
+            raise ValueError(f"Yahooの配送グループNoが未設定です（{bin_name}）。"
+                             "入荷登録の⚙️で設定してください。")
+        out.append({YAHOO_CODE_FIELD: str(r["商品管理番号"]).lower(),
+                    YAHOO_DELIVERY_FIELD: no})
+    return out
 
 
 def rakuten_delivery_csv(rows):
-    """[{商品管理番号, 商品コード, 旧便種, 新便種}] → 楽天の配送方法セット修正リスト。
-    現状はRMS画面で手直しするための作業リスト（API自動化はフィールド特定後に対応予定）。"""
+    """[{商品管理番号, 商品コード, 旧便種, 新便種}] → 楽天の配送方法セット変更の証跡CSV。
+
+    楽天への反映自体は runner の「③ 楽天 配送方法セット」がRMS APIで行う。
+    このCSVは手作業リストではなく、何をどう変えたかをDriveに残すための証跡。"""
     df = pd.DataFrame([{
         "商品管理番号": r["商品管理番号"],
         "新しい配送方法セット": RAKUTEN_DELIVERY_SET_NAME.get(r["新便種"], r["新便種"]),
@@ -169,12 +200,10 @@ def rakuten_delivery_csv(rows):
     return _to_csv_bytes(df)
 
 
-def yahoo_delivery_csv(rows):
-    """[{商品管理番号, 新便種}] → Yahooの配送グループ管理番号 更新CSV（宅配便=NT／メール便=NM）。"""
-    df = pd.DataFrame([{
-        "code": str(r["商品管理番号"]).lower(),
-        YAHOO_DELIVERY_COLUMN: YAHOO_DELIVERY_VALUE.get(r["新便種"], r["新便種"]),
-    } for r in rows], columns=["code", YAHOO_DELIVERY_COLUMN])
+def yahoo_delivery_csv(rows, group_no):
+    """[{商品管理番号, 新便種}] → Yahoo「項目指定」アップロード用CSV（code, postage-set）。"""
+    df = pd.DataFrame(yahoo_delivery_rows(rows, group_no),
+                      columns=[YAHOO_CODE_FIELD, YAHOO_DELIVERY_FIELD])
     return _to_csv_bytes(df)
 
 

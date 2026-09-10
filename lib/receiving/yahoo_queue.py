@@ -1,13 +1,18 @@
 # -*- coding: utf-8 -*-
 """
-Yahoo反映待ちキュー（Yahoo APIが使えるようになるまでの手動アップ運用の効率化）。
+Yahoo反映待ちキュー（APIで反映できない項目を、人がまとめてアップするための待ち行列）。
 
-入荷登録で価格・配送グループが変わるたび、Drive上の1つのキューCSVに追記していく
-（同一コードは最新値で上書き）。管理者はまとめて1枚をダウンロードしてストアクリエイター
-Proへ1回アップし、「アップ済み」でキューを空にする（内容はアーカイブへ自動退避）。
+いま待機キューを使うのは**配送グループだけ**（理由と経路の正本は lib/mall_routes.py）。
+価格は2026-07-30からAPIで直接反映しているので、このキューには入らない。
 
-- yahoo_pending_prices.csv   … 価格（code, price）
-- yahoo_pending_delivery.csv … 配送グループ（code, 配送グループ管理番号）
+入荷登録で配送グループが変わるたびDrive上のキューCSVに追記し（同一コードは最新値で上書き）、
+管理者が1枚にまとめてストアクリエイターProへアップ → 「アップ済み」でキューを空にする
+（内容はアーカイブへ自動退避）。人が忘れると永久に反映されないので、滞留は
+batch/yahoo_queue_watch.py が毎日見張る。
+
+- yahoo_pending_delivery.csv … 配送グループ（code, 配送グループ管理番号, 追加日時）
+- yahoo_pending_prices.csv   … 価格。**2026-08-24に運用終了**。旧キューの復旧
+  （価格改定ページの管理者用expander）だけが読んでいる
 アーカイブは Drive の「Yahoo反映済み/」フォルダへ時刻付きで保存する。
 """
 import datetime
@@ -15,9 +20,13 @@ import datetime
 import pandas as pd
 
 from lib.invoice import csv_import, drive_master
+from lib.pricing import export as ex
 
 PRICE_PENDING = "yahoo_pending_prices.csv"
 DELIVERY_PENDING = "yahoo_pending_delivery.csv"
+# キューCSVの列名（Drive上の既存行がこの名前なので変えない。
+# Yahooへアップするときのフィールド名は別物＝ex.YAHOO_DELIVERY_FIELD）。
+DELIVERY_VALUE_COLUMN = "配送グループ管理番号"
 ARCHIVE_FOLDER = "Yahoo反映済み"
 _ENCODING = "cp932"   # Yahooストアクリエイターは Shift-JIS 系
 # キューCSVの読込は毎rerunで発生する（表示用のexpander内）。この秒数はセッションに
@@ -56,8 +65,27 @@ def _save(df, name, folder_id):
     st.session_state[_QUEUE_CK] = ck
 
 
+# 人がアップするまで反映されない経路なので、忘れられていないかを日数で見張る。
+# この日数を超えたら画面に赤を出し、batch/yahoo_queue_watch.py が稼働監視へ上げる。
+STALE_DAYS = 3
+
+
 def _now():
     return datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+
+
+def oldest_age_days(df):
+    """キューの中で最も古い「追加日時」から何日経ったか。判定できなければ None。
+
+    None（＝日時が読めない）を0日に丸めないこと。丸めると滞留していても
+    正常に見えてしまい、この見張り自体が意味を失う。
+    """
+    if df is None or len(df) == 0 or "追加日時" not in getattr(df, "columns", []):
+        return None
+    stamps = pd.to_datetime(df["追加日時"], errors="coerce").dropna()
+    if stamps.empty:
+        return None
+    return int((datetime.datetime.now() - stamps.min().to_pydatetime()).days)
 
 
 def load_prices(folder_id):
@@ -75,8 +103,8 @@ def append_prices(rows, folder_id):
 
 def append_delivery(rows, folder_id):
     """rows=[{code, 配送グループ管理番号}] を配送キューにupsert。総件数を返す。"""
-    return _append(rows, DELIVERY_PENDING, ["code", "配送グループ管理番号", "追加日時"],
-                   "配送グループ管理番号", folder_id)
+    return _append(rows, DELIVERY_PENDING, ["code", DELIVERY_VALUE_COLUMN, "追加日時"],
+                   DELIVERY_VALUE_COLUMN, folder_id)
 
 
 def _append(rows, name, columns, value_col, folder_id):
@@ -117,7 +145,7 @@ def clear_prices(folder_id):
 
 
 def clear_delivery(folder_id):
-    return _clear(DELIVERY_PENDING, ["code", "配送グループ管理番号", "追加日時"],
+    return _clear(DELIVERY_PENDING, ["code", DELIVERY_VALUE_COLUMN, "追加日時"],
                   "yahoo_delivery", folder_id)
 
 
@@ -126,3 +154,32 @@ def upload_csv_bytes(df, value_col):
     cols = ["code", value_col]
     slim = df[cols] if all(c in df.columns for c in cols) else pd.DataFrame(columns=cols)
     return slim.to_csv(index=False, lineterminator="\r\n").encode(_ENCODING, errors="replace")
+
+
+def bin_of(value):
+    """キューの保存値 → 便種名。NT/NM は内部表記、便種名がそのまま入っていても通す。"""
+    value = str(value).strip()
+    return ex.YAHOO_BIN_BY_VALUE.get(value, value)
+
+
+def missing_group_bins(df, group_no):
+    """キューの中で、配送グループNoが設定されていない便種の一覧。
+
+    「Noが分からない」を空欄や0で埋めない。間違ったNoを送ると、アップロードは
+    成功したように見えて送料設定だけ静かに壊れる。
+    """
+    if df is None or len(df) == 0 or DELIVERY_VALUE_COLUMN not in getattr(df, "columns", []):
+        return []
+    bins = {bin_of(v) for v in df[DELIVERY_VALUE_COLUMN]}
+    return sorted(b for b in bins if not str((group_no or {}).get(b, "")).strip())
+
+
+def delivery_upload_csv(df, group_no):
+    """待機キュー → Yahoo「項目指定」アップロード用CSV（code, postage-set）のbytes。
+
+    見出しは半角のフィールド名でなければならない（日本語見出しは U-004-0020 で弾かれる）。
+    値は配送グループの「No」で、店舗設定なので group_no から引く。
+    """
+    rows = [{"商品管理番号": r["code"], "新便種": bin_of(r[DELIVERY_VALUE_COLUMN])}
+            for _, r in df.iterrows()]
+    return ex.yahoo_delivery_csv(rows, group_no)

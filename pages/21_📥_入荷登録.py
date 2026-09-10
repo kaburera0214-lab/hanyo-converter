@@ -3,13 +3,20 @@
 入荷登録（倉庫にはじめて入荷する商品のロケーション・配送サイズ登録）
 
 JANをスキャン → 商品マスタから商品コード・商品名を自動表示 → 資材ナンバー・
-ロケーション・配送サイズをプルダウンで選ぶ → 「🚀 更新を実行」で自動更新:
-  ① NE商品マスタ: ロケーションコード（資材ナンバー-ロケーション）＋項目1（配送サイズ）… NE API
-  ② 配送サイズが変わって便種（メール便⇔宅配便）も変わる場合: 楽天の配送方法セット … RMS API
-  ③ サイズアップで利益NGの場合: 目標利益率価格に再設定 … NE売価（NE API）＋楽天価格（RMS API）
-     ＋Yahoo価格（updateItems API：price/sale_price空/member_price=2%引き→reservePublish反映）
-     Yahoo配送グループは便種変更時のみCSVをDriveに保存（updateItemsにpostage_setが無く、
-     editItemは省略項目を上書きするためCSVの項目指定が最も安全）
+ロケーション・配送サイズをプルダウンで選ぶ → 「🚀 更新を実行」で自動更新。
+
+ステップの番号と名前は lib/receiving/runner.py の STEP_* が正本（実行結果の表と同じ）:
+  ① NEロケーション・項目1 … ロケーションコード（資材ナンバー-ロケーション）＋項目1（配送サイズ）
+  ② NE売価 … サイズアップで利益NGのとき、目標利益率の価格に再設定
+  ③ 楽天 配送方法セット … 便種（メール便⇔宅配便）が変わったときのセット切替
+  ④ 楽天 販売価格 … ②と同じ再設定価格を反映
+  ⑤ Yahoo 販売価格 … updateItems（sale_price空／member_price=2%引き）→ reservePublish
+
+**どのモールの何をAPIで反映し、何が手動で残るかは lib/mall_routes.py が正本。**
+画面の案内文はすべてそこから組み立てる（経路の説明をこのファイルに直接書かないこと。
+経路が変わったときにコードだけ直って文言が古いまま残るのを防ぐため。
+tests/test_mall_routes.py で検証している）。
+
 判定ロジックは価格改定の「梱包サイズ変更」を流用（lib/receiving/plan.py → lib/pricing/pipeline.py）。
 """
 import pandas as pd
@@ -24,10 +31,10 @@ st.title("📥 入荷登録")
 import datetime as _dt
 import os as _os
 _build = _dt.datetime.fromtimestamp(_os.path.getmtime(__file__)).strftime("%Y-%m-%d %H:%M")
+from lib import mall_routes   # 反映経路の正本（案内文はここから作る）
 st.caption("JANをスキャン → 資材・ロケーション・配送サイズを選んで「🚀 更新を実行」。"
-           "ネクストエンジン・楽天・Yahoo価格は自動更新されます"
-           "（Yahooの配送グループは便種変更時のみCSVに残ります）。"
-           f"　（app更新: {_build}）")
+           + mall_routes.summary_line()
+           + f"　（app更新: {_build}）")
 
 from lib import master_store
 from lib.ne_api import client as ne_client
@@ -90,6 +97,16 @@ def _plan_table_html(rows):
 if "pricing_settings" not in st.session_state:
     st.session_state["pricing_settings"] = masters.load_settings(product_folder)
 _settings = st.session_state["pricing_settings"]
+
+
+def _yahoo_group_no():
+    """便種 → Yahooの配送グループNo（店舗ごとの設定値）。未設定は空文字のまま返す。
+
+    空文字を既定値で埋めないこと。間違ったNoでアップすると、エラーにならずに
+    送料設定だけが静かに変わる。
+    """
+    return {"宅配便": str(_settings.get("yahoo_group_takuhai", "")).strip(),
+            "メール便": str(_settings.get("yahoo_group_mail", "")).strip()}
 
 with st.expander("🔐 NE API接続（管理者用）", expanded=False):
     from lib.ne_api import usage as ne_usage
@@ -195,23 +212,104 @@ with st.expander("🔐 楽天RMS接続（管理者用・ライセンスキーの
     st.link_button("📊 ライセンスキー管理シートを開く", RMS_KEY_SHEET_URL,
                    use_container_width=True)
 
+_dv_route = mall_routes.get("Yahoo", "delivery_group")
 with st.expander("🟡 Yahoo配送グループ待機キュー（管理者がまとめてアップ）", expanded=False):
-    st.caption("**手順**: 下の一括CSVをダウンロード → ストアクリエイターPro「商品データアップロード」で"
+    st.caption(f"**なぜ手動なのか**: {_dv_route.why}。"
+               "**手順**: 下の一括CSVをダウンロード → ストアクリエイターPro「商品データアップロード」で"
                "**アップロードタイプ＝『項目指定』**を選んでアップ → この画面で「アップ済み」を押して"
                "キューを空にする（内容はDrive「Yahoo反映済み」へ自動アーカイブ）。"
-               "**頻度**: 便種変更（メール便⇔宅配便）が出たときだけ（比較的まれ）。"
-               "価格は待機キューへ入れず、APIの成功・失敗を実行結果に表示します。")
+               "**頻度**: 便種変更（メール便⇔宅配便）が出たときだけ（比較的まれ）。")
+    st.caption(mall_routes.checked_note("Yahoo", "delivery_group"))
+
+    # 配送グループNo（店舗設定）。Noが分からないままCSVを作らせない。
+    _ygn = _yahoo_group_no()
+    y1, y2, y3 = st.columns([1, 1, 1])
+    _yg_tak = y1.text_input("宅配便の配送グループNo", value=_ygn["宅配便"], key="recv_ygrp_tak")
+    _yg_mail = y2.text_input("メール便の配送グループNo", value=_ygn["メール便"], key="recv_ygrp_mail")
+    if y3.button("💾 Noを保存", key="recv_ygrp_save",
+                 disabled=not (_yg_tak.strip() and _yg_mail.strip())):
+        _settings["yahoo_group_takuhai"] = _yg_tak.strip()
+        _settings["yahoo_group_mail"] = _yg_mail.strip()
+        try:
+            masters.save_settings(_settings, product_folder)
+            st.success("保存しました。")
+            st.rerun()
+        except Exception as e:  # noqa: BLE001
+            st.warning(f"Drive保存に失敗（この画面では有効）: {e}")
+    st.caption("NoはストアクリエイターPro「ストア構築 → 配送設定 → 配送グループ」の"
+               "**No列（1〜20の数字）**です。CSVにはこのNoを書きます"
+               "（`NT`・`メール便`などの名前を書くとアップロードが弾かれます）。")
+
     _yd = yq.load_delivery(product_folder)
     st.markdown(f"**配送グループの反映待ち: {len(_yd)}件**")
     if len(_yd):
+        # 手動が残る経路は「忘れたら永久に反映されない」。滞留は画面でも赤く出す
+        # （同じ判定を batch/yahoo_queue_watch.py が毎日回して稼働監視へ上げている）。
+        _age = yq.oldest_age_days(_yd)
+        if _age is not None and _age >= yq.STALE_DAYS:
+            st.error(f"⚠️ 最も古い1件が **{_age}日前** から未反映です。"
+                     "その間、NEと楽天だけ便種が変わってYahooの送料設定は旧のままです。"
+                     "下のCSVをアップして解消してください。")
         st.dataframe(_yd, use_container_width=True, hide_index=True, height=180)
-        st.download_button("⬇️ Yahoo一括アップ用（配送 code,グループ番号）",
-                           yq.upload_csv_bytes(_yd, "配送グループ管理番号"),
-                           "yahoo_delivery.csv", "text/csv",
-                           key="yq_dl_dv", use_container_width=True)
+
+        _missing = yq.missing_group_bins(_yd, _ygn)
+        if _missing:
+            st.error("🛑 " + "・".join(_missing) + "の配送グループNoが未設定のため、"
+                     "アップ用CSVを作れません。上の欄にNoを入れて保存してください。")
+        else:
+            st.download_button("⬇️ Yahoo一括アップ用（code, postage-set）",
+                               yq.delivery_upload_csv(_yd, _ygn),
+                               "yahoo_delivery.csv", "text/csv",
+                               key="yq_dl_dv", use_container_width=True)
+
+        # アップした結果を人の記憶ではなくAPIで確かめる。
+        # 「アップしたつもり」で空にすると、そのまま静かに未反映になる。
+        # Noが未設定でも押せる（現在値を読むこと自体が、店舗のNoを知る手段になる）。
+        if st.button("🔍 Yahooの現在値を確認（getItem・更新はしません）", key="yq_dv_verify",
+                     disabled=not yahoo_client.api_enabled()):
+            from lib.yahoo_api import items as yahoo_items
+            with st.spinner("Yahooの商品データを参照中…"):
+                try:
+                    _now_map = yahoo_items.get_postage_sets(list(_yd["code"]))
+                except Exception as e:  # noqa: BLE001
+                    _now_map = None
+                    st.error(f"参照に失敗しました: {e}")
+            if _now_map is not None:
+                _rows = []
+                for _, _r in _yd.iterrows():
+                    _bin = yq.bin_of(_r[yq.DELIVERY_VALUE_COLUMN])
+                    _want = _ygn.get(_bin, "")
+                    _cur = _now_map.get(str(_r["code"]))
+                    if not _want:
+                        _judge = "Noが未設定"
+                    elif _cur is None:
+                        _judge = "参照できず"
+                    else:
+                        _judge = "反映済み" if _cur == _want else "未反映"
+                    _rows.append({
+                        "code": _r["code"],
+                        "便種": _bin,
+                        "あるべきNo": _want or "（未設定）",
+                        "Yahooの現在値": "（参照できず）" if _cur is None else (_cur or "（未設定）"),
+                        "判定": _judge,
+                    })
+                st.session_state["yq_dv_verify_rows"] = _rows
+        _vrows = st.session_state.get("yq_dv_verify_rows")
+        if _vrows:
+            st.dataframe(pd.DataFrame(_vrows), use_container_width=True, hide_index=True)
+            _left = [r for r in _vrows if r["判定"] != "反映済み"]
+            if _left:
+                st.warning(f"⚠️ {len(_left)}件がまだ反映されていません"
+                           "（参照できず・Noが未設定の行は「反映済み」とみなしません）。"
+                           "**「Yahooの現在値」列が、この店舗で実際に使われている配送グループNoです**"
+                           "（Noが分からないときはここから調べられます）。")
+            else:
+                st.success("✅ 全件、Yahoo側が期待どおりの配送グループNoになっています。")
+
         if st.checkbox("配送グループをYahooにアップ済みにする", key="yq_dv_confirm"):
             if st.button("✅ 配送キューを空にする", key="yq_dv_clear"):
                 n = yq.clear_delivery(product_folder)
+                st.session_state.pop("yq_dv_verify_rows", None)
                 st.success(f"{n}件をアーカイブしてキューを空にしました。")
                 st.rerun()
     else:
@@ -824,6 +922,10 @@ if plan_rows and not _plan_stale:
     if dv_rows and not (str(_settings.get("rakuten_group_takuhai", "")).strip()
                         and str(_settings.get("rakuten_group_mail", "")).strip()):
         blockers.append("便種変更があります。上の⚙️で楽天の配送方法セット管理番号を設定してください。")
+    if dv_rows and not (str(_settings.get("yahoo_group_takuhai", "")).strip()
+                        and str(_settings.get("yahoo_group_mail", "")).strip()):
+        blockers.append("便種変更があります。上の🟡待機キューでYahooの配送グループNoを"
+                        "設定してください（Noが無いとアップ用CSVを作れません）。")
     if dv_rows and not rakuten_price.is_configured():
         blockers.append("便種変更がありますが、RMSキー未設定のため楽天を自動修正できません。")
     if n_ng and not rakuten_price.is_configured():
@@ -897,7 +999,8 @@ if plan_rows and not _plan_stale:
             # 証跡（プラン・出力CSV・実行結果）をDriveの「価格改定履歴」へ保存。
             bar.progress(0.95, text="証跡CSVを生成中…")
             try:
-                files = rp.evidence_files(plan_rows, dv_rows, code_info, sku_table)
+                files = rp.evidence_files(plan_rows, dv_rows, code_info, sku_table,
+                                          yahoo_group_no=_yahoo_group_no())
                 files["run_result.csv"] = ex.detail_csv(pd.DataFrame(results))
             except Exception as e:  # noqa: BLE001
                 err = f"証跡CSVの生成に失敗: {e}"
@@ -907,7 +1010,7 @@ if plan_rows and not _plan_stale:
             try:
                 if dv_rows:
                     _ydv = [{"code": str(d["商品管理番号"]).lower(),
-                             "配送グループ管理番号":
+                             yq.DELIVERY_VALUE_COLUMN:
                                  ex.YAHOO_DELIVERY_VALUE.get(d["新便種"], d["新便種"])}
                             for d in dv_rows]
                     yq.append_delivery(_ydv, product_folder)
@@ -1023,9 +1126,20 @@ if res:
             st.link_button("📁 証跡フォルダを開く", res["url"])
 
     if res.get("n_dv"):
-        st.info("🟡 便種変更があったため、**Yahoo配送グループだけ**は「Yahoo配送グループ待機キュー」に"
-                "貯まりました（価格は⑤でAPI自動反映済み）。配送グループはAPIに項目指定更新が"
-                "無いので、キューのCSVを『項目指定』でアップして反映してください。")
+        # 文言は「実際に何が走ったか」から作る。固定文にすると、価格ステップが
+        # 動いていない実行でも「価格はAPIで反映済み」と言い切ってしまう。
+        _msg = ("🟡 便種変更があったため、**Yahoo配送グループだけ**は"
+                "「Yahoo配送グループ待機キュー」に貯まりました"
+                f"（{_dv_route.why}ため）。"
+                "キューのCSVを『項目指定』でアップして反映してください。")
+        _yahoo_price = [r for r in results if r.get("ステップ") == runner.STEP_YAHOO_PRICE]
+        if any(r.get("状態") == "成功" for r in _yahoo_price):
+            _msg += f"　なお{runner.STEP_YAHOO_PRICE}は今回API反映済みです。"
+        elif any(r.get("状態") == "失敗" for r in _yahoo_price):
+            _msg += f"　**{runner.STEP_YAHOO_PRICE}は失敗しています**（上の表を確認）。"
+        else:
+            _msg += "　今回は価格の変更が無いため、Yahoo価格の更新は行っていません。"
+        st.info(_msg)
 
     if st.button("🧹 フォームをクリアして次の入荷へ", key="recv_clear"):
         for k in ("recv_df", "recv_plan", "recv_plan_key", "recv_result",

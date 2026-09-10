@@ -1,0 +1,35 @@
+name: yahoo-queue-watch-daily
+
+on:
+  schedule:
+    - cron: "0 23 * * *"   # 毎日23:00 UTC = 翌08:00 JST（朝のダイジェストに間に合う）
+  workflow_dispatch: {}     # 手動実行も可
+
+concurrency:
+  group: yahoo-queue-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # libの依存のみ（streamlitはシムで置換するため不要）
+      - run: pip install pandas requests google-api-python-client google-auth
+
+      # 滞留していたら非ゼロ終了 → このジョブが失敗 → 稼働監視ダッシュボードが赤になる。
+      # 「失敗＝Yahooの配送グループが人手待ちのまま放置されている」の意味。
+      - name: Watch Yahoo delivery-group queue
+        env:
+          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          CHATWORK_API_TOKEN: ${{ secrets.CHATWORK_API_TOKEN }}
+          APP_URL: ${{ secrets.APP_URL }}
+        run: python batch/yahoo_queue_watch.py

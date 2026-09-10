@@ -81,9 +81,12 @@ def get_item(code):
         value = (el.text or "").strip()
         if value and key not in values:
             values[key] = value
+    # PostageSet（配送グループ管理番号）は商品単位のものが先に現れる
+    # （SubCodes配下にも同名タグがあるが、上のループは最初の1つだけを採る）。
     return {"code": str(code), "name": values.get("Name", ""),
             "jan": values.get("Jan", ""),
-            "product_category": values.get("ProductCategory", "")}
+            "product_category": values.get("ProductCategory", ""),
+            "postage_set": values.get("PostageSet", "")}
 
 
 def _normalize_title(value):

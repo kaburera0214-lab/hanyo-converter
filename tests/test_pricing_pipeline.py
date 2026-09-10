@@ -174,7 +174,7 @@ def test_tab3_size_change_end_to_end():
     assert r["配送設定"] == "不要"
     assert r["利益チェック"] == "-" and r["新販売価格"] is None
 
-    # 出力CSV: NE項目1更新・配送設定修正（楽天リスト/Yahoo NT・NM）
+    # 出力CSV: NE項目1更新・配送設定修正（楽天リスト/Yahoo 項目指定アップロード）
     item1 = ex.ne_item1_csv([{"商品コード": r["商品コード"], "新項目1": r["新項目1"]}
                              for r in rows]).decode("cp932")
     assert "slvb0144,60" in item1 and "kwgc0414,60" in item1
@@ -182,8 +182,15 @@ def test_tab3_size_change_end_to_end():
            "旧便種": "メール便", "新便種": "宅配便"}]
     rak = ex.rakuten_delivery_csv(dv).decode("cp932")
     assert "slvb0144,宅配便のみ,メール便→宅配便,slvb0144" in rak
-    yah = ex.yahoo_delivery_csv(dv).decode("cp932")
-    assert "code,配送グループ管理番号" in yah and "slvb0144,NT" in yah
+    # Yahooは半角のフィールド名(postage-set)＋配送グループNoでないと
+    # U-004-0020で弾かれる（2026-09-09に実アップロードで確認）。
+    yah = ex.yahoo_delivery_csv(dv, {"宅配便": "3", "メール便": "5"}).decode("cp932")
+    assert "code,postage-set" in yah and "slvb0144,3" in yah
+    try:                                                  # Noが無い便種は推測で埋めない
+        ex.yahoo_delivery_csv(dv, {"メール便": "5"})
+        raise AssertionError("配送グループNo未設定なのにCSVが作られた")
+    except ValueError:
+        pass
 
 
 def test_rakuten_sku_master_and_export():

@@ -119,10 +119,18 @@ def test_build_plan():
     assert missing2 == ["slvb0144-01"]
 
     # 証跡CSV一式
-    files = rp.evidence_files(out, dv, code_info, {})
+    files = rp.evidence_files(out, dv, code_info, {},
+                              yahoo_group_no={"宅配便": "3", "メール便": "5"})
     assert set(files) == {"ne_location_update.csv", "rakuten_delivery_update.csv",
                           "yahoo_delivery_update.csv", "normal-item.csv",
                           "yahoo_data.csv", "ne_price_update.csv", "receiving_detail.csv"}
+    # Yahooは半角フィールド名(postage-set)＋配送グループNo。Noが未設定なら
+    # この証跡だけ落ちて、他の証跡は残る（保存が丸ごと失敗しないこと）。
+    assert files["yahoo_delivery_update.csv"].decode("cp932").splitlines()[0] == "code,postage-set"
+    files_no_no = rp.evidence_files(out, dv, code_info, {})
+    assert "yahoo_delivery_update.csv" not in files_no_no
+    assert "rakuten_delivery_update.csv" in files_no_no
+
     loc_csv = files["ne_location_update.csv"].decode("cp932")
     assert loc_csv.splitlines()[0] == "syohin_code,location,org1"
     assert "newi0001,100A-TB05,100" in loc_csv
