@@ -419,10 +419,18 @@ def _verify_delivery(yitems, to_update, sent, task, results, on_step, attempts=3
             "ステップ": STEP_YAHOO_DELIVERY, "対象": f"{len(done)}件（{'、'.join(done)}）",
             "状態": "成功", "メッセージ": "送信・反映まで確認しました。"})
     if pending:
+        # 反映されない理由は Yahoo 自身がデータチェック履歴に書いている。
+        # 推測せず、それをそのまま出す（ここを読まないと原因探しが人の往復になる）。
+        from lib.yahoo_api import upload_check
+
+        reasons, check_id = upload_check.describe_latest_errors(codes=list(want))
+        detail = ("／".join(reasons[:10]) if reasons else
+                  "Yahooのデータチェック履歴にエラーはありません"
+                  "（反映処理がまだ終わっていない可能性）")
         results.append({
             "ステップ": STEP_YAHOO_DELIVERY, "対象": f"{len(pending)}件",
             "状態": "失敗",
-            "メッセージ": "アップロードは受け付けられましたが、"
-                         f"{wait_seconds * attempts}秒待っても反映されていません。"
-                         "プロダクトカテゴリが0や無効なIDだと、行ごと弾かれます"
-                         "（U-001-0363）。現在値: " + "／".join(pending[:10])})
+            "メッセージ": ("アップロードは受け付けられましたが、"
+                          f"{wait_seconds * attempts}秒待っても反映されていません。"
+                          f"／**Yahooの判定**（check_id={check_id or '不明'}）: {detail}"
+                          "／現在値: " + "／".join(pending[:10]))})

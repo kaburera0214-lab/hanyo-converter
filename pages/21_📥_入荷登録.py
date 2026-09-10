@@ -361,6 +361,33 @@ with st.expander("🟡 Yahoo配送グループ 反映確認待ち（通常は操
         # 反映されなかったぶんの再送。⑥と同じ判定・同じAPIを通すので、
         # 「すでに同じ便種（＝触ってはいけない）」はここでも自動的に対象外になり、
         # 控えからも外れる（旧仕様で積まれた行の片付けも兼ねる）。
+        # Yahoo自身の行単位の判定を読む。送らずに原因だけ確かめられるようにする。
+        if st.button("🧾 Yahooのアップロード判定を見る（データチェック履歴）",
+                     key="yq_dv_check", disabled=not yahoo_client.api_enabled()):
+            from lib.yahoo_api import upload_check as _uc
+            with st.spinner("Yahooのデータチェック履歴を参照中…"):
+                try:
+                    _checks = _uc.recent_item_checks(results=5)
+                    _reasons, _cid = _uc.describe_latest_errors(codes=list(_yd["code"]))
+                    _allr, _ = _uc.describe_latest_errors()
+                except Exception as e:  # noqa: BLE001
+                    _checks, _reasons, _allr, _cid = None, [], [], ""
+                    st.error(f"参照に失敗しました: {e}")
+            st.session_state["yq_dv_check_rows"] = {
+                "checks": _checks, "reasons": _reasons, "all": _allr, "check_id": _cid}
+        _chk = st.session_state.get("yq_dv_check_rows")
+        if _chk:
+            if _chk["checks"]:
+                st.markdown("**直近の商品アップロード（新しい順）**")
+                st.dataframe(pd.DataFrame(_chk["checks"]),
+                             use_container_width=True, hide_index=True)
+            _lines = _chk["reasons"] or _chk["all"]
+            if _lines:
+                st.markdown(f"**Yahooが出したエラー**（check_id={_chk['check_id'] or '不明'}）")
+                st.code("\n".join(_lines))
+            else:
+                st.info("直近のアップロードにエラーは出ていません。")
+
         _force_cat = st.checkbox(
             "プロダクトカテゴリを推定し直して送る（既存値を無視）", key="yq_dv_forcecat",
             help="Yahooの画面で「プロダクトカテゴリが存在しません」と出るのに、"
