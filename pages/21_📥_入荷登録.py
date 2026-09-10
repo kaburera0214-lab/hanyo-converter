@@ -324,7 +324,25 @@ with st.expander("🟡 Yahoo配送グループ 反映確認待ち（通常は操
             else:
                 st.success("✅ 全件、Yahoo側が期待どおりの配送グループNoになっています。")
 
-        if st.checkbox("配送グループをYahooにアップ済みにする", key="yq_dv_confirm"):
+        # 反映されなかったぶんの再送。⑥と同じ判定・同じAPIを通すので、
+        # 「すでに同じ便種（＝触ってはいけない）」はここでも自動的に対象外になり、
+        # 控えからも外れる（旧仕様で積まれた行の片付けも兼ねる）。
+        if st.button("▶️ 未反映を今すぐ送信（項目指定アップロード）", key="yq_dv_resend",
+                     type="primary", disabled=not yahoo_client.api_enabled()):
+            _rows = [{"code": str(r["code"]).strip(),
+                      "便種": yq.bin_of(r[yq.DELIVERY_VALUE_COLUMN])}
+                     for _, r in _yd.iterrows()]
+            with st.spinner("Yahooへ送信中…"):
+                _rs, _ = runner.execute({"yahoo_delivery": {
+                    "rows": _rows, "group_no": _ygn,
+                    "group_bins": _settings.get(mall_routes.YAHOO_GROUP_BINS_KEY) or {},
+                    "folder": product_folder}})
+            st.dataframe(pd.DataFrame(_rs), use_container_width=True, hide_index=True)
+            st.caption("反映は非同期です。実際に反映されたかは毎朝の点検で確認し、"
+                       "確認できた分がこの一覧から消えます。")
+
+        if st.checkbox("配送グループをYahooにアップ済みにする（控えを全部消す）",
+                       key="yq_dv_confirm"):
             if st.button("✅ 配送キューを空にする", key="yq_dv_clear"):
                 n = yq.clear_delivery(product_folder)
                 st.session_state.pop("yq_dv_verify_rows", None)

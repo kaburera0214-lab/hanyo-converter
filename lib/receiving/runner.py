@@ -235,6 +235,9 @@ def _yahoo_delivery(task, results, failed, on_step):
         plan = ydv.classify(rows, current, task.get("group_no"), task.get("group_bins"))
 
         if plan.already:
+            # 触らないと決めた商品を控えに残すと、永久に一致せず赤のままになる。
+            # 旧仕様で積まれた行もここで自動的に片付く。
+            _resolve_delivery(task.get("folder"), [r["code"] for r in plan.already])
             shown = "、".join(f"{r['code']}(No.{r['現在No']})" for r in plan.already[:10])
             results.append({
                 "ステップ": STEP_YAHOO_DELIVERY, "対象": f"{len(plan.already)}件（{shown}）",
@@ -305,5 +308,16 @@ def _enqueue_delivery(folder, plan):
                 for r in (plan.to_update + plan.not_found + plan.unknown)]
         if rows:
             yq.append_delivery(rows, folder)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _resolve_delivery(folder, codes):
+    """触る必要が無いと分かったコードを、反映確認待ちの控えから外す。"""
+    if not folder or not codes:
+        return
+    try:
+        from lib.receiving import yahoo_queue as yq
+        yq.resolve_delivery(codes, folder)
     except Exception:  # noqa: BLE001
         pass
