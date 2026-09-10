@@ -369,13 +369,14 @@ def get_item_status(codes):
         try:
             item = category_repair.get_item(code)
             out[code] = {"state": STATE_OK,
+                         "name": (item.get("name") or "").strip(),
                          "postage_set": (item.get("postage_set") or "").strip(),
                          "product_category": (item.get("product_category") or "").strip(),
                          "message": ""}
         except category_repair.YahooItemNotFound as e:
-            out[code] = {"state": STATE_NOT_FOUND, "postage_set": None,
+            out[code] = {"state": STATE_NOT_FOUND, "name": "", "postage_set": None,
                          "product_category": None, "message": str(e)}
         except client.YahooError as e:
-            out[code] = {"state": STATE_ERROR, "postage_set": None,
+            out[code] = {"state": STATE_ERROR, "name": "", "postage_set": None,
                          "product_category": None, "message": str(e)}
     return out

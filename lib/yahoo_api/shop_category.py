@@ -1,19 +1,22 @@
 # -*- coding: utf-8 -*-
 """
-Yahoo!ショッピング SHPカテゴリ（＝プロダクトカテゴリ）のマスタ参照。
+Yahoo!ショッピングのカテゴリマスタから、**実在するプロダクトカテゴリID**を取る。
 
-  GET {BASE}/getShopCategory?seller_id=..&category_code=..   … ツリー（子を返す）
-  GET {BASE}/getShopCategoryList?seller_id=..&query=..       … キーワード検索
+  GET {BASE}/getShopCategoryList?query=..   … Yahoo全体のカテゴリをキーワード検索
+  GET {BASE}/getShopCategory?category_code=.. … そのカテゴリの子（末端まで降りる）
 
-なぜ要るか: プロダクトカテゴリIDは**Yahooのマスタに実在するものしか使えない**。
-店内の類似商品からIDをコピーする方式（category_repair）は、コピー元のIDが古くて
-使えなくなっていると、そのまま無効なIDを送ってしまう。実際 artc4168 で
-`U-001-0363 プロダクトカテゴリが存在しません` が消えなかった原因がこれ。
+⚠️ ここが今回の詰まりどころ。**SHPカテゴリコードとプロダクトカテゴリIDは別物**。
+getShopCategory の CategoryCode は、
+  IsLeaf=0 … SHPカテゴリコード（まだ途中。ここを product-category に書いても無効）
+  IsLeaf=1 … **プロダクトカテゴリID**（これだけが product-category に書ける）
+検索APIが返すのもSHPカテゴリコードなので、**末端まで降りないと使えるIDにならない**。
+2026-09-10: これを取り違えて無効なIDを送り続け、U-001-0363 が消えなかった。
 
-**推定したIDは、送る前にここで実在を確かめる。**確かめられないIDは送らない
-（送っても行ごと弾かれるだけで、原因も分からなくなる）。
-
-getShopCategory は IsLeaf=1 のとき CategoryCode が**プロダクトカテゴリID**になる。
+方針（2026-09-10 ユーザー確定）:
+- 店内の類似商品からIDをコピーする方式はリスクが高いので使わない
+- Yahoo全体を、語を減らしながら段階的に広く検索する
+  「フェルト ワンピース イエロー」→「フェルト ワンピース」→「フェルト」
+- 厳密さより**まず処理が通ること**を優先し、必ず末端まで降りて有効なIDを返す
 """
 import xml.etree.ElementTree as ET
 
@@ -26,6 +29,7 @@ TEST_BASE = "https://test.circus.shopping.yahooapis.jp/ShoppingWebService/V1"
 TIMEOUT = (10, 30)
 _MIN_INTERVAL = 1.1          # 公式の上限が 1クエリー/秒
 _last_call = [0.0]
+MAX_DEPTH = 8                # ツリーを降りる上限（無限ループ防止）
 
 
 def _base():
@@ -75,63 +79,97 @@ def _rows(root):
 
 
 def children(category_code=None):
-    """カテゴリの子を返す。category_code 省略で第1階層。
-
-    [{code, name, is_leaf}] （is_leaf=True の code がプロダクトカテゴリID）
-    """
+    """カテゴリの子。category_code 省略で第1階層。 [{code, name, is_leaf}]"""
     params = {} if category_code in (None, "") else {"category_code": int(category_code)}
     return [{"code": r.get("CategoryCode", ""), "name": r.get("CategoryName", ""),
              "is_leaf": str(r.get("IsLeaf", "")).strip() == "1"}
-            for r in _rows(_get("/getShopCategory", params))]
+            for r in _rows(_get("/getShopCategory", params))
+            if str(r.get("CategoryCode", "")).strip()]
 
 
 def search(query, results=25):
-    """キーワードでカテゴリを検索する。 [{code, name, path}]"""
+    """Yahoo全体のカテゴリをキーワード検索。 [{code, name, path}]"""
     rows = _rows(_get("/getShopCategoryList",
                       {"query": str(query)[:100], "results": int(results)}))
     return [{"code": r.get("CategoryCode", ""), "name": r.get("CategoryName", ""),
-             "path": r.get("PathName", "")} for r in rows]
+             "path": r.get("PathName", "")} for r in rows
+            if str(r.get("CategoryCode", "")).strip()]
 
 
-def exists(category_id):
-    """そのプロダクトカテゴリIDがYahooのマスタに実在するか。
+def descend_to_leaf(category_code, max_depth=MAX_DEPTH):
+    """カテゴリコードから末端まで降り、**プロダクトカテゴリID**を返す。
 
-    判定できなかった場合は None を返す（「無い」と断定しない）。
-    実在しないIDを送ると U-001-0363 で行ごと弾かれるので、送る前に必ず確かめる。
+    返り値 {"category_id", "category_name", "path"} / 見つからなければ None。
+    途中で分岐したら先頭の子を選ぶ（厳密さより「通ること」を優先する方針）。
     """
-    try:
-        code = int(str(category_id).strip() or 0)
-    except ValueError:
-        return False
-    if code <= 0:
-        return False
-    try:
-        # 末端（プロダクトカテゴリ）なら子は返らない。存在しないIDはエラーになる。
-        children(code)
-        return True
-    except client.YahooAuthError:
-        raise
-    except client.YahooError as e:
-        message = str(e)
-        # 「存在しない」と明確に言われた場合だけ False。それ以外は判定不能。
-        if "存在" in message or "不正" in message or "HTTP 400" in message:
-            return False
-        return None
-
-
-def find_by_name(name, limit=5):
-    """商品名からプロダクトカテゴリ候補を探す。 [{code, name, path}]（先頭が最有力）"""
-    words = [w for w in str(name or "").replace("　", " ").split(" ") if w]
-    tried = []
-    for length in (3, 2, 1):
-        query = " ".join(words[:length])
-        if not query or query in tried:
-            continue
-        tried.append(query)
+    code, names = category_code, []
+    for _ in range(max_depth):
         try:
-            hits = search(query, results=limit)
+            kids = children(code)
+        except client.YahooError:
+            return None
+        if not kids:
+            return None
+        leaf = next((k for k in kids if k["is_leaf"]), None)
+        if leaf:
+            names.append(leaf["name"])
+            return {"category_id": int(leaf["code"]),
+                    "category_name": leaf["name"], "path": " > ".join(names)}
+        code = kids[0]["code"]
+        names.append(kids[0]["name"])
+    return None
+
+
+def _query_variants(name):
+    """「フェルト ワンピース イエロー」→「フェルト ワンピース」→「フェルト」。
+
+    語を減らしながら広げる。狭いまま0件で諦めると、カテゴリを付けられない。
+    """
+    words = [w for w in str(name or "").replace("　", " ").split(" ") if w]
+    seen, out = set(), []
+    for length in range(min(3, len(words)), 0, -1):
+        query = " ".join(words[:length])
+        if query and query not in seen:
+            seen.add(query)
+            out.append(query)
+    return out
+
+
+def resolve_from_name(name, on_step=None):
+    """商品名から、**実在するプロダクトカテゴリID**を決める。
+
+    返り値 {"category_id", "category_name", "path", "query"} / 決められなければ None。
+    語を減らしながら検索し、当たったカテゴリを末端まで降りてIDにする。
+    """
+    for query in _query_variants(name):
+        if on_step:
+            on_step(f"カテゴリ検索: 「{query}」")
+        try:
+            hits = search(query, results=10)
         except client.YahooError:
             continue
-        if hits:
-            return hits
-    return []
+        for hit in hits:
+            leaf = descend_to_leaf(hit["code"])
+            if leaf:
+                return {**leaf, "query": query,
+                        "path": hit.get("path") or leaf.get("path") or hit["name"]}
+    return None
+
+
+def any_valid_category(on_step=None):
+    """最後の手段: ツリーの先頭から降りて、確実に実在するIDを1つ取る。
+
+    厳密なカテゴリより「まず処理を通す」ことを優先する方針（2026-09-10 確定）。
+    どのカテゴリを入れたかは必ず画面に出すこと（あとで人が直せるように）。
+    """
+    if on_step:
+        on_step("カテゴリ検索: 既定のカテゴリを取得中…")
+    try:
+        top = children()
+    except client.YahooError:
+        return None
+    for node in top:
+        leaf = descend_to_leaf(node["code"])
+        if leaf:
+            return {**leaf, "query": "（既定）"}
+    return None

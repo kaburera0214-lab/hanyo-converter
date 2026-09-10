@@ -246,3 +246,31 @@ def test_force_category_ignores_existing_value():
                   "現在No": "1", "カテゴリ": "99999"}]
     assert ydv.needs_category(to_update) == []
     assert ydv.needs_category(to_update, force=True) == ["artc4168"]
+
+
+def test_query_variants_broaden_progressively():
+    """検索語は「全部→減らす」で広げる。狭いまま0件で諦めない。"""
+    from lib.yahoo_api import shop_category as ycat
+
+    assert ycat._query_variants("フェルト ワンピース イエロー Jサイズ 衣装ベース") == [
+        "フェルト ワンピース イエロー", "フェルト ワンピース", "フェルト"]
+    assert ycat._query_variants("フェルト") == ["フェルト"]
+    assert ycat._query_variants("") == []
+
+
+def test_descend_to_leaf_returns_product_category_id(monkeypatch):
+    """末端(IsLeaf=1)のCategoryCodeだけがプロダクトカテゴリID。
+
+    2026-09-10: 途中のSHPカテゴリコードを product-category に書いていたため、
+    U-001-0363「プロダクトカテゴリが存在しません」が消えなかった。
+    """
+    from lib.yahoo_api import shop_category as ycat
+
+    tree = {
+        "100": [{"code": "200", "name": "衣装", "is_leaf": False}],
+        "200": [{"code": "14519", "name": "コスプレ衣装", "is_leaf": True}],
+    }
+    monkeypatch.setattr(ycat, "children", lambda code=None: tree.get(str(code), []))
+    leaf = ycat.descend_to_leaf("100")
+    assert leaf["category_id"] == 14519 and leaf["category_name"] == "コスプレ衣装"
+    assert ycat.descend_to_leaf("999") is None       # 子が無いものはIDにしない
