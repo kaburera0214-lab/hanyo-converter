@@ -122,11 +122,14 @@ def upload_batches(to_update, categories=None):
                   for k, v in (categories or {}).items() if str(v).strip()}
     plain, with_cat = [], []
     for r in to_update:
-        if str(r.get("カテゴリ") or "").strip():
-            plain.append(r)
-        elif r["code"] in categories:
+        # 引き直したカテゴリがあるなら、既存値が入っていても**それを上書きする**。
+        # 既存値を優先すると、Yahooに存在しない古いIDのまま送り続けることになる
+        # （2026-09-10 artc4168: 14519 が残っていて U-001-0363 が消えなかった）。
+        if r["code"] in categories:
             with_cat.append(r)
-        # それ以外（カテゴリ未設定かつ推定できず）は送らない
+        elif has_category(r.get("カテゴリ")):
+            plain.append(r)
+        # それ以外（カテゴリ未設定かつ決められず）は送らない
 
     batches = []
     for rows, cats in ((plain, None), (with_cat, categories)):

@@ -274,3 +274,18 @@ def test_descend_to_leaf_returns_product_category_id(monkeypatch):
     leaf = ycat.descend_to_leaf("100")
     assert leaf["category_id"] == 14519 and leaf["category_name"] == "コスプレ衣装"
     assert ycat.descend_to_leaf("999") is None       # 子が無いものはIDにしない
+
+
+def test_resolved_category_overrides_existing_invalid_id():
+    """引き直したカテゴリは、既存値が入っていても上書きして送る。
+
+    2026-09-10: artc4168 は 14519 が入ったままで、それがYahooに存在しないID
+    だった。既存値を優先していたため、何度送っても U-001-0363 が消えなかった。
+    """
+    to_update = [{"code": "artc4168", "便種": "メール便", "no": "2",
+                  "現在No": "1", "カテゴリ": "14519"}]
+    batches = ydv.upload_batches(to_update, {"artc4168": "2504"})
+    assert len(batches) == 1 and batches[0]["with_category"] is True
+    lines = batches[0]["csv"].decode("cp932").splitlines()
+    assert lines[0] == "code,postage-set,product-category"
+    assert lines[1] == "artc4168,2,2504"

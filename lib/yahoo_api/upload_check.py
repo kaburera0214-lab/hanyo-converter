@@ -102,6 +102,40 @@ def check_errors(check_id, results=100):
     return rows
 
 
+CATEGORY_ERROR_CODE = "U-001-0363"     # プロダクトカテゴリが存在しません
+
+
+def codes_rejected_for_category(codes=(), results=5):
+    """直近のアップロードで「プロダクトカテゴリが存在しません」と言われた商品コード。
+
+    getItem は値を返すのに、その値がYahooのマスタに無い——という状態がある
+    （廃止されたカテゴリIDが残っている）。値の有無だけを見ていると
+    「設定済み」と判断してしまい、いつまでも直らない（2026-09-10 artc4168）。
+    **Yahoo自身の判定**を根拠にして、引き直す対象を決める。
+    """
+    wanted = {str(c).strip().lower() for c in codes if str(c).strip()}
+    try:
+        checks = recent_item_checks(results=results)
+    except client.YahooError:
+        return set()
+    hit = set()
+    for check in checks:
+        if check["error_num"] <= 0:
+            continue
+        try:
+            errors = check_errors(check["check_id"])
+        except client.YahooError:
+            continue
+        for err in errors:
+            key = str(err["data_key"]).strip().lower()
+            if not key or (wanted and key not in wanted):
+                continue
+            text = f'{err["code"]} {err["message"]}'
+            if CATEGORY_ERROR_CODE in text or "プロダクトカテゴリ" in text:
+                hit.add(key)
+    return hit
+
+
 def describe_latest_errors(codes=(), results=5):
     """直近の商品アップロードでYahooが出したエラーを、人が読める1行にまとめる。
 

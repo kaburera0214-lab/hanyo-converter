@@ -273,6 +273,15 @@ def _yahoo_delivery(task, results, failed, on_step):
         # Yahoo全体を語を減らしながら検索し、**末端まで降りた実在するID**を使う。
         categories, cat_failures, cat_detail = {}, {}, {}
         _need = ydv.needs_category(plan.to_update, force=bool(task.get("force_category")))
+        # 値が入っていても、そのIDがYahooのマスタに無ければ弾かれ続ける。
+        # 「値の有無」ではなく**Yahoo自身の判定**を根拠に、引き直す対象を足す。
+        try:
+            from lib.yahoo_api import upload_check as _uc
+            _rejected = _uc.codes_rejected_for_category([r["code"] for r in plan.to_update])
+        except Exception:  # noqa: BLE001
+            _rejected = set()
+        _need = list(dict.fromkeys(list(_need) + [r["code"] for r in plan.to_update
+                                                  if r["code"] in _rejected]))
         if _need:
             from lib.yahoo_api import shop_category as ycategory
             for code in _need:
