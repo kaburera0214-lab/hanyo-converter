@@ -295,15 +295,18 @@ def get_stock(codes):
 
 
 # 商品参照の結果の種類。「読めなかった」を「未登録」や「一致」に丸めないための区別。
-STATE_OK = "ok"                    # 読めた（value に配送グループNo。未設定なら空文字）
+STATE_OK = "ok"                    # 読めた（postage_set / product_category に現在値）
 STATE_NOT_FOUND = "not_found"      # Yahooにその商品が無い（登録しない限り永久に反映できない）
 STATE_ERROR = "error"              # 通信・認証などで読めなかった（実際の状態は不明）
 
 
-def get_postage_sets(codes):
-    """{商品コード: {"state", "value", "message"}} を商品参照API(getItem)で読む。
+def get_item_status(codes):
+    """{商品コード: {"state", "postage_set", "product_category", "message"}} を getItem で読む。
 
     更新はしない**確認専用**。3つの状態を必ず区別する（0件・不明を正常に丸めない）。
+    product_category も一緒に返すのは、配送グループのアップロードが
+    U-001-0363（プロダクトカテゴリが存在しません）で弾かれるため。
+    参照を2回に分けず、ここで一度に取る。
     """
     out = {}
     for code in codes:
@@ -311,10 +314,15 @@ def get_postage_sets(codes):
         if not code:
             continue
         try:
-            value = (category_repair.get_item(code).get("postage_set") or "").strip()
-            out[code] = {"state": STATE_OK, "value": value, "message": ""}
+            item = category_repair.get_item(code)
+            out[code] = {"state": STATE_OK,
+                         "postage_set": (item.get("postage_set") or "").strip(),
+                         "product_category": (item.get("product_category") or "").strip(),
+                         "message": ""}
         except category_repair.YahooItemNotFound as e:
-            out[code] = {"state": STATE_NOT_FOUND, "value": None, "message": str(e)}
+            out[code] = {"state": STATE_NOT_FOUND, "postage_set": None,
+                         "product_category": None, "message": str(e)}
         except client.YahooError as e:
-            out[code] = {"state": STATE_ERROR, "value": None, "message": str(e)}
+            out[code] = {"state": STATE_ERROR, "postage_set": None,
+                         "product_category": None, "message": str(e)}
     return out

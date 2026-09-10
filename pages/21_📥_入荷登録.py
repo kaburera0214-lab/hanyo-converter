@@ -302,21 +302,21 @@ with st.expander("🟡 Yahoo配送グループ 反映確認待ち（通常は操
             from lib.yahoo_api import items as yahoo_items
             with st.spinner("Yahooの商品データを参照中…"):
                 try:
-                    _now_map = yahoo_items.get_postage_sets(list(_yd["code"]))
+                    _now_map = yahoo_items.get_item_status(list(_yd["code"]))
                 except Exception as e:  # noqa: BLE001
                     _now_map = None
                     st.error(f"参照に失敗しました: {e}")
             if _now_map is not None:
-                # get_postage_sets は {code: {"state","value","message"}} を返す。
+                # get_item_status は {code: {"state","postage_set","product_category","message"}}。
                 # 「読めた」「Yahooに商品が無い」「読めなかった」を混ぜないための形。
                 _rows = []
                 for _, _r in _yd.iterrows():
                     _bin = yq.bin_of(_r[yq.DELIVERY_VALUE_COLUMN])
                     _want = _ygn.get(_bin, "")
                     _info = _now_map.get(str(_r["code"])) or {
-                        "state": yahoo_items.STATE_ERROR, "value": None,
+                        "state": yahoo_items.STATE_ERROR, "postage_set": None,
                         "message": "現在値を取得していません"}
-                    _state, _cur = _info["state"], _info.get("value")
+                    _state, _cur = _info["state"], _info.get("postage_set")
                     if _state == yahoo_items.STATE_NOT_FOUND:
                         _judge, _shown = "Yahoo未登録", "（商品が存在しません）"
                     elif _state != yahoo_items.STATE_OK:

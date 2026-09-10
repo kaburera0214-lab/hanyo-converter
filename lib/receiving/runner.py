@@ -231,7 +231,7 @@ def _yahoo_delivery(task, results, failed, on_step):
         if on_step:
             on_step("⑥ Yahoo: 現在の配送グループを確認中…")
         yclient.access_token()            # 期限切れ間近なら自動リフレッシュ
-        current = yitems.get_postage_sets([r["code"] for r in rows])
+        current = yitems.get_item_status([r["code"] for r in rows])
         plan = ydv.classify(rows, current, task.get("group_no"), task.get("group_bins"))
 
         if plan.already:
@@ -264,17 +264,43 @@ def _yahoo_delivery(task, results, failed, on_step):
 
         if not plan.to_update:
             return
-        shown = "、".join(f"{r['code']}→No.{r['no']}" for r in plan.to_update[:10])
-        if on_step:
-            on_step("⑥ Yahoo: 商品アップロードAPI(項目指定)を呼び出し中…")
-        ok, errs = item_upload.upload_field_specified(ydv.upload_csv(plan.to_update),
-                                                      filename="yahoo_delivery.csv")
-        if not ok:
+
+        # プロダクトカテゴリ未設定の商品は、配送グループだけ送っても
+        # U-001-0363 で行ごと弾かれる。価格改定と同じ推定を使って一緒に埋める。
+        categories, cat_failures, cat_detail = {}, {}, {}
+        _need = ydv.needs_category(plan.to_update)
+        if _need:
+            from lib.yahoo_api import category_repair as ycat
+            if on_step:
+                on_step("⑥ Yahoo: プロダクトカテゴリを推定中…")
+            cat_detail, cat_failures = ycat.plan_categories(_need)
+            categories = {code: detail["category_id"] for code, detail in cat_detail.items()}
+        for code, reason in cat_failures.items():
             results.append({
-                "ステップ": STEP_YAHOO_DELIVERY, "対象": f"{len(plan.to_update)}件（{shown}）",
-                "状態": "失敗", "メッセージ": "／".join(errs[:5])})
+                "ステップ": STEP_YAHOO_DELIVERY, "対象": code, "状態": "失敗",
+                "メッセージ": "プロダクトカテゴリが未設定で、推定もできませんでした。"
+                             "この商品はカテゴリを設定しないと配送グループを更新できません: "
+                             + str(reason)})
+
+        batches = ydv.upload_batches(plan.to_update, categories)
+        if not batches:
             failed["yahoo_delivery"] = dict(task, rows=plan.to_update)
             return
+        sent = [c for b in batches for c in b["codes"]]
+        shown = "、".join(f"{r['code']}→No.{r['no']}" for r in plan.to_update
+                         if r["code"] in set(sent))
+        if on_step:
+            on_step("⑥ Yahoo: 商品アップロードAPI(項目指定)を呼び出し中…")
+        for batch in batches:
+            ok, errs = item_upload.upload_field_specified(
+                batch["csv"], filename="yahoo_delivery.csv")
+            if not ok:
+                results.append({
+                    "ステップ": STEP_YAHOO_DELIVERY,
+                    "対象": f"{len(batch['codes'])}件（{'、'.join(batch['codes'][:10])}）",
+                    "状態": "失敗", "メッセージ": "／".join(errs[:5])})
+                failed["yahoo_delivery"] = dict(task, rows=plan.to_update)
+                return
         if on_step:
             on_step("⑥ Yahoo: 反映予約API(reservePublish)を呼び出し中…")
         try:
@@ -285,17 +311,22 @@ def _yahoo_delivery(task, results, failed, on_step):
             perr = [f"HTTPエラー: {e}"]
         if perr:
             results.append({
-                "ステップ": STEP_YAHOO_DELIVERY, "対象": f"{len(plan.to_update)}件（{shown}）",
+                "ステップ": STEP_YAHOO_DELIVERY, "対象": f"{len(sent)}件（{shown}）",
                 "状態": "失敗",
                 "メッセージ": "**アップロードは成功しています**が、反映予約(reservePublish)に"
                              "失敗しました。店頭反映が保留のままです: " + "／".join(perr[:5])})
             failed["yahoo_delivery"] = dict(task, rows=plan.to_update)
             return
+        message = ("送信＋反映予約 完了（反映は非同期です。実際に反映されたかは"
+                   "日次の点検でgetItemを読んで確認します）")
+        if cat_detail:
+            shown_cat = "、".join(
+                f"{code}→{d['category_id']}({d.get('category_name') or '名称不明'})"
+                for code, d in list(cat_detail.items())[:10])
+            message += f"／プロダクトカテゴリ自動設定 {len(cat_detail)}件: {shown_cat}"
         results.append({
-            "ステップ": STEP_YAHOO_DELIVERY, "対象": f"{len(plan.to_update)}件（{shown}）",
-            "状態": "成功",
-            "メッセージ": "送信＋反映予約 完了（反映は非同期です。実際に反映されたかは"
-                         "日次の点検でgetItemを読んで確認します）"})
+            "ステップ": STEP_YAHOO_DELIVERY, "対象": f"{len(sent)}件（{shown}）",
+            "状態": "成功", "メッセージ": message})
     except Exception as e:  # noqa: BLE001（認可切れ等もここで拾う）
         results.append({"ステップ": STEP_YAHOO_DELIVERY, "対象": target, "状態": "失敗",
                         "メッセージ": str(e)})

@@ -20,6 +20,8 @@ CSVに書いた列だけを更新し、書かなかった列には触らない�
 「送った」＝「反映された」とはみなさず、getItem で読み直して確認する
 （確認は batch/yahoo_queue_watch.py が日次で行う）。
 """
+import threading
+import time
 import xml.etree.ElementTree as ET
 
 import requests
@@ -30,6 +32,17 @@ PROD_BASE = "https://circus.shopping.yahooapis.jp/ShoppingWebService/V1"
 TEST_BASE = "https://test.circus.shopping.yahooapis.jp/ShoppingWebService/V1"
 TIMEOUT = (10, 60)          # CSV送信なので読み取りは長めに
 TYPE_FIELD_SPECIFIED = 4    # 項目指定（このツールが使う唯一のtype）
+_MIN_INTERVAL = 1.1         # 公式の上限が「1クエリー/秒」なので、少し余裕を持って空ける
+_last_call = [0.0]
+_lock = threading.Lock()
+
+
+def _rate_limit():
+    with _lock:
+        wait = _MIN_INTERVAL - (time.monotonic() - _last_call[0])
+        if wait > 0:
+            time.sleep(wait)
+        _last_call[0] = time.monotonic()
 
 
 def _base():
@@ -70,6 +83,7 @@ def upload_field_specified(csv_bytes, filename="upload.csv"):
     seller = client.seller_id()
     if not seller:
         raise client.YahooNotConfigured("Secrets に YAHOO_SELLER_ID が未設定です。")
+    _rate_limit()
     url = f"{_base()}/uploadItemFile"
     res = requests.post(
         url,

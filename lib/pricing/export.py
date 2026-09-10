@@ -162,12 +162,13 @@ RAKUTEN_DELIVERY_SET_NAME = {"宅配便": "宅配便のみ", "メール便": "�
 # Noは店舗ごとの設定値なので定数にしない。入荷登録の⚙️で設定した値を group_no で渡す。
 YAHOO_CODE_FIELD = "code"
 YAHOO_DELIVERY_FIELD = "postage-set"
+YAHOO_CATEGORY_FIELD = "product-category"
 # 待機キューに保存している内部表記（＝便種の略号）。CSVにはこの値ではなくNoを書く。
 YAHOO_DELIVERY_VALUE = {"宅配便": "NT", "メール便": "NM"}
 YAHOO_BIN_BY_VALUE = {v: k for k, v in YAHOO_DELIVERY_VALUE.items()}
 
 
-def yahoo_delivery_rows(rows, group_no):
+def yahoo_delivery_rows(rows, group_no, categories=None):
     """[{商品管理番号, 新便種}] → [{code, postage-set}]。
 
     group_no は {"宅配便": "3", "メール便": "5"} のような配送グループNo。
@@ -181,8 +182,16 @@ def yahoo_delivery_rows(rows, group_no):
         if not no:
             raise ValueError(f"Yahooの配送グループNoが未設定です（{bin_name}）。"
                              "入荷登録の⚙️で設定してください。")
-        out.append({YAHOO_CODE_FIELD: str(r["商品管理番号"]).lower(),
-                    YAHOO_DELIVERY_FIELD: no})
+        row = {YAHOO_CODE_FIELD: str(r["商品管理番号"]).lower(),
+               YAHOO_DELIVERY_FIELD: no}
+        if categories:
+            # 項目指定は「空欄を送ると値が消える」。カテゴリを足すCSVには、
+            # 値が確定している行だけを入れること（空文字で埋めない）。
+            category = str(categories.get(row[YAHOO_CODE_FIELD], "")).strip()
+            if not category:
+                raise ValueError(f"{row[YAHOO_CODE_FIELD]}: プロダクトカテゴリが未確定です。")
+            row[YAHOO_CATEGORY_FIELD] = category
+        out.append(row)
     return out
 
 
@@ -200,10 +209,16 @@ def rakuten_delivery_csv(rows):
     return _to_csv_bytes(df)
 
 
-def yahoo_delivery_csv(rows, group_no):
-    """[{商品管理番号, 新便種}] → Yahoo「項目指定」アップロード用CSV（code, postage-set）。"""
-    df = pd.DataFrame(yahoo_delivery_rows(rows, group_no),
-                      columns=[YAHOO_CODE_FIELD, YAHOO_DELIVERY_FIELD])
+def yahoo_delivery_csv(rows, group_no, categories=None):
+    """[{商品管理番号, 新便種}] → Yahoo「項目指定」アップロード用CSV。
+
+    categories={code: プロダクトカテゴリID} を渡すと product-category 列を足す
+    （カテゴリ未設定の商品は U-001-0363 でアップロードが弾かれるため）。
+    """
+    columns = [YAHOO_CODE_FIELD, YAHOO_DELIVERY_FIELD]
+    if categories:
+        columns.append(YAHOO_CATEGORY_FIELD)
+    df = pd.DataFrame(yahoo_delivery_rows(rows, group_no, categories), columns=columns)
     return _to_csv_bytes(df)
 
 

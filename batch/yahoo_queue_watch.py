@@ -60,20 +60,23 @@ def _group_no(folder):
 
 def _reflected_codes(df, group_no):
     """反映が確認できたコードと、確認できなかった行の説明を返す。"""
-    current = yitems.get_postage_sets(list(df["code"]))
+    current = yitems.get_item_status(list(df["code"]))
     done, pending = [], []
     for _, row in df.iterrows():
         code = str(row["code"]).strip()
         want = yq.expected_no(row, group_no)
-        info = current.get(code) or {"state": yitems.STATE_ERROR, "value": None}
-        if info["state"] == yitems.STATE_OK and want and str(info["value"]).strip() == want:
+        info = current.get(code) or {"state": yitems.STATE_ERROR, "postage_set": None}
+        reflected = (info["state"] == yitems.STATE_OK and want
+                     and str(info["postage_set"]).strip() == want)
+        if reflected:
             done.append(code)
         elif info["state"] == yitems.STATE_NOT_FOUND:
             pending.append(f"{code}: Yahoo未登録（商品を登録するまで反映できません）")
         elif info["state"] != yitems.STATE_OK:
             pending.append(f"{code}: 現在値を読めず未確認")
         else:
-            pending.append(f"{code}: 現在No.{info['value'] or '未設定'} / あるべきNo.{want or '不明'}")
+            pending.append(f"{code}: 現在No.{info['postage_set'] or '未設定'} "
+                           f"/ あるべきNo.{want or '不明'}")
     return done, pending
 
 

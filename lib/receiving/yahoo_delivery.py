@@ -34,7 +34,7 @@ class Plan:
 def classify(rows, current, group_no, group_bins):
     """rows=[{code, 便種}] を振り分ける。
 
-    current   … lib.yahoo_api.items.get_postage_sets の返り値
+    current   … lib.yahoo_api.items.get_item_status の返り値
     group_no  … {便種: 書き込むNo}
     group_bins… {No: 便種}（この店舗の配送グループ設定）
     """
@@ -43,8 +43,9 @@ def classify(rows, current, group_no, group_bins):
     plan = Plan()
     for row in rows:
         code, bin_name = str(row["code"]).strip(), row["便種"]
-        info = (current or {}).get(code) or {"state": yitems.STATE_ERROR,
-                                             "value": None, "message": "現在値を取得していません"}
+        info = (current or {}).get(code) or {
+            "state": yitems.STATE_ERROR, "postage_set": None,
+            "product_category": None, "message": "現在値を取得していません"}
         target_no = str((group_no or {}).get(bin_name, "")).strip()
 
         if info["state"] == yitems.STATE_NOT_FOUND:
@@ -55,15 +56,17 @@ def classify(rows, current, group_no, group_bins):
                                  "理由": info.get("message") or "現在値を読めませんでした"})
             continue
         if not target_no:
-            plan.unknown.append({"code": code, "便種": bin_name, "現在No": info["value"],
+            plan.unknown.append({"code": code, "便種": bin_name,
+                                 "現在No": info["postage_set"],
                                  "理由": f"{bin_name}の配送グループNoが未設定です"})
             continue
 
-        cur_no = str(info["value"] or "").strip()
+        cur_no = str(info["postage_set"] or "").strip()
+        cur_cat = str(info.get("product_category") or "").strip()
         if not cur_no:
             # 現在グループ未設定なら、目的の便種のグループを入れる（奪うキャリアが無い）
-            plan.to_update.append({"code": code, "便種": bin_name,
-                                   "no": target_no, "現在No": ""})
+            plan.to_update.append({"code": code, "便種": bin_name, "no": target_no,
+                                   "現在No": "", "カテゴリ": cur_cat})
             continue
         cur_bin = (group_bins or {}).get(cur_no)
         if cur_bin is None:
@@ -73,15 +76,53 @@ def classify(rows, current, group_no, group_bins):
         elif cur_bin == bin_name:
             plan.already.append({"code": code, "便種": bin_name, "現在No": cur_no})
         else:
-            plan.to_update.append({"code": code, "便種": bin_name,
-                                   "no": target_no, "現在No": cur_no})
+            plan.to_update.append({"code": code, "便種": bin_name, "no": target_no,
+                                   "現在No": cur_no, "カテゴリ": cur_cat})
     return plan
 
 
-def upload_csv(to_update):
-    """更新対象 → Yahoo項目指定アップロード用CSV（code, postage-set）のbytes。"""
+def needs_category(to_update):
+    """プロダクトカテゴリが未設定で、このままでは弾かれる商品コード。
+
+    カテゴリが無い商品は、配送グループだけのCSVを送っても
+    U-001-0363「プロダクトカテゴリが存在しません」で行ごと落ちる
+    （2026-09-09 artc4168 で確認）。
+    """
+    return [r["code"] for r in to_update if not str(r.get("カテゴリ") or "").strip()]
+
+
+def upload_batches(to_update, categories=None):
+    """更新対象 → アップロードするCSVの束 [{csv, codes, with_category}]。
+
+    カテゴリを補う行と補わない行は**別のCSVに分ける**。項目指定アップロードは
+    空欄を送ると値が消えるので、1枚に混ぜて片方だけ空にすることはできない。
+    カテゴリが必要なのに推定できなかった行は、ここには含めない（呼び出し側が報告する）。
+    """
     from lib.pricing import export as ex
 
-    rows = [{"商品管理番号": r["code"], "新便種": r["便種"]} for r in to_update]
-    group_no = {r["便種"]: r["no"] for r in to_update}
-    return ex.yahoo_delivery_csv(rows, group_no)
+    categories = {str(k).lower(): str(v).strip()
+                  for k, v in (categories or {}).items() if str(v).strip()}
+    plain, with_cat = [], []
+    for r in to_update:
+        if str(r.get("カテゴリ") or "").strip():
+            plain.append(r)
+        elif r["code"] in categories:
+            with_cat.append(r)
+        # それ以外（カテゴリ未設定かつ推定できず）は送らない
+
+    batches = []
+    for rows, cats in ((plain, None), (with_cat, categories)):
+        if not rows:
+            continue
+        csv_rows = [{"商品管理番号": r["code"], "新便種": r["便種"]} for r in rows]
+        group_no = {r["便種"]: r["no"] for r in rows}
+        batches.append({"csv": ex.yahoo_delivery_csv(csv_rows, group_no, cats),
+                        "codes": [r["code"] for r in rows],
+                        "with_category": cats is not None})
+    return batches
+
+
+def upload_csv(to_update, categories=None):
+    """互換用: 1枚にまとまる場合のCSV（テスト・手動リカバリー用）。"""
+    batches = upload_batches(to_update, categories)
+    return batches[0]["csv"] if batches else b""

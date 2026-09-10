@@ -21,8 +21,10 @@ GROUP_BINS = {"1": "宅配便", "2": "メール便", "3": "宅配便",
               "4": "宅配便", "5": "メール便", "6": "宅配便"}
 
 
-def _ok(value):
-    return {"state": yitems.STATE_OK, "value": value, "message": ""}
+def _ok(postage, category="2500"):
+    """getItem が読めたときの形。category="" はプロダクトカテゴリ未設定。"""
+    return {"state": yitems.STATE_OK, "postage_set": postage,
+            "product_category": category, "message": ""}
 
 
 def test_same_bin_different_carrier_is_left_alone():
@@ -52,7 +54,8 @@ def test_already_correct_group_is_skipped():
 
 def test_unregistered_item_is_reported_not_queued_forever():
     """Yahoo未登録は「未反映」ではなく「未登録」。待っても解消しないので分けて出す。"""
-    current = {"nssk0098": {"state": yitems.STATE_NOT_FOUND, "value": None, "message": "無い"}}
+    current = {"nssk0098": {"state": yitems.STATE_NOT_FOUND, "postage_set": None,
+                            "product_category": None, "message": "無い"}}
     plan = ydv.classify([{"code": "nssk0098", "便種": "メール便"}],
                         current, GROUP_NO, GROUP_BINS)
     assert plan.to_update == [] and [r["code"] for r in plan.not_found] == ["nssk0098"]
@@ -60,7 +63,8 @@ def test_unregistered_item_is_reported_not_queued_forever():
 
 def test_unreadable_current_value_is_not_guessed():
     """現在値を読めなかったものは推測で書き換えない（読めない＝不明）。"""
-    current = {"x0001": {"state": yitems.STATE_ERROR, "value": None, "message": "通信失敗"}}
+    current = {"x0001": {"state": yitems.STATE_ERROR, "postage_set": None,
+                         "product_category": None, "message": "通信失敗"}}
     plan = ydv.classify([{"code": "x0001", "便種": "宅配便"}], current, GROUP_NO, GROUP_BINS)
     assert plan.to_update == [] and len(plan.unknown) == 1
 
@@ -76,14 +80,46 @@ def test_empty_group_gets_the_target_group():
     """配送グループ未設定の商品には、目的の便種のグループを入れる（奪うキャリアが無い）。"""
     plan = ydv.classify([{"code": "x0003", "便種": "メール便"}],
                         {"x0003": _ok("")}, GROUP_NO, GROUP_BINS)
-    assert plan.to_update == [{"code": "x0003", "便種": "メール便", "no": "2", "現在No": ""}]
+    assert plan.to_update == [{"code": "x0003", "便種": "メール便", "no": "2",
+                               "現在No": "", "カテゴリ": "2500"}]
 
 
 def test_upload_csv_shape():
     """送るCSVは半角フィールド名＋配送グループNo。"""
-    csv = ydv.upload_csv([{"code": "kawa1370", "便種": "宅配便", "no": "1", "現在No": "2"}])
+    csv = ydv.upload_csv([{"code": "kawa1370", "便種": "宅配便", "no": "1",
+                           "現在No": "2", "カテゴリ": "2500"}])
     lines = csv.decode("cp932").splitlines()
     assert lines[0] == "code,postage-set" and lines[1] == "kawa1370,1"
+
+
+def test_category_is_filled_in_a_separate_csv():
+    """カテゴリ未設定の行だけ product-category を足し、別CSVに分ける。
+
+    項目指定は空欄を送ると値が消えるので、カテゴリのある行と無い行を
+    1枚に混ぜられない（混ぜると、設定済みのカテゴリを消しにいく）。
+    """
+    to_update = [
+        {"code": "kawa1370", "便種": "宅配便", "no": "1", "現在No": "2", "カテゴリ": "2500"},
+        {"code": "artc4168", "便種": "メール便", "no": "2", "現在No": "1", "カテゴリ": ""},
+    ]
+    assert ydv.needs_category(to_update) == ["artc4168"]
+
+    batches = ydv.upload_batches(to_update, {"artc4168": "13457"})
+    assert len(batches) == 2
+    plain = next(b for b in batches if not b["with_category"])
+    withcat = next(b for b in batches if b["with_category"])
+    assert plain["csv"].decode("cp932").splitlines()[0] == "code,postage-set"
+    assert plain["codes"] == ["kawa1370"]
+    lines = withcat["csv"].decode("cp932").splitlines()
+    assert lines[0] == "code,postage-set,product-category"
+    assert lines[1] == "artc4168,2,13457"
+
+
+def test_uninferable_category_row_is_not_sent():
+    """カテゴリを推定できなかった行は送らない（送っても弾かれるだけ）。"""
+    to_update = [{"code": "artc4168", "便種": "メール便", "no": "2",
+                  "現在No": "1", "カテゴリ": ""}]
+    assert ydv.upload_batches(to_update, {}) == []
 
 
 def test_not_found_is_reported_as_unregistered(monkeypatch):
