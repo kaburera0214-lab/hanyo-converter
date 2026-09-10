@@ -265,6 +265,46 @@ def reserve_publish():
     return _errors_from_xml(text)
 
 
+# 反映予約が「いま無理」と断ってくるコード。エラーではなく順番待ちの意味。
+# uploadItemFile の直後はYahoo側がファイルを処理中なので、必ずこれが返る。
+PUBLISH_BUSY_CODE = "ed-00006"
+
+
+def _is_busy(text):
+    return PUBLISH_BUSY_CODE in str(text) or "反映またはアップロード中" in str(text)
+
+
+def reserve_publish_retry(attempts=4, wait_seconds=8, on_wait=None):
+    """反映予約。アップロード直後は ed-00006 で断られるので、間隔を空けて試し直す。
+
+    返り値 (ok, busy, errors):
+      ok=True          … 反映予約できた
+      busy=True        … 最後までYahooが処理中だった（**失敗ではなく保留**。
+                          あとで日次の点検が予約し直す）
+      errors           … busy以外の理由
+    """
+    import time
+
+    last = []
+    for attempt in range(1, max(1, attempts) + 1):
+        try:
+            errs = reserve_publish()
+        except YahooHTTPError as e:
+            errs = [str(e)]
+        except client.YahooError as e:
+            return False, False, [str(e)]
+        if not errs:
+            return True, False, []
+        if not any(_is_busy(e) for e in errs):
+            return False, False, errs
+        last = errs
+        if attempt < attempts:
+            if on_wait:
+                on_wait(attempt, attempts, wait_seconds)
+            time.sleep(wait_seconds)
+    return False, True, last
+
+
 def get_stock(codes):
     """在庫参照API(getStock)で商品を“読むだけ”実行する（切り分け用・書き込みなし）。
     codes: 商品コードのlist。個別商品コードは "商品コード:個別コード"（コロン）で渡す。

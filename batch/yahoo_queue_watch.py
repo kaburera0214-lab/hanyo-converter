@@ -101,6 +101,18 @@ def main():
         print(f"{TAG} OK: すべて反映を確認しました", flush=True)
         return 0
 
+    # アップロードは済んでいるのに反映予約が保留のままのことがある
+    # （送信直後は ed-00006「反映またはアップロード中」で断られるため）。
+    # 未反映が残っているならここで予約し直す。やらないと、送っただけで
+    # 店頭に出ないまま何日も残る。
+    published, busy, perr = yitems.reserve_publish_retry(attempts=2, wait_seconds=10)
+    if published:
+        print(f"{TAG} 反映予約を入れ直しました（次回の点検で反映を確認します）", flush=True)
+    elif busy:
+        print(f"{TAG} Yahooが処理中のため反映予約は見送り（次回に再試行）", flush=True)
+    else:
+        print(f"{TAG} WARN: 反映予約に失敗: {'／'.join(perr[:3])}", file=sys.stderr, flush=True)
+
     age = yq.oldest_age_days(df)
     detail = "\n".join(pending[:10])
     if age is None:

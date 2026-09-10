@@ -147,3 +147,45 @@ def test_not_found_is_reported_as_unregistered(monkeypatch):
     except category_repair.YahooItemNotFound as e:
         assert "登録されていません" in str(e)
         assert "Bad Request" in str(e)      # 応答本文は丸めずに残す
+
+
+def test_publish_busy_is_pending_not_failure(monkeypatch):
+    """反映予約の ed-00006 は失敗ではなく順番待ち（アップロード直後は必ず出る）。"""
+    from lib.yahoo_api import items as yitems
+
+    calls = []
+
+    def _busy():
+        calls.append(1)
+        return ["Yahoo APIエラー HTTP 400: <Code>ed-00006</Code>"
+                "<Message>反映またはアップロード中のため更新ができません。</Message>"]
+
+    monkeypatch.setattr(yitems, "reserve_publish", _busy)
+    ok, busy, errs = yitems.reserve_publish_retry(attempts=2, wait_seconds=0)
+    assert (ok, busy) == (False, True) and len(calls) == 2
+    assert errs and "ed-00006" in errs[0]
+
+
+def test_publish_succeeds_after_waiting(monkeypatch):
+    """待てば通る場合は成功として返す（1回目で諦めない）。"""
+    from lib.yahoo_api import items as yitems
+
+    state = {"n": 0}
+
+    def _busy_then_ok():
+        state["n"] += 1
+        if state["n"] == 1:
+            return ["<Code>ed-00006</Code>"]
+        return []
+
+    monkeypatch.setattr(yitems, "reserve_publish", _busy_then_ok)
+    assert yitems.reserve_publish_retry(attempts=3, wait_seconds=0) == (True, False, [])
+
+
+def test_real_publish_error_is_not_treated_as_busy(monkeypatch):
+    """ed-00006 以外は保留にせず、失敗として返す（黙って待ち続けない）。"""
+    from lib.yahoo_api import items as yitems
+
+    monkeypatch.setattr(yitems, "reserve_publish", lambda: ["<Code>pm-05005</Code>"])
+    ok, busy, errs = yitems.reserve_publish_retry(attempts=3, wait_seconds=0)
+    assert (ok, busy) == (False, False) and errs == ["<Code>pm-05005</Code>"]

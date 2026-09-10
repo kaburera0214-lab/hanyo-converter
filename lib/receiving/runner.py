@@ -282,6 +282,17 @@ def _yahoo_delivery(task, results, failed, on_step):
                              "この商品はカテゴリを設定しないと配送グループを更新できません: "
                              + str(reason)})
 
+        if cat_detail:
+            # 後段（反映予約）が失敗しても、何のカテゴリを入れたかは必ず残す。
+            # 成功メッセージにだけ書くと、失敗した回は記録が消える。
+            shown_cat = "、".join(
+                f"{code}→{d['category_id']}({d.get('category_name') or '名称不明'})"
+                for code, d in list(cat_detail.items())[:10])
+            results.append({
+                "ステップ": STEP_YAHOO_DELIVERY, "対象": f"{len(cat_detail)}件",
+                "状態": "成功",
+                "メッセージ": f"プロダクトカテゴリを自動設定してCSVに含めました: {shown_cat}"})
+
         batches = ydv.upload_batches(plan.to_update, categories)
         if not batches:
             failed["yahoo_delivery"] = dict(task, rows=plan.to_update)
@@ -301,15 +312,23 @@ def _yahoo_delivery(task, results, failed, on_step):
                     "状態": "失敗", "メッセージ": "／".join(errs[:5])})
                 failed["yahoo_delivery"] = dict(task, rows=plan.to_update)
                 return
+        # アップロード直後はYahooがファイルを処理中で、反映予約は ed-00006 で必ず断られる。
+        # これは失敗ではなく順番待ちなので、少し待って試し直す。
         if on_step:
             on_step("⑥ Yahoo: 反映予約API(reservePublish)を呼び出し中…")
-        try:
-            perr = yitems.reserve_publish()
-        except Exception as e:  # noqa: BLE001
-            # ここで外のexceptに落とすと「送信は成功したのか」が結果表から読めなくなる
-            # （対象がキュー全体の件数になり、失敗の場所も分からない）。送信済みは明示する。
-            perr = [f"HTTPエラー: {e}"]
-        if perr:
+        published, busy, perr = yitems.reserve_publish_retry(
+            on_wait=lambda n, total, w: on_step(
+                f"⑥ Yahoo: アップロード処理中のため待機（{n}/{total}・{w}秒）…")
+            if on_step else None)
+        if busy:
+            results.append({
+                "ステップ": STEP_YAHOO_DELIVERY, "対象": f"{len(sent)}件（{shown}）",
+                "状態": "スキップ",
+                "メッセージ": "アップロードは完了しています。Yahoo側が処理中で反映予約"
+                             "(reservePublish)がまだ受け付けられないため、**保留**にしました"
+                             "（毎朝の点検が反映を確認し、まだなら予約し直します）。"})
+            return
+        if not published:
             results.append({
                 "ステップ": STEP_YAHOO_DELIVERY, "対象": f"{len(sent)}件（{shown}）",
                 "状態": "失敗",
@@ -319,11 +338,6 @@ def _yahoo_delivery(task, results, failed, on_step):
             return
         message = ("送信＋反映予約 完了（反映は非同期です。実際に反映されたかは"
                    "日次の点検でgetItemを読んで確認します）")
-        if cat_detail:
-            shown_cat = "、".join(
-                f"{code}→{d['category_id']}({d.get('category_name') or '名称不明'})"
-                for code, d in list(cat_detail.items())[:10])
-            message += f"／プロダクトカテゴリ自動設定 {len(cat_detail)}件: {shown_cat}"
         results.append({
             "ステップ": STEP_YAHOO_DELIVERY, "対象": f"{len(sent)}件（{shown}）",
             "状態": "成功", "メッセージ": message})
