@@ -258,200 +258,216 @@ with st.expander("🔐 楽天RMS接続（管理者用・ライセンスキーの
                    use_container_width=True)
 
 _dv_route = mall_routes.get("Yahoo", "delivery_group")
-with st.expander("🟡 Yahoo配送グループ 反映確認待ち（通常は操作不要）", expanded=False):
-    st.caption(_dv_route.sentence()
-               + "　**通常この画面での操作は要りません。**送信は⑥で自動、"
-                 "反映されたかの確認は毎朝の点検（yahoo-queue-watch）がgetItemを読んで行い、"
-                 "確認できた分はここから自動で消えます。"
-                 "**残り続けるのは反映できていないもの**です"
-                 "（Yahoo未登録・プロダクトカテゴリ未設定などでアップロードが弾かれている）。"
-                 "下のCSVとボタンは、APIが使えないときの手動リカバリー用です。")
-    st.caption(mall_routes.checked_note("Yahoo", "delivery_group"))
+_yd = yq.load_delivery(product_folder)
 
-    # 配送グループNo（店舗設定）。Noが分からないままCSVを作らせない。
-    _ygn = _yahoo_group_no()
-    y1, y2, y3 = st.columns([1, 1, 1])
-    _yg_tak = y1.text_input("宅配便の配送グループNo", value=_ygn["宅配便"], key="recv_ygrp_tak")
-    _yg_mail = y2.text_input("メール便の配送グループNo", value=_ygn["メール便"], key="recv_ygrp_mail")
-    if y3.button("💾 Noを保存", key="recv_ygrp_save",
-                 disabled=not (_yg_tak.strip() and _yg_mail.strip())):
-        _settings["yahoo_group_takuhai"] = _yg_tak.strip()
-        _settings["yahoo_group_mail"] = _yg_mail.strip()
-        try:
-            masters.save_settings(_settings, product_folder)
-            st.success("保存しました。")
-            st.rerun()
-        except Exception as e:  # noqa: BLE001
-            st.warning(f"Drive保存に失敗（この画面では有効）: {e}")
-    st.caption("**通常は触らなくて構いません**（2026-09-09に確定した値を自動で入れてあります）。"
-               "NoはストアクリエイターPro「ストア構築 → カート設定 → 配送グループ設定」の"
-               "**No列（1〜20の数字）**で、CSVにはこのNoを書きます"
-               "（`NT`・`メール便`などの名前を書くとアップロードが弾かれます）。"
-               "店舗側で配送グループを組み替えたときだけ、ここを直してください。")
+# 配送グループは⑥で自動更新し、反映まで確認する。つまり**通常は控えが空**で、
+# この画面に出すものが無い。空のときは何も表示しない（操作の要らないUIを
+# 常に置いておくと、本当に見るべきときに気づけなくなる）。
+#
+# 残っているのは「自動では直せなかったもの」だけ（Yahoo未登録など）。
+# それは黙って隠さず、件数を出して人が判断できるようにする。
+if len(_yd):
+    with st.expander(f"🟡 Yahoo配送グループ 反映できていないもの（{len(_yd)}件）",
+                     expanded=False):
+        st.caption("**ここに出ているのは、自動では反映できなかったものだけです。**"
+                   + _dv_route.sentence()
+                   + "　通常は送信も反映確認も自動で終わり、この欄自体が出ません。"
+                     "残る主な理由は、Yahooに商品が未登録・プロダクトカテゴリを"
+                     "決められないなどで、**人が直さないと解消しません**。"
+                     "下のCSVとボタンは手動リカバリー用です。")
+        st.caption(mall_routes.checked_note("Yahoo", "delivery_group"))
 
-    _yd = yq.load_delivery(product_folder)
-    st.markdown(f"**配送グループの反映待ち: {len(_yd)}件**")
-    if len(_yd):
-        # 手動が残る経路は「忘れたら永久に反映されない」。滞留は画面でも赤く出す
-        # （同じ判定を batch/yahoo_queue_watch.py が毎日回して稼働監視へ上げている）。
-        _age = yq.oldest_age_days(_yd)
-        if _age is not None and _age >= yq.STALE_DAYS:
-            st.error(f"⚠️ 最も古い1件が **{_age}日前** から未反映です。"
-                     "その間、NEと楽天だけ便種が変わってYahooの送料設定は旧のままです。"
-                     "アップロードが弾かれている可能性があります"
-                     "（下の🔍で現在値と理由を確認してください）。")
-        st.dataframe(_yd, use_container_width=True, hide_index=True, height=180)
-
-        _missing = yq.missing_group_bins(_yd, _ygn)
-        if _missing:
-            st.error("🛑 " + "・".join(_missing) + "の配送グループNoが未設定のため、"
-                     "アップ用CSVを作れません。上の欄にNoを入れて保存してください。")
-        else:
-            st.download_button("⬇️ 手動リカバリー用CSV（code, postage-set）",
-                               yq.delivery_upload_csv(_yd, _ygn),
-                               "yahoo_delivery.csv", "text/csv",
-                               key="yq_dl_dv", use_container_width=True)
-
-        # アップした結果を人の記憶ではなくAPIで確かめる。
-        # 「アップしたつもり」で空にすると、そのまま静かに未反映になる。
-        # Noが未設定でも押せる（現在値を読むこと自体が、店舗のNoを知る手段になる）。
-        if st.button("🔍 Yahooの現在値を確認（getItem・更新はしません）", key="yq_dv_verify",
-                     disabled=not yahoo_client.api_enabled()):
-            from lib.yahoo_api import items as yahoo_items
-            with st.spinner("Yahooの商品データを参照中…"):
-                try:
-                    _now_map = yahoo_items.get_item_status(list(_yd["code"]))
-                except Exception as e:  # noqa: BLE001
-                    _now_map = None
-                    st.error(f"参照に失敗しました: {e}")
-            if _now_map is not None:
-                # get_item_status は {code: {"state","postage_set","product_category","message"}}。
-                # 「読めた」「Yahooに商品が無い」「読めなかった」を混ぜないための形。
-                _rows = []
-                for _, _r in _yd.iterrows():
-                    _bin = yq.bin_of(_r[yq.DELIVERY_VALUE_COLUMN])
-                    _want = _ygn.get(_bin, "")
-                    _info = _now_map.get(str(_r["code"])) or {
-                        "state": yahoo_items.STATE_ERROR, "postage_set": None,
-                        "message": "現在値を取得していません"}
-                    _state, _cur = _info["state"], _info.get("postage_set")
-                    if _state == yahoo_items.STATE_NOT_FOUND:
-                        _judge, _shown = "Yahoo未登録", "（商品が存在しません）"
-                    elif _state != yahoo_items.STATE_OK:
-                        _judge, _shown = "参照できず", "（参照できず）"
-                    elif not _want:
-                        _judge, _shown = "Noが未設定", (_cur or "（未設定）")
-                    else:
-                        _judge = "反映済み" if str(_cur).strip() == _want else "未反映"
-                        _shown = _cur or "（未設定）"
-                    # カテゴリはアップロードが弾かれる主因（U-001-0363）なので一緒に出す。
-                    # 「空」と「値はあるが無効なID」は原因も対処も違い、値を見ないと分からない。
-                    _cat = _info.get("product_category")
-                    _rows.append({
-                        "code": _r["code"],
-                        "便種": _bin,
-                        "あるべきNo": _want or "（未設定）",
-                        "Yahooの現在値": _shown,
-                        "判定": _judge,
-                        "プロダクトカテゴリ": ("（読めず）" if _cat is None
-                                              else (_cat or "（未設定）")),
-                        "メッセージ": _info.get("message", ""),
-                    })
-                st.session_state["yq_dv_verify_rows"] = _rows
-        _vrows = st.session_state.get("yq_dv_verify_rows")
-        if _vrows:
-            st.dataframe(pd.DataFrame(_vrows), use_container_width=True, hide_index=True)
-            _vmsg = [r for r in _vrows if r.get("メッセージ")]
-            if _vmsg:
-                with st.expander("参照できなかった理由（全文）", expanded=False):
-                    for _r in _vmsg:
-                        st.markdown(f"**{_r['code']}**")
-                        st.code(str(_r["メッセージ"]))
-            _left = [r for r in _vrows if r["判定"] != "反映済み"]
-            if _left:
-                st.warning(f"⚠️ {len(_left)}件がまだ反映されていません"
-                           "（参照できず・Noが未設定の行は「反映済み」とみなしません）。"
-                           "**「Yahooの現在値」列が、この店舗で実際に使われている配送グループNoです**"
-                           "（Noが分からないときはここから調べられます）。")
-            else:
-                st.success("✅ 全件、Yahoo側が期待どおりの配送グループNoになっています。")
-
-        # 反映されなかったぶんの再送。⑥と同じ判定・同じAPIを通すので、
-        # 「すでに同じ便種（＝触ってはいけない）」はここでも自動的に対象外になり、
-        # 控えからも外れる（旧仕様で積まれた行の片付けも兼ねる）。
-        # Yahoo自身の行単位の判定を読む。送らずに原因だけ確かめられるようにする。
-        if st.button("🧾 Yahooのアップロード判定を見る（データチェック履歴）",
-                     key="yq_dv_check", disabled=not yahoo_client.api_enabled()):
-            from lib.yahoo_api import upload_check as _uc
-            with st.spinner("Yahooのデータチェック履歴を参照中…"):
-                try:
-                    _checks = _uc.recent_item_checks(results=5)
-                    _reasons, _cid = _uc.describe_latest_errors(codes=list(_yd["code"]))
-                    _allr, _ = _uc.describe_latest_errors()
-                except Exception as e:  # noqa: BLE001
-                    _checks, _reasons, _allr, _cid = None, [], [], ""
-                    st.error(f"参照に失敗しました: {e}")
-            st.session_state["yq_dv_check_rows"] = {
-                "checks": _checks, "reasons": _reasons, "all": _allr, "check_id": _cid}
-        _chk = st.session_state.get("yq_dv_check_rows")
-        if _chk:
-            if _chk["checks"]:
-                st.markdown("**直近の商品アップロード（新しい順）**")
-                st.dataframe(pd.DataFrame(_chk["checks"]),
-                             use_container_width=True, hide_index=True)
-            _lines = _chk["reasons"] or _chk["all"]
-            if _lines:
-                st.markdown(f"**Yahooが出したエラー**（check_id={_chk['check_id'] or '不明'}）")
-                st.code("\n".join(_lines))
-            else:
-                st.info("直近のアップロードにエラーは出ていません。")
-
-        _force_cat = st.checkbox(
-            "プロダクトカテゴリを推定し直して送る（既存値を無視）", key="yq_dv_forcecat",
-            help="Yahooの画面で「プロダクトカテゴリが存在しません」と出るのに、"
-                 "現在値には数字が入っている場合に使います。廃止されたカテゴリIDが"
-                 "残っていると、値があるので自動補完が働きません。")
-        if st.button("▶️ 未反映を今すぐ送信（項目指定アップロード）", key="yq_dv_resend",
-                     type="primary", disabled=not yahoo_client.api_enabled()):
-            _rows = [{"code": str(r["code"]).strip(),
-                      "便種": yq.bin_of(r[yq.DELIVERY_VALUE_COLUMN])}
-                     for _, r in _yd.iterrows()]
-            with st.spinner("Yahooへ送信中…"):
-                _rs, _ = runner.execute({"yahoo_delivery": {
-                    "rows": _rows, "group_no": _ygn,
-                    "group_bins": _settings.get(mall_routes.YAHOO_GROUP_BINS_KEY) or {},
-                    "folder": product_folder, "force_category": _force_cat}})
-            # 画面に出しっぱなしにすると、次に別のボタンを押した再実行で消える。
-            # 送信という「やり直しの効かない操作」の結果は必ず残す。
-            st.session_state["yq_dv_send_rows"] = _rs or [
-                {"ステップ": runner.STEP_YAHOO_DELIVERY, "対象": "-", "状態": "スキップ",
-                 "メッセージ": "送信対象がありませんでした（すべて対象外か、控えが空です）"}]
-            st.session_state.pop("yq_dv_verify_rows", None)   # 送信前の確認結果は古くなる
-            st.rerun()
-
-        _srows = st.session_state.get("yq_dv_send_rows")
-        if _srows:
-            st.markdown("**送信結果**")
-            st.dataframe(pd.DataFrame(_srows), use_container_width=True, hide_index=True)
-            # 表はメッセージが切れる。原因の特定にはYahooの応答本文が要るので全文を出す。
-            _sfail = [r for r in _srows if r.get("状態") == "失敗"]
-            if _sfail:
-                with st.expander("❌ 失敗の詳細（メッセージ全文）", expanded=True):
-                    for _r in _sfail:
-                        st.markdown(f"**{_r.get('対象')}**")
-                        st.code(str(_r.get("メッセージ", "")))
-            st.caption("反映は非同期です。実際に反映されたかは毎朝の点検（または上の🔍）で"
-                       "確認し、確認できた分がこの一覧から消えます。")
-
-        if st.checkbox("配送グループをYahooにアップ済みにする（控えを全部消す）",
-                       key="yq_dv_confirm"):
-            if st.button("✅ 配送キューを空にする", key="yq_dv_clear"):
-                n = yq.clear_delivery(product_folder)
-                st.session_state.pop("yq_dv_verify_rows", None)
-                st.success(f"{n}件をアーカイブしてキューを空にしました。")
+        # 配送グループNo（店舗設定）。Noが分からないままCSVを作らせない。
+        _ygn = _yahoo_group_no()
+        y1, y2, y3 = st.columns([1, 1, 1])
+        _yg_tak = y1.text_input("宅配便の配送グループNo", value=_ygn["宅配便"], key="recv_ygrp_tak")
+        _yg_mail = y2.text_input("メール便の配送グループNo", value=_ygn["メール便"], key="recv_ygrp_mail")
+        if y3.button("💾 Noを保存", key="recv_ygrp_save",
+                     disabled=not (_yg_tak.strip() and _yg_mail.strip())):
+            _settings["yahoo_group_takuhai"] = _yg_tak.strip()
+            _settings["yahoo_group_mail"] = _yg_mail.strip()
+            try:
+                masters.save_settings(_settings, product_folder)
+                st.success("保存しました。")
                 st.rerun()
-    else:
-        st.caption("なし")
+            except Exception as e:  # noqa: BLE001
+                st.warning(f"Drive保存に失敗（この画面では有効）: {e}")
+        st.caption("**通常は触らなくて構いません**（2026-09-09に確定した値を自動で入れてあります）。"
+                   "NoはストアクリエイターPro「ストア構築 → カート設定 → 配送グループ設定」の"
+                   "**No列（1〜20の数字）**で、CSVにはこのNoを書きます"
+                   "（`NT`・`メール便`などの名前を書くとアップロードが弾かれます）。"
+                   "店舗側で配送グループを組み替えたときだけ、ここを直してください。")
+
+        st.markdown(f"**配送グループの反映待ち: {len(_yd)}件**")
+        if len(_yd):
+            # 手動が残る経路は「忘れたら永久に反映されない」。滞留は画面でも赤く出す
+            # （同じ判定を batch/yahoo_queue_watch.py が毎日回して稼働監視へ上げている）。
+            _age = yq.oldest_age_days(_yd)
+            if _age is not None and _age >= yq.STALE_DAYS:
+                st.error(f"⚠️ 最も古い1件が **{_age}日前** から未反映です。"
+                         "その間、NEと楽天だけ便種が変わってYahooの送料設定は旧のままです。"
+                         "アップロードが弾かれている可能性があります"
+                         "（下の🔍で現在値と理由を確認してください）。")
+            st.dataframe(_yd, use_container_width=True, hide_index=True, height=180)
+
+            _missing = yq.missing_group_bins(_yd, _ygn)
+            if _missing:
+                st.error("🛑 " + "・".join(_missing) + "の配送グループNoが未設定のため、"
+                         "アップ用CSVを作れません。上の欄にNoを入れて保存してください。")
+            else:
+                st.download_button("⬇️ 手動リカバリー用CSV（code, postage-set）",
+                                   yq.delivery_upload_csv(_yd, _ygn),
+                                   "yahoo_delivery.csv", "text/csv",
+                                   key="yq_dl_dv", use_container_width=True)
+
+            # アップした結果を人の記憶ではなくAPIで確かめる。
+            # 「アップしたつもり」で空にすると、そのまま静かに未反映になる。
+            # Noが未設定でも押せる（現在値を読むこと自体が、店舗のNoを知る手段になる）。
+            if st.button("🔍 Yahooの現在値を確認（getItem・更新はしません）", key="yq_dv_verify",
+                         disabled=not yahoo_client.api_enabled()):
+                from lib.yahoo_api import items as yahoo_items
+                with st.spinner("Yahooの商品データを参照中…"):
+                    try:
+                        _now_map = yahoo_items.get_item_status(list(_yd["code"]))
+                    except Exception as e:  # noqa: BLE001
+                        _now_map = None
+                        st.error(f"参照に失敗しました: {e}")
+                if _now_map is not None:
+                    # get_item_status は {code: {"state","postage_set","product_category","message"}}。
+                    # 「読めた」「Yahooに商品が無い」「読めなかった」を混ぜないための形。
+                    _rows = []
+                    for _, _r in _yd.iterrows():
+                        _bin = yq.bin_of(_r[yq.DELIVERY_VALUE_COLUMN])
+                        _want = _ygn.get(_bin, "")
+                        _info = _now_map.get(str(_r["code"])) or {
+                            "state": yahoo_items.STATE_ERROR, "postage_set": None,
+                            "message": "現在値を取得していません"}
+                        _state, _cur = _info["state"], _info.get("postage_set")
+                        if _state == yahoo_items.STATE_NOT_FOUND:
+                            _judge, _shown = "Yahoo未登録", "（商品が存在しません）"
+                        elif _state != yahoo_items.STATE_OK:
+                            _judge, _shown = "参照できず", "（参照できず）"
+                        elif not _want:
+                            _judge, _shown = "Noが未設定", (_cur or "（未設定）")
+                        else:
+                            _judge = "反映済み" if str(_cur).strip() == _want else "未反映"
+                            _shown = _cur or "（未設定）"
+                        # カテゴリはアップロードが弾かれる主因（U-001-0363）なので一緒に出す。
+                        # 「空」と「値はあるが無効なID」は原因も対処も違い、値を見ないと分からない。
+                        _cat = _info.get("product_category")
+                        _rows.append({
+                            "code": _r["code"],
+                            "便種": _bin,
+                            "あるべきNo": _want or "（未設定）",
+                            "Yahooの現在値": _shown,
+                            "判定": _judge,
+                            "プロダクトカテゴリ": ("（読めず）" if _cat is None
+                                                  else (_cat or "（未設定）")),
+                            "メッセージ": _info.get("message", ""),
+                        })
+                    st.session_state["yq_dv_verify_rows"] = _rows
+            _vrows = st.session_state.get("yq_dv_verify_rows")
+            if _vrows:
+                st.dataframe(pd.DataFrame(_vrows), use_container_width=True, hide_index=True)
+                _vmsg = [r for r in _vrows if r.get("メッセージ")]
+                if _vmsg:
+                    with st.expander("参照できなかった理由（全文）", expanded=False):
+                        for _r in _vmsg:
+                            st.markdown(f"**{_r['code']}**")
+                            st.code(str(_r["メッセージ"]))
+                _left = [r for r in _vrows if r["判定"] != "反映済み"]
+                if _left:
+                    st.warning(f"⚠️ {len(_left)}件がまだ反映されていません"
+                               "（参照できず・Noが未設定の行は「反映済み」とみなしません）。"
+                               "**「Yahooの現在値」列が、この店舗で実際に使われている配送グループNoです**"
+                               "（Noが分からないときはここから調べられます）。")
+                else:
+                    st.success("✅ 全件、Yahoo側が期待どおりの配送グループNoになっています。")
+
+            # 反映されなかったぶんの再送。⑥と同じ判定・同じAPIを通すので、
+            # 「すでに同じ便種（＝触ってはいけない）」はここでも自動的に対象外になり、
+            # 控えからも外れる（旧仕様で積まれた行の片付けも兼ねる）。
+            # Yahoo自身の行単位の判定を読む。送らずに原因だけ確かめられるようにする。
+            if st.button("🧾 Yahooのアップロード判定を見る（データチェック履歴）",
+                         key="yq_dv_check", disabled=not yahoo_client.api_enabled()):
+                from lib.yahoo_api import upload_check as _uc
+                with st.spinner("Yahooのデータチェック履歴を参照中…"):
+                    try:
+                        _checks = _uc.recent_item_checks(results=5)
+                        _reasons, _cid = _uc.describe_latest_errors(codes=list(_yd["code"]))
+                        _allr, _ = _uc.describe_latest_errors()
+                    except Exception as e:  # noqa: BLE001
+                        _checks, _reasons, _allr, _cid = None, [], [], ""
+                        st.error(f"参照に失敗しました: {e}")
+                st.session_state["yq_dv_check_rows"] = {
+                    "checks": _checks, "reasons": _reasons, "all": _allr, "check_id": _cid}
+            _chk = st.session_state.get("yq_dv_check_rows")
+            if _chk:
+                if _chk["checks"]:
+                    st.markdown("**直近の商品アップロード（新しい順）**")
+                    st.dataframe(pd.DataFrame(_chk["checks"]),
+                                 use_container_width=True, hide_index=True)
+                _lines = _chk["reasons"] or _chk["all"]
+                if _lines:
+                    st.markdown(f"**Yahooが出したエラー**（check_id={_chk['check_id'] or '不明'}）")
+                    st.code("\n".join(_lines))
+                else:
+                    st.info("直近のアップロードにエラーは出ていません。")
+
+            _force_cat = st.checkbox(
+                "プロダクトカテゴリを推定し直して送る（既存値を無視）", key="yq_dv_forcecat",
+                help="Yahooの画面で「プロダクトカテゴリが存在しません」と出るのに、"
+                     "現在値には数字が入っている場合に使います。廃止されたカテゴリIDが"
+                     "残っていると、値があるので自動補完が働きません。")
+            if st.button("▶️ 未反映を今すぐ送信（項目指定アップロード）", key="yq_dv_resend",
+                         type="primary", disabled=not yahoo_client.api_enabled()):
+                _rows = [{"code": str(r["code"]).strip(),
+                          "便種": yq.bin_of(r[yq.DELIVERY_VALUE_COLUMN])}
+                         for _, r in _yd.iterrows()]
+                with st.spinner("Yahooへ送信中…"):
+                    _rs, _ = runner.execute({"yahoo_delivery": {
+                        "rows": _rows, "group_no": _ygn,
+                        "group_bins": _settings.get(mall_routes.YAHOO_GROUP_BINS_KEY) or {},
+                        "folder": product_folder, "force_category": _force_cat}})
+                # 画面に出しっぱなしにすると、次に別のボタンを押した再実行で消える。
+                # 送信という「やり直しの効かない操作」の結果は必ず残す。
+                st.session_state["yq_dv_send_rows"] = _rs or [
+                    {"ステップ": runner.STEP_YAHOO_DELIVERY, "対象": "-", "状態": "スキップ",
+                     "メッセージ": "送信対象がありませんでした（すべて対象外か、控えが空です）"}]
+                st.session_state.pop("yq_dv_verify_rows", None)   # 送信前の確認結果は古くなる
+                st.rerun()
+
+            _srows = st.session_state.get("yq_dv_send_rows")
+            if _srows:
+                st.markdown("**送信結果**")
+                st.dataframe(pd.DataFrame(_srows), use_container_width=True, hide_index=True)
+                # 表はメッセージが切れる。原因の特定にはYahooの応答本文が要るので全文を出す。
+                _sfail = [r for r in _srows if r.get("状態") == "失敗"]
+                if _sfail:
+                    with st.expander("❌ 失敗の詳細（メッセージ全文）", expanded=True):
+                        for _r in _sfail:
+                            st.markdown(f"**{_r.get('対象')}**")
+                            st.code(str(_r.get("メッセージ", "")))
+                st.caption("反映は非同期です。実際に反映されたかは毎朝の点検（または上の🔍）で"
+                           "確認し、確認できた分がこの一覧から消えます。")
+
+            # 直しようがないもの（Yahoo未登録など）を1件だけ外せるようにする。
+            # 「全部消す」しか無いと、まだ直せるものまで一緒に消えてしまう。
+            _drop = st.multiselect("この商品を控えから外す（対応しないと決めたもの）",
+                                   options=list(_yd["code"]), key="yq_dv_drop")
+            if _drop and st.button(f"🗑️ {len(_drop)}件を控えから外す", key="yq_dv_drop_go"):
+                n = yq.resolve_delivery(_drop, product_folder)
+                st.session_state.pop("yq_dv_verify_rows", None)
+                st.success(f"{n}件を控えから外しました（内容はDrive「Yahoo反映済み」に残ります）。")
+                st.rerun()
+
+            if st.checkbox("配送グループをYahooにアップ済みにする（控えを全部消す）",
+                           key="yq_dv_confirm"):
+                if st.button("✅ 配送キューを空にする", key="yq_dv_clear"):
+                    n = yq.clear_delivery(product_folder)
+                    st.session_state.pop("yq_dv_verify_rows", None)
+                    st.success(f"{n}件をアーカイブしてキューを空にしました。")
+                    st.rerun()
 
 with st.expander("⚙️ 楽天 配送方法セット管理番号（便種変更の自動修正に必要）", expanded=False):
     st.caption("番号はRMS「店舗設定→配送方法セット」の一覧で確認できます。"
@@ -1269,9 +1285,15 @@ if res:
 
     if res.get("n_dv"):
         # 経路の説明はベタ書きしない（lib/mall_routes.py が正本）。
-        st.info("🔁 " + _dv_route.sentence()
-                + "　反映されたかどうかは、毎朝の点検（yahoo-queue-watch）が"
-                  "getItemを読んで確認します。反映されないまま残ると稼働監視が赤になります。")
+        _dv_left = [r for r in results
+                    if r.get("ステップ") == runner.STEP_YAHOO_DELIVERY
+                    and r.get("状態") == "失敗"]
+        if _dv_left:
+            st.warning("⚠️ Yahoo配送グループで反映できなかったものがあります（上の表を確認）。"
+                       "解消するまで上の「🟡 Yahoo配送グループ 反映できていないもの」に残り、"
+                       "3日を超えると稼働監視が赤になります。")
+        else:
+            st.info("🔁 " + _dv_route.sentence())
 
     if st.button("🧹 フォームをクリアして次の入荷へ", key="recv_clear"):
         for k in ("recv_df", "recv_plan", "recv_plan_key", "recv_result",
