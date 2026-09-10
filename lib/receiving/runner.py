@@ -275,6 +275,11 @@ def _yahoo_delivery(task, results, failed, on_step):
                 on_step("⑥ Yahoo: プロダクトカテゴリを推定中…")
             cat_detail, cat_failures = ycat.plan_categories(
                 _need, ignore_existing=bool(task.get("force_category")))
+            # 推定しただけのIDは送らない。Yahooのカテゴリマスタに実在するかを確かめ、
+            # 無効なら商品名から引き直す。実在しないIDを送ると U-001-0363 で
+            # 行ごと弾かれ、しかも理由が分からないまま残る（2026-09-10 artc4168）。
+            cat_detail, cat_failures = _validate_categories(
+                cat_detail, cat_failures, current, on_step)
             categories = {code: detail["category_id"] for code, detail in cat_detail.items()}
         for code, reason in cat_failures.items():
             results.append({
@@ -434,3 +439,48 @@ def _verify_delivery(yitems, to_update, sent, task, results, on_step, attempts=3
                           f"{wait_seconds * attempts}秒待っても反映されていません。"
                           f"／**Yahooの判定**（check_id={check_id or '不明'}）: {detail}"
                           "／現在値: " + "／".join(pending[:10]))})
+
+
+def _validate_categories(plans, failures, current, on_step):
+    """推定したプロダクトカテゴリがYahooに実在するか確かめ、無効なら引き直す。
+
+    実在を確かめられないIDは送らない（送っても U-001-0363 で弾かれるだけで、
+    「なぜ入らないのか」が誰にも分からない状態が続く）。
+    """
+    from lib.yahoo_api import shop_category as ycategory
+
+    ok_plans, ng = dict(plans), dict(failures)
+    for code, plan in list(plans.items()):
+        if on_step:
+            on_step(f"⑥ Yahoo: プロダクトカテゴリの実在確認（{code}）…")
+        try:
+            valid = ycategory.exists(plan["category_id"])
+        except Exception as e:  # noqa: BLE001
+            valid = None
+            plan["validation_error"] = str(e)
+        if valid:
+            plan["validated"] = True
+            continue
+
+        # 無効・判定不能なら、商品名からカテゴリを引き直す
+        name = (current.get(code) or {}).get("name") or plan.get("name") or ""
+        hits = []
+        try:
+            hits = ycategory.find_by_name(name)
+        except Exception:  # noqa: BLE001
+            hits = []
+        picked = next((h for h in hits if str(h["code"]).strip().isdigit()), None)
+        if picked:
+            ok_plans[code] = {**plan, "category_id": int(picked["code"]),
+                              "category_name": picked["name"],
+                              "source": "SHPカテゴリ検索",
+                              "reason": f"推定した{plan['category_id']}はYahooに存在しないため、"
+                                        f"商品名から引き直し（{picked.get('path') or picked['name']}）",
+                              "validated": True}
+            continue
+
+        ok_plans.pop(code, None)
+        ng[code] = (f"推定したプロダクトカテゴリ {plan['category_id']} がYahooに存在せず、"
+                    f"商品名からも有効なカテゴリを見つけられませんでした"
+                    f"（{plan.get('validation_error') or 'カテゴリ検索で候補なし'}）")
+    return ok_plans, ng

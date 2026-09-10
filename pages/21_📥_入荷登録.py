@@ -39,13 +39,31 @@ from lib import mall_routes   # 反映経路の正本（案内文はここから
 # 載せ替えないことがある。2026-09-10 に実際に発生し、ページは新しいのに
 # lib.mall_routes が古いままで AttributeError（原因が伏字になって現場に伝わらない）。
 # 版ズレは「Rebootしてください」と読める形で止める。
-_STALE = [_n for _n in ("YAHOO_GROUP_BINS_KEY", "YAHOO_GROUP_NO_DEFAULT",
-                        "seed_yahoo_group_no")
-          if not hasattr(mall_routes, _n)]
-if _STALE:
+def _lib_version_gap():
+    return [_n for _n in ("YAHOO_GROUP_BINS_KEY", "YAHOO_GROUP_NO_DEFAULT",
+                          "seed_yahoo_group_no")
+            if not hasattr(mall_routes, _n)]
+
+
+if _lib_version_gap():
+    # 版ズレは Reboot しなくても直せる。Rebootは同じアプリを使っている他の人の
+    # 作業も止めるので、まずここで lib/ を読み直す（それでも駄目なときだけ案内する）。
+    import importlib
+    import sys as _sys
+
+    for _name in sorted((n for n in list(_sys.modules)
+                         if n == "lib" or n.startswith("lib.")), key=len, reverse=True):
+        try:
+            importlib.reload(_sys.modules[_name])
+        except Exception:  # noqa: BLE001
+            pass
+    from lib import mall_routes   # noqa: F811（読み直した実体に差し替える）
+
+if _lib_version_gap():
     st.error("⚠️ アプリの更新が中途半端な状態です（画面は新しいのに内部モジュールが古いまま）。"
+             "自動での読み直しでも直りませんでした。"
              "**右上の「Manage app」→「Reboot app」で再起動してください。**"
-             f"　（読み込めない項目: {'、'.join(_STALE)}）")
+             f"　（読み込めない項目: {'、'.join(_lib_version_gap())}）")
     st.stop()
 
 st.caption("JANをスキャン → 資材・ロケーション・配送サイズを選んで「🚀 更新を実行」。"
