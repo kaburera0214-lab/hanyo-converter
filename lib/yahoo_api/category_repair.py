@@ -75,11 +75,11 @@ def get_item(code):
         # 2026-09-10 nssk0098 で確認（ストアの商品検索でも該当なし）。
         # 本文はそのまま残す（丸めた結果、別の原因を見落とさないため）。
         raise YahooItemNotFound(
-            f"Yahooにこの商品が登録されていません（getItem HTTP 400）: {res.text[:500]}")
+            f"Yahooにこの商品が登録されていません（getItem HTTP 400）: {client.decode(res)[:500]}")
     if res.status_code >= 400:
-        raise client.YahooError(f"Yahoo商品参照に失敗しました（HTTP {res.status_code}）: {res.text[:500]}")
+        raise client.YahooError(f"Yahoo商品参照に失敗しました（HTTP {res.status_code}）: {client.decode(res)[:500]}")
     try:
-        root = ET.fromstring(res.text)
+        root = ET.fromstring(client.decode(res))
     except ET.ParseError as e:
         raise client.YahooError(f"Yahoo商品参照XMLを解釈できません: {e}") from e
     result = next((el for el in root.iter() if _strip_ns(el.tag) == "Result"), None)
@@ -258,8 +258,8 @@ def upload_category_prices(plans, price_by_code):
     if res.status_code in (401, 403):
         raise client.YahooAuthError(f"Yahoo APIの認証に失敗しました（HTTP {res.status_code}）。")
     if res.status_code >= 400:
-        return [f"YahooカテゴリCSV更新 HTTP {res.status_code}: {res.text[:1000]}"]
-    return _xml_messages(res.text)
+        return [f"YahooカテゴリCSV更新 HTTP {res.status_code}: {client.decode(res)[:1000]}"]
+    return _xml_messages(client.decode(res))
 
 
 def wait_for_category_updates(plans, timeout=UPLOAD_SETTLE_TIMEOUT,

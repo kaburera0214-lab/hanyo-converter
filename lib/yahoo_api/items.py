@@ -52,8 +52,8 @@ def _post(path, data):
         raise client.YahooAuthError(
             f"Yahoo APIの認証に失敗しました（HTTP {res.status_code}）。再認可してください。")
     if res.status_code >= 400:
-        raise YahooHTTPError(res.status_code, res.text)
-    return res.text
+        raise YahooHTTPError(res.status_code, client.decode(res))
+    return client.decode(res)
 
 
 def _strip_ns(tag):
@@ -265,13 +265,24 @@ def reserve_publish():
     return _errors_from_xml(text)
 
 
-# 反映予約が「いま無理」と断ってくるコード。エラーではなく順番待ちの意味。
-# uploadItemFile の直後はYahoo側がファイルを処理中なので、必ずこれが返る。
-PUBLISH_BUSY_CODE = "ed-00006"
+# 反映予約の応答コード（公式のエラーコード一覧より）。
+#   ed-00006 反映またはアップロード中のため更新ができません → 順番待ち
+#   pm-05002 反映処理中のため予約できません                 → 順番待ち
+#   pm-05001 未反映項目はありません                         → **反映済み＝成功**
+# pm-05001 を失敗として扱っていたため、実際には反映が終わっているのに
+# 画面が「失敗」と言い続けていた（2026-09-10）。
+PUBLISH_BUSY_CODES = ("ed-00006", "pm-05002")
+PUBLISH_NOTHING_CODE = "pm-05001"
 
 
 def _is_busy(text):
-    return PUBLISH_BUSY_CODE in str(text) or "反映またはアップロード中" in str(text)
+    text = str(text)
+    return any(code in text for code in PUBLISH_BUSY_CODES)         or "反映またはアップロード中" in text or "反映処理中" in text
+
+
+def _is_nothing_to_publish(text):
+    text = str(text)
+    return PUBLISH_NOTHING_CODE in text or "未反映項目はありません" in text
 
 
 def reserve_publish_retry(attempts=4, wait_seconds=8, on_wait=None):
@@ -295,6 +306,8 @@ def reserve_publish_retry(attempts=4, wait_seconds=8, on_wait=None):
             return False, False, [str(e)]
         if not errs:
             return True, False, []
+        if any(_is_nothing_to_publish(e) for e in errs):
+            return True, False, []      # 反映するものが無い＝すでに反映済み
         if not any(_is_busy(e) for e in errs):
             return False, False, errs
         last = errs

@@ -28,6 +28,23 @@ _SS_KEY = "_yahoo_tokens"
 _LEEWAY = 120                        # アクセストークンの期限をこの秒数手前で更新する
 
 
+def decode(res):
+    """Yahooの応答を文字化けさせずに読む。
+
+    Content-Type に charset が無いと requests は ISO-8859-1 とみなすため、
+    日本語のエラーメッセージがキリル文字などに化けて原因が読めなくなる
+    （2026-09-10 に reservePublish のエラーで実際に踏んだ）。
+    宣言どおり UTF-8 を優先し、だめなら日本語の在来エンコーディングを試す。
+    """
+    raw = res.content or b""
+    for encoding in ("utf-8", "euc_jp", "cp932"):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
 class YahooError(RuntimeError):
     """Yahoo API呼び出しの失敗全般。"""
 

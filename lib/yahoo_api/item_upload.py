@@ -96,10 +96,11 @@ def upload_field_specified(csv_bytes, filename="upload.csv"):
         raise client.YahooAuthError(
             f"Yahoo APIの認証に失敗しました（HTTP {res.status_code}）。再認可してください。")
     if res.status_code >= 400:
-        status, errors = _messages(res.text)
-        detail = "／".join(errors) if errors else res.text[:300]
+        status, errors = _messages(client.decode(res))
+        detail = "／".join(errors) if errors else client.decode(res)[:300]
         raise client.YahooError(f"商品アップロードに失敗しました（HTTP {res.status_code}）: {detail}")
-    status, errors = _messages(res.text)
+    body = client.decode(res)
+    status, errors = _messages(body)
     if status.upper() == "OK" and not errors:
         return True, []
-    return False, errors or [f"Statusが OK ではありません: {status or '(空)'}／{res.text[:300]}"]
+    return False, errors or [f"Statusが OK ではありません: {status or '(空)'}／{body[:300]}"]

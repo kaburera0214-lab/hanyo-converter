@@ -134,7 +134,8 @@ def test_not_found_is_reported_as_unregistered(monkeypatch):
 
     class _Res:
         status_code = 400
-        text = '<?xml version="1.0" encoding="UTF-8" ?><Error><Message>Bad Request</Message></Error>'
+        content = (b'<?xml version="1.0" encoding="UTF-8" ?>'
+                   b'<Error><Message>Bad Request</Message></Error>')
 
     monkeypatch.setattr(client, "access_token", lambda: "dummy")
     monkeypatch.setattr(client, "seller_id", lambda: "seller")
@@ -189,3 +190,36 @@ def test_real_publish_error_is_not_treated_as_busy(monkeypatch):
     monkeypatch.setattr(yitems, "reserve_publish", lambda: ["<Code>pm-05005</Code>"])
     ok, busy, errs = yitems.reserve_publish_retry(attempts=3, wait_seconds=0)
     assert (ok, busy) == (False, False) and errs == ["<Code>pm-05005</Code>"]
+
+
+def test_nothing_to_publish_is_success(monkeypatch):
+    """pm-05001「未反映項目はありません」は失敗ではなく、反映済みの意味。
+
+    2026-09-10: これを失敗として扱っていたため、実際は反映が終わっているのに
+    画面が「反映予約に失敗」と言い続け、原因の切り分けを何往復もさせてしまった。
+    """
+    from lib.yahoo_api import items as yitems
+
+    monkeypatch.setattr(yitems, "reserve_publish",
+                        lambda: ["<Code>pm-05001</Code><Message>未反映項目はありません</Message>"])
+    assert yitems.reserve_publish_retry(attempts=3, wait_seconds=0) == (True, False, [])
+
+
+def test_publish_busy_covers_both_codes(monkeypatch):
+    """順番待ちは ed-00006（アップロード中）と pm-05002（反映処理中）の両方。"""
+    from lib.yahoo_api import items as yitems
+
+    for code in ("ed-00006", "pm-05002"):
+        monkeypatch.setattr(yitems, "reserve_publish", lambda c=code: [f"<Code>{c}</Code>"])
+        ok, busy, _ = yitems.reserve_publish_retry(attempts=2, wait_seconds=0)
+        assert (ok, busy) == (False, True), code
+
+
+def test_response_is_decoded_as_utf8_not_latin1():
+    """日本語のエラーメッセージが化けないこと（化けると原因が読めない）。"""
+    from lib.yahoo_api import client
+
+    class _Res:
+        content = "反映またはアップロード中のため更新ができません。".encode("utf-8")
+
+    assert client.decode(_Res()) == "反映またはアップロード中のため更新ができません。"
