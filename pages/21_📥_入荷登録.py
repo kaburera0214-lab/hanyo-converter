@@ -307,23 +307,32 @@ with st.expander("🟡 Yahoo配送グループ 反映確認待ち（通常は操
                     _now_map = None
                     st.error(f"参照に失敗しました: {e}")
             if _now_map is not None:
+                # get_postage_sets は {code: {"state","value","message"}} を返す。
+                # 「読めた」「Yahooに商品が無い」「読めなかった」を混ぜないための形。
                 _rows = []
                 for _, _r in _yd.iterrows():
                     _bin = yq.bin_of(_r[yq.DELIVERY_VALUE_COLUMN])
                     _want = _ygn.get(_bin, "")
-                    _cur = _now_map.get(str(_r["code"]))
-                    if not _want:
-                        _judge = "Noが未設定"
-                    elif _cur is None:
-                        _judge = "参照できず"
+                    _info = _now_map.get(str(_r["code"])) or {
+                        "state": yahoo_items.STATE_ERROR, "value": None,
+                        "message": "現在値を取得していません"}
+                    _state, _cur = _info["state"], _info.get("value")
+                    if _state == yahoo_items.STATE_NOT_FOUND:
+                        _judge, _shown = "Yahoo未登録", "（商品が存在しません）"
+                    elif _state != yahoo_items.STATE_OK:
+                        _judge, _shown = "参照できず", "（参照できず）"
+                    elif not _want:
+                        _judge, _shown = "Noが未設定", (_cur or "（未設定）")
                     else:
-                        _judge = "反映済み" if _cur == _want else "未反映"
+                        _judge = "反映済み" if str(_cur).strip() == _want else "未反映"
+                        _shown = _cur or "（未設定）"
                     _rows.append({
                         "code": _r["code"],
                         "便種": _bin,
                         "あるべきNo": _want or "（未設定）",
-                        "Yahooの現在値": "（参照できず）" if _cur is None else (_cur or "（未設定）"),
+                        "Yahooの現在値": _shown,
                         "判定": _judge,
+                        "メッセージ": _info.get("message", ""),
                     })
                 st.session_state["yq_dv_verify_rows"] = _rows
         _vrows = st.session_state.get("yq_dv_verify_rows")
@@ -351,9 +360,20 @@ with st.expander("🟡 Yahoo配送グループ 反映確認待ち（通常は操
                     "rows": _rows, "group_no": _ygn,
                     "group_bins": _settings.get(mall_routes.YAHOO_GROUP_BINS_KEY) or {},
                     "folder": product_folder}})
-            st.dataframe(pd.DataFrame(_rs), use_container_width=True, hide_index=True)
-            st.caption("反映は非同期です。実際に反映されたかは毎朝の点検で確認し、"
-                       "確認できた分がこの一覧から消えます。")
+            # 画面に出しっぱなしにすると、次に別のボタンを押した再実行で消える。
+            # 送信という「やり直しの効かない操作」の結果は必ず残す。
+            st.session_state["yq_dv_send_rows"] = _rs or [
+                {"ステップ": runner.STEP_YAHOO_DELIVERY, "対象": "-", "状態": "スキップ",
+                 "メッセージ": "送信対象がありませんでした（すべて対象外か、控えが空です）"}]
+            st.session_state.pop("yq_dv_verify_rows", None)   # 送信前の確認結果は古くなる
+            st.rerun()
+
+        _srows = st.session_state.get("yq_dv_send_rows")
+        if _srows:
+            st.markdown("**送信結果**")
+            st.dataframe(pd.DataFrame(_srows), use_container_width=True, hide_index=True)
+            st.caption("反映は非同期です。実際に反映されたかは毎朝の点検（または上の🔍）で"
+                       "確認し、確認できた分がこの一覧から消えます。")
 
         if st.checkbox("配送グループをYahooにアップ済みにする（控えを全部消す）",
                        key="yq_dv_confirm"):
