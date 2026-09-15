@@ -310,14 +310,12 @@ st.set_page_config(page_title="質問を送る", layout="centered")
 
 from lib.qa.history import append_history
 from lib.qa.thread_ui import inject_qa_styles, question_no, render_text_block, text_to_html
+from lib.qa import posting_rules
 
 st.title("📝 質問を送る（インハナさん用）")
 inject_qa_styles()
 
-st.info("""**記入ルール**
-- タイトルは「大カテゴリ＋中カテゴリ」の粒度で（例：CS・保険証券の発行タイミングについて）
-- 複数の質問がある場合は各質問の先頭に「■」をつけること
-- 画像だけで説明を省かず、文章だけで内容が伝わるように記載すること""")
+st.info(posting_rules.rules_markdown())
 
 def submit_question(タイトル, 質問本文, タグ, 画像ファイル):
     """Notionへ質問を保存し、画像をDriveにアップロードする"""
@@ -355,8 +353,8 @@ step = st.session_state.get("post_step", "input")  # input / similar / preview
 # ── ステップ1：入力フォーム ──────────────────────────────────────────
 if step == "input":
     with st.form("question_form"):
-        タイトル = st.text_input("質問タイトル *", placeholder="例：CS・保険証券の発行タイミングについて")
-        質問本文 = st.text_area("質問内容 *", height=150, placeholder="■ 〇〇について確認したいのですが...\n■ また、〇〇の場合はどうなりますか？")
+        タイトル = st.text_input("質問タイトル *", placeholder=posting_rules.TITLE_PLACEHOLDER)
+        質問本文 = st.text_area("質問内容 *", height=320, placeholder=posting_rules.body_placeholder())
         画像ファイル = st.file_uploader("画像（複数可）", type=["png", "jpg", "jpeg", "gif", "webp"], accept_multiple_files=True)
         タグ = st.multiselect("タグ（必須）*", TAGS)
         submitted = st.form_submit_button("類似質問を確認する →")
