@@ -75,6 +75,7 @@ for inv in confirmed:
         "銀行番号": m["銀行番号"], "支店番号": m["支店番号"],
         "預金種目": m.get("預金種目", "普通"), "口座番号": m["口座番号"],
         "受取人口座名": m.get("受取人口座名", ""), "金額": amount,
+        "_master": m,   # ②総合振込仕訳帳CSVで勘定科目・源泉税額を引くのに使う
     })
 
 st.markdown(f"### 振込対象：{len(records)}件")
@@ -248,3 +249,81 @@ else:
             st.code("\n".join(kk_bytes.decode("utf-8").splitlines()[:6]), language="text")
     else:
         st.button("📥 買掛未払CSVをダウンロード", disabled=True, key="mf_kk_dl_off")
+
+
+# ------------------------------------------------------------
+# ② 総合振込仕訳帳CSV（振込実行分の支払）
+# 入力は楽天CSVと同じ records なので、仮受金＝楽天CSVの合計に必ず一致する。
+# ------------------------------------------------------------
+st.markdown("---")
+st.markdown("### ② 総合振込仕訳帳CSV（振込実行分の支払）")
+st.caption("上の『振込対象』をそのまま仕訳にします。借方は取引先マスタの貸方科目"
+           "（買掛金・未払金）を取り崩す形、貸方は仮受金＝振込総額です。"
+           "源泉徴収のある取引先は、借方に源泉税額を足し戻して『預り金／所得税』の行が立ちます。")
+
+_sf_default_date = ""
+try:
+    _sf_default_date = mf_csv.furikomi_date(target_ym, exec_date.strip())
+except (ValueError, IndexError):
+    pass
+
+sc1, sc2, sc3 = st.columns([1, 1, 2])
+sf_date = sc1.text_input("取引日（YYYY/MM/DD）", value=_sf_default_date, key="mf_sf_date",
+                         help="振込実行日そのもの。①（対象月の末日）とは1ヶ月ずれます")
+sf_no = sc2.text_input("取引No", value="", key="mf_sf_no",
+                       help="経理シートの連番を入れてください（MFは9桁以内の数字）。"
+                            "①とは別の番号になります")
+sf_every = sc3.checkbox("全行に取引No・取引日を出力する", value=False, key="mf_sf_every",
+                        help="既定は1行目のみ（運用中の経理シートと同じ形式）")
+
+# 振込対象レコードに、マスタから借方科目と源泉税額を載せる
+sf_records, sf_skipped = mf_csv.build_soufurikomi_records(records)
+
+if not records:
+    st.info("振込対象がありません。上の『振込対象』が0件のままでは②は作れません。")
+else:
+    sf_gensen = sum(r["源泉税額"] for r in sf_records)
+    sf_furikomi = sum(r["金額"] for r in sf_records)
+    st.markdown(f"#### 仕訳対象：{len(sf_records)}件")
+    if sf_records:
+        st.dataframe(pd.DataFrame([{
+            "会社名": r["会社名"], "借方勘定科目": r["借方勘定科目"],
+            "借方補助科目": r["借方補助科目"], "税区分": r["借方税区分"],
+            # 源泉なしは None（空欄表示）。0 と "" を混ぜると列の型が壊れて表が出せない
+            "振込額": r["金額"], "源泉税額": r["源泉税額"] or None,
+            "借方金額": r["金額"] + r["源泉税額"], "摘要": r["摘要"],
+        } for r in sf_records]), use_container_width=True)
+        st.markdown(f"**仮受金（貸方）{sf_furikomi:,} 円**"
+                    + (f" ＋ 預り金 {sf_gensen:,} 円" if sf_gensen else "")
+                    + f" ／ 借方合計 {sf_furikomi + sf_gensen:,} 円"
+                    f"（取引No {sf_no or '—'} / 取引日 {sf_date or '—'}）")
+
+    # 仮受金は楽天CSVに出す振込総額と一致していなければならない。
+    # ここがずれるのは、②から抜け落ちた取引先がいるということ。
+    _rakuten_total = sum(r["金額"] for r in records)
+    if sf_furikomi != _rakuten_total:
+        st.error(f"⛔ 仮受金 {sf_furikomi:,} 円が、楽天CSVの振込合計 {_rakuten_total:,} 円と"
+                 f"一致しません（差 {_rakuten_total - sf_furikomi:,} 円）。"
+                 "下の『対象外』の取引先をマスタで設定してから作り直してください。")
+
+    if sf_skipped:
+        with st.expander(f"⚠️ 対象外 {len(sf_skipped)}件（この分だけ仕訳が抜けます）", expanded=True):
+            for name, reason in sf_skipped:
+                st.write(f"- {name}： {reason}")
+
+    _sf_disabled = (not sf_records or not sf_date.strip() or not sf_no.strip()
+                    or sf_furikomi != _rakuten_total)
+    if not _sf_disabled:
+        try:
+            sf_bytes = mf_csv.build_soufurikomi_csv(sf_records, sf_no.strip(), sf_date.strip(),
+                                                    every_row=sf_every)
+        except ValueError as e:
+            st.error(f"⛔ {e}")
+        else:
+            st.download_button("📥 総合振込仕訳帳CSVをダウンロード", data=sf_bytes,
+                               file_name=f"総合振込仕訳帳_{sf_date.strip().replace('/', '-')}.csv",
+                               mime="text/csv", type="primary", key="mf_sf_dl")
+            with st.expander("生成内容（先頭5行）", expanded=False):
+                st.code("\n".join(sf_bytes.decode("utf-8").splitlines()[:6]), language="text")
+    else:
+        st.button("📥 総合振込仕訳帳CSVをダウンロード", disabled=True, key="mf_sf_dl_off")

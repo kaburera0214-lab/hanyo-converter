@@ -19,9 +19,22 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from batch import st_shim  # noqa: E402
+
+# シムは sys.modules["streamlit"] を丸ごと置き換えるので、このモジュールを読み込んだ
+# だけで後続のテストにも漏れる（本物のstreamlitを使うテストが軒並み壊れる）。
+# 元のモジュールを控えておき、このファイルのテストが終わったら必ず戻す。
+_REAL_STREAMLIT = sys.modules.get("streamlit")
 st_shim.install()
 
 from lib import auth_keepalive as ak  # noqa: E402
+
+
+def teardown_module(module):  # noqa: ARG001
+    """シムを後片付けする。入れっぱなしにしない。"""
+    if _REAL_STREAMLIT is not None:
+        sys.modules["streamlit"] = _REAL_STREAMLIT
+    else:
+        sys.modules.pop("streamlit", None)
 
 
 class _AuthError(Exception):
