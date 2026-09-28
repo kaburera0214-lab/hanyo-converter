@@ -2,7 +2,7 @@
 import streamlit as st
 from notion_client import Client
 from datetime import datetime, timedelta
-import anthropic
+from lib.qa import ai as qa_ai
 
 st.set_page_config(page_title="パターン分析", layout="wide")
 st.title("📊 パターン分析・改善提案")
@@ -87,7 +87,6 @@ def generate_report(questions: list, period_label: str) -> str:
 
     summary = "\n".join(summary_lines)
 
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     prompt = f"""あなたはパピー社の業務改善アドバイザーです。
 以下は{period_label}の社内Q&A {len(questions)}件のデータです（各行にQ:質問・A:回答の抜粋を含みます）。
 
@@ -113,12 +112,7 @@ def generate_report(questions: list, period_label: str) -> str:
 ## 6. 次の分析までに確認すべき点
 改善効果を測るための指標や確認事項"""
 
-    message = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=4000,
-        messages=[{"role": "user", "content": prompt}]
-    )
-    return message.content[0].text
+    return qa_ai.ask(ANTHROPIC_API_KEY, prompt, model="claude-sonnet-4-6", max_tokens=4000)
 
 # ── UI ──────────────────────────────────────────────────────────────
 st.markdown("蓄積されたQ&Aデータをまとめて分析し、業務改善の提案を生成します。")
@@ -170,7 +164,11 @@ if run_btn:
         st.warning(f"データが{len(questions)}件と少ないため、分析精度が低い可能性があります。")
 
     with st.spinner(f"Claudeが{len(questions)}件を分析中...（30〜60秒かかります）"):
-        report = generate_report(questions, period)
+        try:
+            report = generate_report(questions, period)
+        except qa_ai.AIUnavailable as e:
+            st.error(f"分析レポートを生成できませんでした。{e.reason}")
+            st.stop()
 
     st.markdown(report)
 

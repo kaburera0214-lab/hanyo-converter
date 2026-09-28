@@ -1,0 +1,30 @@
+name: claude-api-watch-daily
+
+on:
+  schedule:
+    - cron: "30 22 * * *"   # 毎日22:30 UTC = 翌07:30 JST（朝のダイジェストに間に合う）
+  workflow_dispatch: {}     # 手動実行も可
+
+concurrency:
+  group: claude-api-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install anthropic
+
+      # 残高切れ・キー失効・Secrets未登録のどれでも非ゼロ終了 → ジョブ失敗 → ダッシュボードが赤。
+      # 失敗＝「質問投稿・回答管理のAI機能が今は使えない」の意味。
+      - name: Check Claude API
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python batch/claude_api_watch.py

@@ -68,6 +68,7 @@ TAGS = get_tags()
 
 from lib.qa.notion_text import get_text, to_rich_text  # noqa: E402 - 定数定義の後に読む
 from lib.qa.revisions import KIND_QUESTION, push_revision, question_snapshot  # noqa: E402
+from lib.qa import ai as qa_ai  # noqa: E402
 
 def compress_image(file_bytes):
     img = Image.open(io.BytesIO(file_bytes))
@@ -115,29 +116,32 @@ def upload_to_drive(file_bytes, filename):
     ).execute()
     return f"https://drive.google.com/file/d/{file_id}/view"
 
+def note_ai_skipped(what, err):
+    """AIを使えなかったことを記録する。ステップをまたいで画面に出す（黙って「OK」扱いにしない）。"""
+    notes = st.session_state.setdefault("ai_skipped", [])
+    msg = f"{what}：{err.reason}"
+    if msg not in notes:
+        notes.append(msg)
+
+def show_ai_skipped():
+    for msg in st.session_state.get("ai_skipped", []):
+        st.warning(f"⚠️ AIを使えなかったため省略しました — {msg}")
+
 def check_tag_consistency(title, content, tags):
-    if not ANTHROPIC_API_KEY:
-        return None
     try:
-        import anthropic
-        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-        message = client.messages.create(
-            model="claude-haiku-4-5",
-            max_tokens=100,
-            messages=[{"role": "user", "content": f"""質問タイトル：{title}
+        result = qa_ai.ask(ANTHROPIC_API_KEY, f"""質問タイトル：{title}
 質問内容：{content}
 選択されたタグ：{', '.join(tags)}
 
 質問内容とタグが整合しているか判断してください。
 整合している場合は「OK」とだけ答えてください。
-整合していない場合は「NG: （理由を30文字以内で）」の形式で答えてください。"""}]
-        )
-        result = message.content[0].text.strip()
-        if result.startswith("NG"):
-            return f"タグと質問内容が合っていない可能性があります。{result[3:].strip()}"
+整合していない場合は「NG: （理由を30文字以内で）」の形式で答えてください。""", max_tokens=100)
+    except qa_ai.AIUnavailable as e:
+        note_ai_skipped("タグ整合チェック", e)
         return None
-    except Exception:
-        return None
+    if result.startswith("NG"):
+        return f"タグと質問内容が合っていない可能性があります。{result[3:].strip()}"
+    return None
 
 def validate_question(title, content, tags, has_images):
     errors = []
@@ -164,7 +168,7 @@ def validate_question(title, content, tags, has_images):
 
 def search_similar_questions(title, content):
     """過去の類似質問をNotionで検索し、上位件数を返す"""
-    import anthropic as ac, json, re
+    import json, re
     client = Client(auth=NOTION_API_KEY)
 
     # Notion検索API（タイトル+本文の先頭100文字をキーワードに）
@@ -205,33 +209,28 @@ def search_similar_questions(title, content):
             f"[{i}] タイトル:{c['タイトル']} | 質問:{c['質問本文'][:100]}"
             for i, c in enumerate(candidates)
         ])
-        ai = ac.Anthropic(api_key=ANTHROPIC_API_KEY)
-        msg = ai.messages.create(
-            model="claude-haiku-4-5",
-            max_tokens=200,
-            messages=[{"role": "user", "content": f"""新規質問：「{title}」{content[:150]}
+        raw = qa_ai.ask(ANTHROPIC_API_KEY, f"""新規質問：「{title}」{content[:150]}
 
 以下の過去質問のうち、新規質問と類似または参考になるものの番号を最大3つ選んでください。
 類似するものがなければ空配列を返してください。
 JSON配列のみで返答してください（例：[0,2]）：
 
-{summary}"""}]
-        )
-        raw = msg.content[0].text.strip()
+{summary}""", max_tokens=200)
+    except qa_ai.AIUnavailable as e:
+        # AIで絞れなかった＝「似ている」とは判定していない。検索の上位をそのまま出す旨を画面に出す
+        note_ai_skipped("類似質問の絞り込み（検索結果の上位3件をそのまま表示しています）", e)
+        return candidates[:3]
+    try:
         raw = re.sub(r"```.*?```", "", raw, flags=re.DOTALL).strip()
         indices = json.loads(raw)
-        return [candidates[i] for i in indices if i < len(candidates)]
-    except Exception:
+        return [candidates[i] for i in indices if isinstance(i, int) and 0 <= i < len(candidates)]
+    except (ValueError, TypeError):
         return candidates[:3]
 
 def rewrite_question(title, content):
-    """Claude APIで質問をリライトし、タイトルと本文を返す"""
-    import anthropic, json, re
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-    message = client.messages.create(
-        model="claude-haiku-4-5",
-        max_tokens=2048,
-        messages=[{"role": "user", "content": f"""あなたは日本語ビジネス文章の校正アシスタントです。
+    """Claude APIで質問をリライトし、タイトルと本文を返す。失敗は qa_ai.AIUnavailable で上げる"""
+    import json, re
+    raw = qa_ai.ask(ANTHROPIC_API_KEY, f"""あなたは日本語ビジネス文章の校正アシスタントです。
 以下の質問を、日本語として自然で丁寧なビジネス文章にリライトしてください。
 
 ルール：
@@ -244,12 +243,13 @@ def rewrite_question(title, content):
 質問内容：{content}
 
 必ず以下のJSON形式のみで返してください。前後に説明文や```は不要です：
-{{"title": "リライト後のタイトル", "content": "リライト後の内容"}}"""}]
-    )
-    raw = message.content[0].text.strip()
+{{"title": "リライト後のタイトル", "content": "リライト後の内容"}}""", max_tokens=2048)
     # コードブロックを除去
     raw = re.sub(r"```(?:json)?", "", raw).strip().rstrip("```").strip()
-    result = json.loads(raw)
+    try:
+        result = json.loads(raw)
+    except ValueError as e:
+        raise qa_ai.AIUnavailable("AIの応答を読み取れませんでした（形式不正）", raw[:200]) from e
     return result.get("title", title), result.get("content", content)
 
 def get_editable_questions():
@@ -365,12 +365,14 @@ if step == "input":
         elif not タグ:
             st.error("タグを選択してください")
         else:
+            st.session_state["ai_skipped"] = []  # 今回の投稿ぶんだけを出す
             with st.spinner("入力内容を確認中..."):
                 errors = validate_question(タイトル, 質問本文, タグ, bool(画像ファイル))
 
             if errors:
                 for err in errors:
                     st.error(err)
+                show_ai_skipped()
             else:
                 with st.spinner("過去の類似質問を検索中..."):
                     similar = search_similar_questions(タイトル, 質問本文)
@@ -388,6 +390,7 @@ elif step == "similar":
     similar = st.session_state.get("similar_results", [])
     タイトル = st.session_state.get("orig_title", "")
     質問本文 = st.session_state.get("orig_content", "")
+    show_ai_skipped()
 
     if similar:
         st.subheader(f"🔍 {len(similar)}件の類似質問が見つかりました")
@@ -417,7 +420,12 @@ elif step == "similar":
         btn_label = "この内容では解決しない → 新規質問として投稿する" if similar else "新規質問として投稿する →"
         if st.button(btn_label, type="primary"):
             with st.spinner("AIがリライトしています..."):
-                rewritten_title, rewritten_content = rewrite_question(タイトル, 質問本文)
+                try:
+                    rewritten_title, rewritten_content = rewrite_question(タイトル, 質問本文)
+                except qa_ai.AIUnavailable as e:
+                    # リライトは清書であって投稿の条件ではない。原文のまま次へ進める
+                    note_ai_skipped("AIリライト（右側は原文のままです。必要なら直してから投稿してください）", e)
+                    rewritten_title, rewritten_content = タイトル, 質問本文
             st.session_state["post_step"] = "preview"
             st.session_state["rewrite_title"] = rewritten_title
             st.session_state["rewrite_content"] = rewritten_content
@@ -427,6 +435,7 @@ elif step == "similar":
 elif step == "preview":
     st.subheader("📋 リライトプレビュー")
     st.caption("左：入力原文　右：AIリライト（編集可）")
+    show_ai_skipped()
 
     # 余白を最小化するCSS
     st.markdown("""<style>
@@ -471,7 +480,7 @@ elif step == "preview":
                 msg += f"（画像 {img_count}枚アップロード済）"
             st.success(msg)
             # セッションをリセット
-            for k in ["post_step", "orig_title", "orig_content", "rewrite_title", "rewrite_content", "post_tags", "post_images"]:
+            for k in ["post_step", "orig_title", "orig_content", "rewrite_title", "rewrite_content", "post_tags", "post_images", "ai_skipped"]:
                 st.session_state.pop(k, None)
             st.rerun()
 

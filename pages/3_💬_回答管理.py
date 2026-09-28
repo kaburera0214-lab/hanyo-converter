@@ -10,6 +10,7 @@ def now_jst():
 
 st.set_page_config(page_title="回答管理", layout="wide")
 
+from lib.qa import ai as qa_ai
 from lib.qa import metrics
 from lib.qa.conversation import (
     append_answer, append_reason, append_turn, merge_categories, start_log,
@@ -140,12 +141,7 @@ def generate_draft(question, questions):
         for _score, q in ranked
     ]) or "（まだ蓄積データがありません）"
     try:
-        import anthropic
-        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-        message = client.messages.create(
-            model="claude-haiku-4-5",
-            max_tokens=1024,
-            messages=[{"role": "user", "content": f"""あなたはパピー社（EC運営会社）の回答担当アシスタントです。
+        draft = qa_ai.ask(ANTHROPIC_API_KEY, f"""あなたはパピー社（EC運営会社）の回答担当アシスタントです。
 インハナさん（外注スタッフ）からの質問に対して、パピー社スタッフとして返答するドラフトを作成してください。
 
 【ルール】
@@ -162,11 +158,10 @@ def generate_draft(question, questions):
 【質問内容】
 {question['質問本文']}
 
-上記の質問に対する回答ドラフトを作成してください。"""}]
-        )
-        return message.content[0].text, ranked
-    except Exception as e:
-        return f"（AIドラフト生成に失敗しました。APIキーを確認してください。エラー: {type(e).__name__}）", ranked
+上記の質問に対する回答ドラフトを作成してください。""", max_tokens=1024)
+        return draft, ranked
+    except qa_ai.AIUnavailable as e:
+        return f"（AIドラフト生成に失敗しました。{e.reason}）", ranked
 
 # EDITOR_1_NAME / EDITOR_1_PASSWORD 〜 EDITOR_10_NAME / EDITOR_10_PASSWORD で定義
 PASSWORDS = {}
