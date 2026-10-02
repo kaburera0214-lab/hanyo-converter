@@ -194,6 +194,34 @@ def _app_test():
     return AppTest
 
 
+SAMPLE_RESULT = {
+    "対象月": "2026-09", "作成日時": "2026-10-02T15:00:00+09:00", "注文数": 3, "商品数": 4, "個口数": 2,
+    "出荷作業料": 188, "出荷作業料_サイズ別": {"MB": 2, "60": 1}, "資材費": 113,
+    "資材費_サイズ別": [{"サイズ": "MB", "個口数": 1, "単価": 37.14, "金額": 37}, {"サイズ": "60", "個口数": 1, "単価": 75.83, "金額": 76}],
+    "送料合計": 900, "出荷稼働日": ["2026-09-01", "2026-09-19"],
+    "FBA依頼": [{"注文番号": "FBA0010", "注文ID": "76441", "発送日": "2026-09-25"}],
+    "入庫_ピース数": 10, "要確認": [], "棚番と項目1が違う商品": [],
+}
+
+
+def _results_dir(tmp_path, result=SAMPLE_RESULT):
+    d = tmp_path / "results" / result["対象月"]
+    d.mkdir(parents=True)
+    (d / "20261002_150000_照合結果.json").write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+    return str(tmp_path / "results")
+
+
+def test_result_lines_and_month_check():
+    lines = R.result_lines(SAMPLE_RESULT, VER)
+    assert [(x["品名"], x["区分"], x["金額"]) for x in lines] == [
+        ("出荷作業料", "第1層", 188), ("資材費", "実費", 113), ("送料", "実費", 900), ("入庫：ピース納品", "第1層", 400)]
+    assert R.totals(lines)["management_base"] == 588
+    with pytest.raises(ValueError, match="対象月"):
+        R.check_result(SAMPLE_RESULT, 2026, 10)
+    with pytest.raises(ValueError, match="必要な項目"):
+        R.check_result({"対象月": "2026-09"}, 2026, 9)
+
+
 def _page(monkeypatch, notion=True):
     AppTest = _app_test()
     from lib import auth
@@ -224,12 +252,21 @@ def _page(monkeypatch, notion=True):
     return at, baseline, store
 
 
-def test_team_ec_september_uses_new_system_and_keeps_old_for_august(monkeypatch):
+def test_team_ec_september_uses_new_system_and_keeps_old_for_august(monkeypatch, tmp_path):
+    monkeypatch.setenv("TEAMEC_RESULTS_DIR", _results_dir(tmp_path))
     at, baseline, store = _page(monkeypatch)
     at.run()
     assert not at.exception, at.exception
     assert "TeamEC新体系" not in at.selectbox(key="invoice_client").options
-    assert len(at.metric) == 3
+    assert not at.error, [e.value for e in at.error]
+    labels = [m.label for m in at.metric]
+    assert "出荷作業料" in labels and "試算合計" in labels
+    # 出荷稼働日は照合結果の日（9/19土曜は1回）：(2+1)×1,200
+    items = at.dataframe[-1].value
+    assert int(items.loc[items["品名"] == "出荷指示作成料", "金額"].iloc[0]) == 3600
+    assert "FBA対応費" in set(items["品名"])
+    at.checkbox(key=next(k for k in at.session_state.filtered_state if k.endswith("done_days"))).check().run()
+    assert not at.exception
     assert not any("MF" in b.label and "取込不可" not in b.label for b in at.get("download_button"))
     next(n for n in at.number_input if n.label == "応援控除（税抜・円）").set_value(1000).run()
     assert not at.exception
@@ -246,12 +283,22 @@ def test_team_ec_september_uses_new_system_and_keeps_old_for_august(monkeypatch)
     assert store.DEFAULT_CLIENTS == baseline
 
 
-def test_without_notion_no_amount_is_shown(monkeypatch):
+def test_without_notion_no_amount_is_shown(monkeypatch, tmp_path):
+    monkeypatch.setenv("TEAMEC_RESULTS_DIR", _results_dir(tmp_path))
     at, _, _ = _page(monkeypatch, notion=False)
     at.run()
     assert not at.exception, at.exception
-    assert not at.metric
+    assert not any(m.label.startswith("試算") for m in at.metric)
     assert any("0件扱いにはしません" in e.value for e in at.error)
+
+
+def test_without_result_no_amount_is_shown(monkeypatch, tmp_path):
+    monkeypatch.setenv("TEAMEC_RESULTS_DIR", str(tmp_path / "empty"))
+    at, _, _ = _page(monkeypatch)
+    at.run()
+    assert not at.exception, at.exception
+    assert not any(m.label.startswith("試算") for m in at.metric)
+    assert any("照合結果" in e.value for e in at.error)
 
 
 def test_review_zip_is_explicitly_draft_and_contains_version():

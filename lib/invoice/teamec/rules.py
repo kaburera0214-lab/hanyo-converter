@@ -284,3 +284,32 @@ def totals(lines, support=0, storage_discount=0):
     tax = yen(Decimal(subtotal) * TAX_RATE)
     return {"items": output, "management_base": base, "subtotal": subtotal,
             "tax": tax, "total": subtotal + tax}
+
+
+# ---- Eシス・B2・ヤマトの照合結果（teamec-billing-fetch が作る JSON）----
+RESULT_KEYS = ("対象月", "出荷作業料", "出荷作業料_サイズ別", "資材費", "資材費_サイズ別", "送料合計",
+               "出荷稼働日", "FBA依頼", "入庫_ピース数", "要確認")
+
+
+def check_result(result: dict, year: int, month: int) -> dict:
+    """照合結果の形と対象月を確かめる。欠けていれば読み込まない（0円として扱わない）。"""
+    missing = [k for k in RESULT_KEYS if k not in result]
+    if missing:
+        raise ValueError("照合結果に必要な項目がありません：" + "、".join(missing))
+    if result["対象月"] != f"{int(year)}-{int(month):02}":
+        raise ValueError(f"照合結果の対象月（{result['対象月']}）が請求の対象月と違います")
+    return result
+
+
+def result_lines(result: dict, ver=None) -> list[dict]:
+    """照合結果から、出荷作業料・ピース入庫（第1層）と資材費・送料（実費）の明細を作る。"""
+    sizes = "・".join(f"{s}×{n:,}" for s, n in result["出荷作業料_サイズ別"].items() if n)
+    mats = "・".join(f"{r['サイズ']} {r['個口数']:,}個口×{r['単価']}" for r in result["資材費_サイズ別"])
+    lines = [line("出荷作業料", result["出荷作業料"], 1, "第1層", "式", f"商品サイズ別PCS：{sizes}（Eシス注文明細）"),
+             line("資材費", result["資材費"], 1, "実費", "式", f"個口：{mats}（ヤマト実サイズ）"),
+             line("送料", result["送料合計"], 1, "実費", "式", "ヤマト運賃情報（税別）×B2発行済TE")]
+    pieces = result.get("入庫_ピース数")
+    if pieces:
+        lines.append(line("入庫：ピース納品", price("入庫：ピース納品", ver=ver), pieces, "第1層", "pcs",
+                          "Eシス入庫履歴（ケース区分の記載なし）"))
+    return lines
