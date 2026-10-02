@@ -89,6 +89,8 @@ def get_clients():
 
 clients = get_clients()
 client_names = list(clients.keys())
+if "TeamEC新体系" not in client_names:
+    client_names.append("TeamEC新体系")
 
 st.header("【1】クライアント・対象月")
 col1, col2, col3 = st.columns([2, 1, 1])
@@ -107,6 +109,12 @@ with col3:
     month = st.selectbox("対象月", list(range(1, 13)),
                          index=default_month - 1, key="invoice_month")
 
+if client_name == "TeamEC新体系":
+    from lib.invoice.teamec.ui import render as render_teamec_new
+    render_teamec_new(year, month, clients.get("Team-EC", {}))
+    st.stop()
+
+st.session_state.pop("_teamec_active", None)
 client = clients[client_name]
 client_code = client.get("略号", "XX")
 
