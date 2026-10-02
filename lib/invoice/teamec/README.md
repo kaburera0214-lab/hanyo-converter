@@ -13,7 +13,7 @@ Eシス出荷実績の取込と正式出力（MF CSV・履歴・Drive）が未�
 - `source_rates.json`：本人指定「新料金単価表」A17:H64 の2026-10-02取得版（根拠）。
   版と取得版が食い違うと `tests/test_teamec_new.py` が落ちる。料金表に単価のある行が版に無くても落ちる。
 - `ui.py`：画面。上から順に確認する縦長の構成で、各段は「確認済み」で1行にたためる（タブは見落とすため廃止）。
-  - 出荷作業料・資材費・送料・出荷稼働日・FBA・ピース入庫：`AIworkspace	eamec-billing-fetch` が作る照合結果JSON。
+  - 出荷作業料・資材費・送料・出荷稼働日・FBA・ピース入庫：`AIworkspace\teamec-billing-fetch` が作る照合結果JSON。
     請求書のDriveバックアップフォルダ配下「TeamEC実績」の `TeamEC実績_YYYY-MM_*.json` の最新を読む。
     無いときは画面からJSONを読み込める。読めなければ金額を出さない。ローカル確認は環境変数 `TEAMEC_RESULTS_DIR`。
   - 保管カウント・イレギュラー作業：既存ページのNotion記録（ここでは再入力しない）。
