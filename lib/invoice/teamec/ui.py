@@ -69,13 +69,15 @@ def _drive_result(target_ym):
         if not files:
             return None, f"{local}\\{target_ym} に照合結果がありません"
         return json.loads(files[-1].read_text(encoding="utf-8")), f"ローカル {files[-1].name}"
-    folder_id = st.secrets.get("INVOICE_GDRIVE_FOLDER_ID", "")
-    if not folder_id:
-        return None, "INVOICE_GDRIVE_FOLDER_ID が未設定"
     from lib.invoice import drive_master
-    sub = drive_master.find_folder(RESULT_FOLDER, folder_id)
-    if not sub:
-        return None, f"Driveに「{RESULT_FOLDER}」フォルダがありません"
+    # teamec-billing-fetch が同じOAuthクライアントで作るフォルダ（マイドライブ直下）を名前で探す。
+    # drive.file では請求書バックアップフォルダの配下に置けないため、親フォルダでは絞らない（2026-10-03）
+    q = f"name = '{RESULT_FOLDER}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+    found = drive_master._service().files().list(q=q, fields="files(id, createdTime)", orderBy="createdTime",
+                                                pageSize=10).execute().get("files", [])
+    if not found:
+        return None, f"Driveに「{RESULT_FOLDER}」フォルダが見つかりません"
+    sub = found[0]
     files = [f for f in drive_master.list_files(sub["id"], f"TeamEC実績_{target_ym}_") if f["name"].endswith(".json")]
     if not files:
         return None, f"Driveの「{RESULT_FOLDER}」に {target_ym} の照合結果がありません"
