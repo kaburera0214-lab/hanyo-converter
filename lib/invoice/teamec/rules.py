@@ -313,3 +313,18 @@ def result_lines(result: dict, ver=None) -> list[dict]:
         lines.append(line("入庫：ピース納品", price("入庫：ピース納品", ver=ver), pieces, "第1層", "pcs",
                           "Eシス入庫履歴（ケース区分の記載なし）"))
     return lines
+
+
+def storage_summary(count_rows, year, month) -> list[dict]:
+    """保管カウントページの「カウント状況（2期平均→保管料）」と同じ形の集計（新体系の単価）。"""
+    lines = {x["品名"]: x for x in storage_lines(count_rows, year, month)}
+    out = []
+    for name, (item, unit_price) in version(year, month)["storage"].items():
+        if item not in lines:
+            continue
+        rows = [r for r in count_rows if str(r.get("種別", "")).strip() == name]
+        first = sum(amount(r.get("数量", 0)) for r in rows if r.get("期") == "第1期")
+        second = sum(amount(r.get("数量", 0)) for r in rows if r.get("期") == "第2期")
+        out.append({"種別": name, "第1期合計": float(first), "第2期合計": float(second),
+                    "平均": float((first + second) / 2), "単価": unit_price, "金額": lines[item]["金額"]})
+    return out

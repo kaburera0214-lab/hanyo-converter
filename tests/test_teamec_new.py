@@ -334,3 +334,26 @@ def test_mf_csv_matches_screen_and_blocks_double_billing(monkeypatch, tmp_path):
         assert any("発行履歴があります" in w.value for w in at.warning)
     finally:
         ISSUED.clear()
+
+
+def test_result_loaded_later_refreshes_fba_and_days(monkeypatch, tmp_path):
+    """照合結果を後から読み込んでも、FBAと出荷稼働日が反映される（先に開いた空の下書きに負けない）。"""
+    results = tmp_path / "results"
+    monkeypatch.setenv("TEAMEC_RESULTS_DIR", str(results))
+    at, _, _ = _page(monkeypatch)
+    at.run()
+    assert not any(m.label.startswith("試算") for m in at.metric)
+    _results_dir(tmp_path)
+    at.run()
+    assert not at.exception, at.exception
+    items = at.dataframe[-1].value
+    assert "FBA対応費" in set(items["品名"])
+    assert int(items.loc[items["品名"] == "出荷指示作成料", "金額"].iloc[0]) == 3600
+
+
+def test_storage_summary_matches_count_page_shape():
+    rows = counts(("第1期", "保管料：パレット", 2), ("第2期", "保管料：パレット", 4),
+                  ("第1期", "保管料：当社指定ロケーション", 3), ("第2期", "保管料：当社指定ロケーション", 3))
+    assert R.storage_summary(rows, 2026, 9) == [
+        {"種別": "保管料：パレット", "第1期合計": 2.0, "第2期合計": 4.0, "平均": 3.0, "単価": 1000, "金額": 3000},
+        {"種別": "保管料：当社指定ロケーション", "第1期合計": 3.0, "第2期合計": 3.0, "平均": 3.0, "単価": 600, "金額": 1800}]

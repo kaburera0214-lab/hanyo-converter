@@ -99,20 +99,11 @@ def render(year, month, client, db_ids=None, notion_ready=False):
     ver = R.version(year, month)
     disp = R.dispatch(ver)
     target_ym = f"{year}-{month:02}"
-    drafts = st.session_state.setdefault("_teamec_drafts", {})
-    if st.session_state.get("_teamec_active") != target_ym:
-        st.session_state["_teamec_active"] = target_ym
-        st.session_state["_teamec_generation"] = st.session_state.get("_teamec_generation", 0) + 1
-        st.session_state["_teamec_form_base"] = copy.deepcopy(drafts.get(target_ym, {}))
-    base = st.session_state["_teamec_form_base"]   # 編集欄の初期値（月を切り替えるまで固定。変えると入力が消える）
-    prev = drafts.get(target_ym, base)               # たたんだ段は直前の入力値を使う
-    prefix = f"teamec_new_{year}_{month}_{st.session_state['_teamec_generation']}_"
-
     st.subheader(f"Team-EC 新体系（{ver['id']}）")
     st.caption("パピー用 · 2026年9月作業分から自動で新体系になります。8月以前は従来の計算です。"
                "上から順に確認し、済んだ段は「確認済み」でたためます。")
-    st.info("手で入力するのは「4. 依頼ごとの作業（車両受入・返品など）」と「5. 着払い送料・控除」だけです。"
-            "ほかはEシス・B2・ヤマトの照合結果とNotionの記録から自動で入ります。最後に「7」でMF取込CSVを出して確定します。")
+    st.info("手で入力するのは「5. 依頼ごとの作業（車両受入・返品など）」と「6. 着払い送料・控除」だけです。"
+            "ほかはEシス・B2・ヤマトの照合結果とNotionの記録から自動で入ります。最後に「8」でMF取込CSVを出して確定します。")
 
     # ---- 1. 実績（Eシス・B2・ヤマトの照合結果）----
     result, source = None, ""
@@ -124,7 +115,7 @@ def render(year, month, client, db_ids=None, notion_ready=False):
     st.markdown("#### 1. 出荷実績（Eシス・B2・ヤマトの照合結果）")
     if result is None:
         st.warning(f"照合結果を読み込めていません（{source}）。金額は出しません。")
-        uploaded = st.file_uploader("照合結果ファイル（*_照合結果.json）を手で読み込む", type=["json"], key=prefix + "result_upload")
+        uploaded = st.file_uploader("照合結果ファイル（*_照合結果.json）を手で読み込む", type=["json"], key=f"teamec_result_upload_{year}_{month}")
         if uploaded is not None:
             result, source = json.loads(uploaded.getvalue().decode("utf-8")), f"アップロード {uploaded.name}"
     if result is not None:
@@ -153,6 +144,18 @@ def render(year, month, client, db_ids=None, notion_ready=False):
                 st.caption("棚番と発送サイズ（項目1）が違う商品。1注文1個の出荷実績から学習した値で出荷作業料を計算しています。")
                 st.dataframe(pd.DataFrame(irregular), hide_index=True)
 
+    # 入力の下書きは「対象月×照合結果」ごと。照合結果を後から読み込んだら、稼働日などの初期値を作り直す
+    draft_key = f"{target_ym}|{(result or {}).get('作成日時', 'none')}"
+    drafts = st.session_state.setdefault("_teamec_drafts", {})
+    if st.session_state.get("_teamec_active") != draft_key:
+        st.session_state["_teamec_active"] = draft_key
+        st.session_state["_teamec_generation"] = st.session_state.get("_teamec_generation", 0) + 1
+        carried = drafts.get(draft_key) or {k: v for k, v in drafts.get(f"{target_ym}|none", {}).items() if k != "calendar"}
+        st.session_state["_teamec_form_base"] = copy.deepcopy(carried)
+    base = st.session_state["_teamec_form_base"]   # 編集欄の初期値（切り替えるまで固定。変えると入力が消える）
+    prev = drafts.get(draft_key, base)               # たたんだ段は直前の入力値を使う
+    prefix = f"teamec_new_{year}_{month}_{st.session_state['_teamec_generation']}_"
+
     # ---- Notion（保管・汎用作業）----
     if notion_ready:
         counts = _load("保管カウント", lambda: notion_store.load_storage_counts(db_ids, R.CLIENT_NAME, target_ym))
@@ -178,41 +181,77 @@ def render(year, month, client, db_ids=None, notion_ready=False):
                    + ("Eシスで発送のあった日を選んでいます。" if default_days is not None else "照合結果が無いため平日を仮に選んでいます。"))
         cal = st.data_editor(pd.DataFrame(cal_rows), hide_index=True, disabled=["日付", "曜日", "祝日", "定額回数"],
                              column_config={"稼働": st.column_config.CheckboxColumn("出荷稼働")},
-                             key=prefix + "calendar", width="stretch")
+                             key=prefix + "calendar", width=430)
         shown_rows = _records(cal)
         active = [r["日付"] for r in shown_rows if r["稼働"]]
 
-    # ---- 3. 保管・汎用作業 ----
-    summary = (f"保管カウント {len(counts)}行・イレギュラー作業 {len(irregular_work)}件"
-               if counts is not None and irregular_work is not None else "Notionを読めていません")
-    if _section(prefix + "done_storage", "3. 保管・汎用作業（既存ページの記録）", summary):
+    # ---- 3. 保管 ----
+    storage_sum, storage_err = None, ""
+    if counts is not None:
+        try:
+            storage_sum = R.storage_summary(counts, year, month)
+        except ValueError as exc:
+            storage_err = str(exc)
+    summary = ("Notionを読めていません" if counts is None else storage_err or
+               f"保管料 {sum(r['金額'] for r in storage_sum):,}円（{len(counts)}行）")
+    if _section(prefix + "done_storage", "3. 保管（保管カウントページの記録）", summary):
         if counts is not None:
-            st.caption(f"保管カウント {target_ym}：{len(counts)}行。入力・修正は左メニュー「保管カウント」。"
+            st.caption(f"{target_ym} のカウント状況（2期平均→保管料）。入力・修正は左メニュー「保管カウント」。"
                        "600円パレットは「保管料：当社指定ロケーション」。")
+            if storage_err:
+                st.error(storage_err)
+            elif storage_sum:
+                st.dataframe(pd.DataFrame(storage_sum), hide_index=True, width=640)
+                st.caption(f"保管料 合計：{sum(r['金額'] for r in storage_sum):,}円")
+            else:
+                st.warning(f"{target_ym} の保管カウントが0行です。未入力でないか確認してください。")
             if counts:
-                st.dataframe(pd.DataFrame(counts).drop(columns=["id"], errors="ignore"), hide_index=True, width="stretch")
+                with st.expander(f"明細（{len(counts)}行）"):
+                    st.dataframe(pd.DataFrame(counts).drop(columns=["id"], errors="ignore"), hide_index=True, width="stretch")
+
+    # ---- 4. 汎用作業 ----
+    labor_sum, labor_err = None, ""
+    if irregular_work is not None:
+        try:
+            labor_sum = R.labor_lines(irregular_work, year, month)
+        except ValueError as exc:
+            labor_err = str(exc)
+    labor_amount = sum(x["金額"] for x in labor_sum) if labor_sum else 0
+    labor_hours = sum(x["数量"] for x in labor_sum) if labor_sum else 0
+    summary = ("Notionを読めていません" if irregular_work is None else labor_err or
+               f"{len(irregular_work)}件・{labor_hours:g}人時・{labor_amount:,}円")
+    if _section(prefix + "done_labor", "4. 汎用作業（イレギュラー作業ページの記録）", summary):
         if irregular_work is not None:
-            st.caption(f"イレギュラー作業 {target_ym}：{len(irregular_work)}件。15分単位の時間数×人数を合計します。"
+            st.caption("15分単位の時間数×人数を合計し、汎用作業料（2,100円/人時）で計算します。"
                        "返品処理・FBAなど料金表に単価がある作業をここに入れると二重計上になります。")
+            if labor_err:
+                st.error(labor_err)
+            st.dataframe(pd.DataFrame([{"件数": len(irregular_work), "合計人時": float(labor_hours),
+                                        "単価": int(R.price("汎用作業料", ver=ver)), "金額": labor_amount}]),
+                         hide_index=True, width=420)
             if irregular_work:
                 st.dataframe(pd.DataFrame(irregular_work).drop(columns=["id", "対象年月"], errors="ignore"),
                              hide_index=True, width="stretch")
 
-    # ---- 4. 依頼ごとの作業 ----
+    # ---- 5. 依頼ごとの作業 ----
     columns = ["実施日", "依頼ID", "作業", "数量", "通知日", "時間外再手配", "根拠・備考"]
-    if base.get("events"):
-        initial_events = base["events"]
-    else:
-        initial_events = [{"実施日": f["発送日"], "依頼ID": f["注文番号"], "作業": "FBA対応費", "数量": 1, "通知日": "",
-                           "時間外再手配": False, "根拠・備考": f"Eシス注文ID {f['注文ID']}"}
-                          for f in (result or {}).get("FBA依頼", [])]
+    fba_rows = [{"実施日": f["発送日"], "依頼ID": f["注文番号"], "作業": "FBA対応費", "数量": 1, "通知日": "",
+                 "時間外再手配": False, "根拠・備考": f"Eシス注文ID {f['注文ID']}（自動）"}
+                for f in (result or {}).get("FBA依頼", [])]
+    initial_events = [r for r in base.get("events", []) if "（自動）" not in str(r.get("根拠・備考", ""))]
     events_df = pd.DataFrame(initial_events, columns=columns) if initial_events else pd.DataFrame(
         {c: pd.Series(dtype="bool" if c == "時間外再手配" else "float64" if c == "数量" else "str") for c in columns})
-    event_rows = prev.get("events", initial_events)
-    n_events = len([r for r in event_rows if str(r.get("作業", "")).strip()])
-    if _section(prefix + "done_events", "4. 依頼ごとの作業（FBA・車両受入・返品など）", f"{n_events}件"):
-        st.caption("FBA（受注番号 FBA00xx）は照合結果から自動で入れています。ピース入庫はEシス入庫履歴から自動計上するため、"
-                   "ここには入れないでください。車両受入・追加便・返品・新商品初期設定などは依頼台帳を見て入力します。")
+    manual_rows = prev.get("events", initial_events)
+    n_manual = len([r for r in manual_rows if str(r.get("作業", "")).strip()])
+    if _section(prefix + "done_events", "5. 依頼ごとの作業（FBA・車両受入・返品など）",
+                f"FBA {len(fba_rows)}件（自動）・手入力 {n_manual}件"):
+        st.markdown(f"**FBA（受注番号 FBA00xx）：{len(fba_rows)}件**（照合結果から自動。1依頼2,000円）")
+        if fba_rows:
+            st.dataframe(pd.DataFrame(fba_rows)[["実施日", "依頼ID", "根拠・備考"]], hide_index=True, width=520)
+        elif result is None:
+            st.caption("照合結果を読み込むと表示されます。")
+        st.markdown("**手入力**（車両受入・追加便・返品・新商品初期設定など。依頼台帳を見て入力）")
+        st.caption("ピース入庫はEシス入庫履歴から自動計上するため、ここには入れないでください。")
         events_df["数量"] = pd.to_numeric(events_df["数量"].replace("", None))
         events_df["時間外再手配"] = events_df["時間外再手配"].map(lambda v: v is True or v == 1).astype(bool)
         events = st.data_editor(
@@ -224,17 +263,19 @@ def render(year, month, client, db_ids=None, notion_ready=False):
                 "時間外再手配": st.column_config.CheckboxColumn("時間外再手配", default=False),
                 "通知日": st.column_config.TextColumn("通知日", help="新商品・追加便の事前通知。YYYY-MM-DD"),
             })
-        event_rows = _records(events)
+        manual_rows = _records(events)
         with st.expander("作業ごとの単価と適用条件（料金表）"):
             for name in R.EVENT_NAMES:
                 row = R.ROWS[name]
                 st.markdown(f"**{name}**：{row[2]}  \n{row[3]}")
 
-    # ---- 5. 着払い送料・控除 ----
+    event_rows = fba_rows + manual_rows
+
+    # ---- 6. 着払い送料・控除 ----
     keep = prev.get("other", {})
     summary = (f"着払い送料 {keep.get('cod', 0):,}円・応援控除 {keep.get('support', 0):,}円・"
                f"保管費値引き {keep.get('discount', 0):,}円")
-    if _section(prefix + "done_other", "5. 着払い送料・控除", summary):
+    if _section(prefix + "done_other", "6. 着払い送料・控除", summary):
         keep = {
             "cod": st.number_input("着払い送料（税抜合計・円）", min_value=0, value=keep.get("cod", 0), step=1, key=prefix + "cod"),
             "support": st.number_input("応援控除（税抜・円）", min_value=0, value=keep.get("support", 0), step=1, key=prefix + "support"),
@@ -245,10 +286,10 @@ def render(year, month, client, db_ids=None, notion_ready=False):
                                              placeholder="半分未満のパレットなど"),
         }
         st.caption("控除は請求額から最後に差し引きます（管理費は控除前の第1層で計算）。")
-    drafts[target_ym] = {"calendar": shown_rows, "events": event_rows, "other": keep}
+    drafts[draft_key] = {"calendar": shown_rows, "events": manual_rows, "other": keep}
 
-    # ---- 6. 試算 ----
-    st.markdown("#### 6. 試算")
+    # ---- 7. 試算 ----
+    st.markdown("#### 7. 試算")
     calc = None
     try:
         if result is None:
@@ -320,7 +361,7 @@ def _issue_section(calc, result, source, client, year, month, prefix, db_ids, no
     from lib.invoice import drive_master, excel_export, invoice_number, mf_export, notion_store
 
     target_ym = f"{year}-{month:02}"
-    st.markdown("#### 7. 請求書の発行（MF取込CSV）")
+    st.markdown("#### 8. 請求書の発行（MF取込CSV）")
     h = client.get("header", {})
     auto_dates = invoice_number.default_dates(year, month)
     c1, c2, c3 = st.columns(3)
