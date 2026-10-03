@@ -194,6 +194,8 @@ def _app_test():
     return AppTest
 
 
+ISSUED = []
+
 SAMPLE_RESULT = {
     "対象月": "2026-09", "作成日時": "2026-10-02T15:00:00+09:00", "注文数": 3, "商品数": 4, "個口数": 2,
     "出荷作業料": 188, "出荷作業料_サイズ別": {"MB": 2, "60": 1}, "資材費": 113,
@@ -243,6 +245,7 @@ def _page(monkeypatch, notion=True):
         monkeypatch.setattr(notion_store, "load_storage_counts", lambda db, c, ym: counts(
             ("第1期", "保管料：パレット", 2), ("第2期", "保管料：パレット", 4)) if ym == "2026-09" else [])
         monkeypatch.setattr(notion_store, "load_irregular_work", lambda db, c, ym: [])
+        monkeypatch.setattr(notion_store, "load_issue_history", lambda db, c=None, ym=None: list(ISSUED))
     page = Path(__file__).resolve().parents[1] / "pages" / "6_🧾_請求書発行.py"
     at = AppTest.from_file(str(page), default_timeout=30)
     at.secrets = {"INVOICE_NOTION_PARENT_PAGE_ID": "x" if notion else ""}
@@ -267,7 +270,6 @@ def test_team_ec_september_uses_new_system_and_keeps_old_for_august(monkeypatch,
     assert "FBA対応費" in set(items["品名"])
     at.checkbox(key=next(k for k in at.session_state.filtered_state if k.endswith("done_days"))).check().run()
     assert not at.exception
-    assert not any("MF" in b.label and "取込不可" not in b.label for b in at.get("download_button"))
     next(n for n in at.number_input if n.label == "応援控除（税抜・円）").set_value(1000).run()
     assert not at.exception
     at.selectbox(key="invoice_month").select(8).run()
@@ -311,3 +313,24 @@ def test_review_zip_is_explicitly_draft_and_contains_version():
         assert data["status"] == "試算・請求不可"
         assert data["rate_version"]["id"] == "TE-2026-09"
         assert not data["inputs"]["実績CSV検証済"]
+
+
+def _mf_button(at):
+    return next(b for b in at.get("download_button") if "MF取込CSV" in b.proto.label)
+
+
+def test_mf_csv_matches_screen_and_blocks_double_billing(monkeypatch, tmp_path):
+    monkeypatch.setenv("TEAMEC_RESULTS_DIR", _results_dir(tmp_path))
+    at, _, _ = _page(monkeypatch)
+    at.run()
+    assert not at.exception, at.exception
+    assert not _mf_button(at).proto.disabled
+    from lib.invoice import mf_export
+    from lib.invoice.teamec.ui import _mf_items
+    ISSUED.append({"区分": "請求", "請求書番号": "260930-TE", "合計金額": 1000})
+    try:
+        at.run()
+        assert _mf_button(at).proto.disabled
+        assert any("発行履歴があります" in w.value for w in at.warning)
+    finally:
+        ISSUED.clear()

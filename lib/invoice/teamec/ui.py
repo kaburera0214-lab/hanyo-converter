@@ -3,7 +3,7 @@
 上から順に確認する縦長の画面。各段は「確認済み」にすると1行の要約にたためる（タブは見落としやすいため）。
 ・出荷作業料・資材費・送料・出荷稼働日・FBA・ピース入庫：Eシス・B2・ヤマトの照合結果（teamec-billing-fetch）
 ・保管・汎用作業：既存の保管カウント／イレギュラー作業ページのNotion記録（ここで再入力させない）
-照合結果が読めないときは金額を出さない（0円扱いにしない）。正式なMF出力は未接続のため試算表示。
+照合結果が読めないときは金額を出さない（0円扱いにしない）。7でMF取込CSV・内訳・確定（発行履歴＋Drive）。
 """
 from __future__ import annotations
 
@@ -108,10 +108,11 @@ def render(year, month, client, db_ids=None, notion_ready=False):
     prev = drafts.get(target_ym, base)               # たたんだ段は直前の入力値を使う
     prefix = f"teamec_new_{year}_{month}_{st.session_state['_teamec_generation']}_"
 
-    st.subheader(f"Team-EC 新体系（{ver['id']}）｜試算")
+    st.subheader(f"Team-EC 新体系（{ver['id']}）")
     st.caption("パピー用 · 2026年9月作業分から自動で新体系になります。8月以前は従来の計算です。"
                "上から順に確認し、済んだ段は「確認済み」でたためます。")
-    st.info("正式なMF取込CSVの出力は未接続のため、現在は試算です。")
+    st.info("手で入力するのは「4. 依頼ごとの作業（車両受入・返品など）」と「5. 着払い送料・控除」だけです。"
+            "ほかはEシス・B2・ヤマトの照合結果とNotionの記録から自動で入ります。最後に「7」でMF取込CSVを出して確定します。")
 
     # ---- 1. 実績（Eシス・B2・ヤマトの照合結果）----
     result, source = None, ""
@@ -287,9 +288,130 @@ def render(year, month, client, db_ids=None, notion_ready=False):
         st.download_button("試算明細・入力根拠を保存（ZIP／MF取込不可）", bundle,
                            file_name=f"TeamEC新体系_試算_{year}{month:02}.zip", mime="application/zip",
                            key=prefix + "download")
+    if calc is not None:
+        _issue_section(calc, result, source, client, year, month, prefix, db_ids, notion_ready,
+                       {"出荷稼働日": active, "保管カウント": counts, "イレギュラー作業": irregular_work,
+                        "依頼ごとの作業": event_rows, "その他": keep}, ver)
     with st.expander("料金の根拠"):
         st.markdown(f"[新料金単価表]({R.SOURCE['source_url']})（{R.SOURCE['checked_at']}取得）・版 {ver['id']}")
         st.write(disp["source"])
         for x in ver["extras"]:
             st.write(f"{x['品名']}：{x['source']}（対象 {'・'.join(x['months'])}）")
         st.write("請求先：" + client.get("header", {}).get("取引先名称", "Team-EC（マスタ未取得）"))
+
+
+def _mf_items(calc):
+    """試算の明細を MF 取込用の品目にする（単価・数量は整数か小数のまま。金額は明細の値）。"""
+    out = []
+    for it in calc["items"]:
+        q = it["数量"]
+        out.append({"品名": it["品名"], "単価": int(it["単価"]) if it["単価"] == int(it["単価"]) else float(it["単価"]),
+                    "数量": int(q) if q == int(q) else float(q), "単位": it.get("単位", ""),
+                    "詳細": str(it.get("詳細", ""))[:200], "金額": int(it["金額"])})
+    return out
+
+
+def _issue_section(calc, result, source, client, year, month, prefix, db_ids, notion_ready, inputs, ver):
+    """7. 請求書の発行：MF取込CSV・内訳Excelのダウンロードと、確定（発行履歴＋Driveバックアップ）。
+
+    確定は既存の請求と同じ保存先に追記する。同じ月の発行履歴があるときは、二重請求の確認を挟む。
+    保存に失敗したら「確定できていない」と表示する（成功に丸めない）。
+    """
+    from lib.invoice import drive_master, excel_export, invoice_number, mf_export, notion_store
+
+    target_ym = f"{year}-{month:02}"
+    st.markdown("#### 7. 請求書の発行（MF取込CSV）")
+    h = client.get("header", {})
+    auto_dates = invoice_number.default_dates(year, month)
+    c1, c2, c3 = st.columns(3)
+    inv_no = c1.text_input("請求書番号", value=invoice_number.generate_invoice_number(year, month, client.get("略号", "TE")),
+                           key=prefix + "inv_no")
+    issue_date = c1.text_input("請求日", value=auto_dates["請求日"], key=prefix + "issue_date")
+    due_date = c2.text_input("お支払期限", value=auto_dates["お支払期限"], key=prefix + "due_date")
+    sales_date = c2.text_input("売上計上日", value=auto_dates["売上計上日"], key=prefix + "sales_date")
+    subject = c3.text_input("件名", value=h.get("件名", ""), key=prefix + "subject")
+    staff = c3.text_input("自社担当者氏名", value=h.get("自社担当者氏名", ""), key=prefix + "staff")
+    header = {"取引先名称": h.get("取引先名称", ""), "件名": subject, "請求日": issue_date, "お支払期限": due_date,
+              "請求書番号": inv_no, "売上計上日": sales_date, "取引先敬称": h.get("取引先敬称", ""),
+              "取引先郵便番号": h.get("取引先郵便番号", ""), "取引先都道府県": h.get("取引先都道府県", ""),
+              "取引先住所1": h.get("取引先住所1", ""), "取引先住所2": h.get("取引先住所2", ""),
+              "自社担当者氏名": staff, "備考": h.get("備考", ""), "振込先": h.get("振込先", "")}
+    if not header["取引先名称"]:
+        st.error("取引先名称がマスタから読めていません。発行できません。")
+        return
+
+    items = _mf_items(calc)
+    subtotal, tax, total = mf_export.calc_totals(items)
+    if (subtotal, tax, total) != (calc["subtotal"], calc["tax"], calc["total"]):
+        st.error(f"MF出力の金額（{total:,}円）が画面の試算（{calc['total']:,}円）と一致しません。発行できません。")
+        return
+
+    blockers = []
+    must = [i for i in result.get("要確認", []) if i.get("重さ") != "参考"]
+    if must and not st.checkbox(f"照合結果の要確認 {len(must)}件を確認した", key=prefix + "ack_review"):
+        blockers.append("照合結果の要確認が未確認です")
+    prev = []
+    if notion_ready:
+        try:
+            prev = [r for r in notion_store.load_issue_history(db_ids, R.CLIENT_NAME, target_ym) if r.get("区分") == "請求"]
+        except Exception as exc:
+            blockers.append(f"発行履歴を読めないため二重請求を確認できません（{exc}）")
+    else:
+        blockers.append("Notion未接続のため発行履歴を確認・保存できません")
+    if prev:
+        st.warning("この月は既に発行履歴があります：" + "、".join(f"{r.get('請求書番号')}（{int(r.get('合計金額') or 0):,}円）" for r in prev))
+        if not st.checkbox("再発行する（二重請求にならないことを確認した）", key=prefix + "ack_reissue"):
+            blockers.append("同じ月の発行履歴があります")
+
+    enc = st.radio("文字コード（MF CSV）", ["UTF-8(BOM付き)", "Shift-JIS(cp932)"], horizontal=True, key=prefix + "enc")
+    csv_bytes = mf_export.to_csv_bytes(header, items, encoding="cp932" if enc.startswith("Shift") else "utf-8-sig")
+    csv_name = f"MF請求書_{R.CLIENT_NAME}_{inv_no}.csv"
+    pick = pd.DataFrame(result.get("出荷作業料_明細", []))
+    sheets = [("出荷作業費", pick if len(pick) else None, "金額" if len(pick) else None),
+              ("資材費", pd.DataFrame(result["資材費_サイズ別"]), "金額"),
+              ("出荷稼働日", pd.DataFrame({"日付": inputs["出荷稼働日"]}), None),
+              ("保管費", pd.DataFrame(inputs["保管カウント"] or []), None),
+              ("汎用作業費", pd.DataFrame(inputs["イレギュラー作業"] or []).drop(columns=["id"], errors="ignore"), None),
+              ("依頼ごとの作業", pd.DataFrame(inputs["依頼ごとの作業"]), None),
+              ("入庫", pd.DataFrame(result.get("入庫", [])), None)]
+    xlsx_bytes = excel_export.build_breakdown_excel([{"費目": it["品名"], "金額": it["金額"]} for it in items], sheets)
+    xlsx_name = f"内訳明細_{R.CLIENT_NAME}_{inv_no}.xlsx"
+    evidence = review_bundle(calc, dict(inputs, 照合結果=result, 照合結果の読込元=source, 請求書ヘッダ=header), ver)
+
+    d1, d2 = st.columns(2)
+    d1.download_button("⬇ MF取込CSV", csv_bytes, file_name=csv_name, mime="text/csv", key=prefix + "dl_csv",
+                       disabled=bool(blockers))
+    d2.download_button("⬇ 内訳明細（Excel）", xlsx_bytes, file_name=xlsx_name, key=prefix + "dl_xlsx",
+                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    for b in blockers:
+        st.error("⛔ " + b)
+    st.link_button("🔗 MF請求書のCSVアップロード元を開く",
+                   st.secrets.get("MF_UPLOAD_URL", "https://invoice.moneyforward.com/billings"))
+    if st.button("📦 請求を確定（発行履歴に保存＋Driveバックアップ）", type="primary", key=prefix + "confirm",
+                 disabled=bool(blockers)):
+        msgs, ok = [], True
+        try:
+            notion_store.save_issue_history(db_ids, invoice_no=inv_no, client_name=R.CLIENT_NAME, target_ym=target_ym,
+                                            kind="請求", issue_date=issue_date, due_date=due_date,
+                                            subtotal=subtotal, tax=tax, total=total, items=items)
+            msgs.append(f"発行履歴を保存（{inv_no}）")
+        except Exception as exc:
+            ok = False
+            msgs.append(f"発行履歴の保存に失敗：{exc}")
+        folder = st.secrets.get("INVOICE_GDRIVE_FOLDER_ID", "")
+        if folder:
+            try:
+                sub = drive_master.get_or_create_folder(
+                    f"{inv_no}_{R.CLIENT_NAME}_{datetime.now():%Y%m%d_%H%M%S}", folder)
+                drive_master.upload_bytes(csv_bytes, csv_name, sub, "text/csv")
+                drive_master.upload_bytes(xlsx_bytes, xlsx_name, sub,
+                                          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                drive_master.upload_bytes(evidence, f"根拠_{R.CLIENT_NAME}_{inv_no}.zip", sub, "application/zip")
+                msgs.append("Driveへバックアップ（CSV・内訳・根拠ZIP）")
+            except Exception as exc:
+                ok = False
+                msgs.append(f"Driveバックアップに失敗：{exc}")
+        else:
+            ok = False
+            msgs.append("INVOICE_GDRIVE_FOLDER_ID 未設定のためバックアップできません")
+        (st.success if ok else st.error)(("✅ 確定しました：" if ok else "⚠ 確定は完了していません：") + "／".join(msgs))
