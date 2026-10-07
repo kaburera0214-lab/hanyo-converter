@@ -130,14 +130,15 @@ def test_経過日数は読めなければNoneで0日に丸めない():
 def test_手で載せる入力は読めない行があれば全部やめる():
     pytest.importorskip("streamlit")
     from lib import pending_retry_ui as ui
-    assert ui.parse_yahoo_prices("code,price
-ab01,1708
-
- cd02 , 900 ") == {"ab01": 1708, "cd02": 900}
-    for bad in ("ab01", "ab01,abc", "ab01,0", ",100", "ab01,100,200", "", "code,price"):
+    lines = ["code,price", "ab01,1708", "", " cd02 , 900 "]
+    assert ui.parse_yahoo_prices(chr(10).join(lines)) == {"ab01": 1708, "cd02": 900}
+    # 読めない行が混ざっていたら、読めた行（ok01）も登録しない
+    for bad in ("ab01", "ab01,abc", "ab01,0", ",100", "ab01,100,200"):
         with pytest.raises(ValueError):
-            ui.parse_yahoo_prices("ok01,100
-" + bad if bad not in ("", "code,price") else bad)
+            ui.parse_yahoo_prices(chr(10).join(["ok01,100", bad]))
+    for empty in ("", "code,price"):
+        with pytest.raises(ValueError):
+            ui.parse_yahoo_prices(empty)
 
 
 # ---------------------------------------------------------------- 滞留監視
