@@ -1,21 +1,37 @@
 name: ne-order-rows
 
-# ネクストエンジンの受注明細（伝票に確定している商品コード）を取り出す。
+# ネクストエンジンの受注明細（伝票に確定している商品コード）を取り出して、
+# Google ドライブへ ne_order_rows_YYYYMMDD_NNN.csv として保存する。
 # 原価は「モールで売れたSKU」ではなく「NEの伝票で確定している商品コード」で確定させるため。
+# GapBoard（ローカル）が毎朝ドライブから取って取り込む。
 #
 # このリポジトリは公開。受注データをログに出さない・artifact に上げない。
-# 出力先は Google ドライブ（非公開）だけ。--probe が出すのは項目名だけ。
+# 出力先は Google ドライブ（非公開）だけ。ログに出るのは件数とファイル名だけ。
 #
 # concurrency group は auth-keepalive.yml と同じ "ne-keepalive"。
 # NEはトークンが再発行されると旧トークンが即失効するため、延命バッチと同時に走らせない。
 
 on:
+  schedule:
+    - cron: "30 20 * * *"   # 毎日 20:30 UTC = 翌05:30 JST（GapBoardの日次同期 06:30 の前）
   workflow_dispatch:
     inputs:
       probe:
-        description: "項目名の確認だけして終わる（API 1回・値は出さない）"
+        description: "項目名の確認だけして終わる（値は出さない）"
         type: boolean
-        default: true
+        default: false
+      from:
+        description: "受注日の開始 (YYYY-MM-DD)。入れると範囲で全部取る（過去分の取り込み用）"
+        required: false
+        default: ""
+      to:
+        description: "受注日の終了 (YYYY-MM-DD)。空なら今日"
+        required: false
+        default: ""
+      days:
+        description: "開始日が空のとき、直近この日数に更新のあった伝票を取る"
+        required: false
+        default: "4"
 
 concurrency:
   group: ne-keepalive
@@ -42,5 +58,20 @@ jobs:
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           NE_CLIENT_ID: ${{ secrets.NE_CLIENT_ID }}
           NE_CLIENT_SECRET: ${{ secrets.NE_CLIENT_SECRET }}
+          CHATWORK_API_TOKEN: ${{ secrets.CHATWORK_API_TOKEN }}
+          IN_PROBE: ${{ inputs.probe }}
+          IN_FROM: ${{ inputs.from }}
+          IN_TO: ${{ inputs.to }}
+          IN_DAYS: ${{ inputs.days }}
         run: |
-          python batch/ne_order_rows.py ${{ inputs.probe && '--probe' || '' }}
+          # 入力は環境変数で受ける（式をコマンドに直接埋め込まない）
+          ARGS=""
+          if [ "$IN_PROBE" = "true" ]; then
+            ARGS="--probe"
+          elif [ -n "$IN_FROM" ]; then
+            ARGS="--from $IN_FROM"
+            if [ -n "$IN_TO" ]; then ARGS="$ARGS --to $IN_TO"; fi
+          else
+            ARGS="--days ${IN_DAYS:-4}"
+          fi
+          python batch/ne_order_rows.py $ARGS

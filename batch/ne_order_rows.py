@@ -19,10 +19,19 @@
   ページングを最小にする。CALL_BUDGET を超えたら異常終了する（途中までを全件として
   保存しない）。
 
+【保存先】
+  Google ドライブの商品マスタと同じフォルダに `ne_order_rows_YYYYMMDD_NNN.csv`。
+  GapBoard（ローカル）が毎朝そこから取って取り込む。上書きしない（版を足す）。
+
 実行:
-    python batch/ne_order_rows.py --probe                 # 項目名の確認だけ（API 1回）
+    python batch/ne_order_rows.py --probe                          # 項目名の確認だけ（API 1回）
+    python batch/ne_order_rows.py --from 2025-05-01 --to 2026-10-07  # 受注日の範囲で全部
+    python batch/ne_order_rows.py --days 4                         # 直近4日に更新のあった伝票
 """
 import argparse
+import csv
+import datetime
+import io
 import sys
 import os
 
@@ -32,11 +41,17 @@ sys.path.insert(0, ROOT)
 from batch import st_shim                              # noqa: E402
 st_shim.install()                                      # libのimportより前に差し替える
 
+from lib import master_store                           # noqa: E402
+from lib.invoice import drive_master                   # noqa: E402
 from lib.ne_api import client, usage                   # noqa: E402
 
 ROW_EP = "api_v1_receiveorder_row/search"
 
 CALL_BUDGET = 60         # このバッチ1回で使ってよい呼び出しの上限
+PAGE_LIMIT = 10000       # 1回で取る件数（NE searchの上限）
+DRIVE_PREFIX = "ne_order_rows"
+
+JST = datetime.timezone(datetime.timedelta(hours=9))
 
 
 # 項目名の候補。NE の受注明細検索は fields の指定が必須で（未指定だと 004002）、
@@ -160,20 +175,85 @@ def probe():
     return 0
 
 
+def fetch(filters):
+    """条件に合う受注明細を全件取る。上限で打ち切らない（途中までを全件として返さない）。"""
+    fields = ROW_CANDIDATES + BASE_CANDIDATES
+    rows, offset, calls = [], 0, 0
+    while True:
+        if calls >= CALL_BUDGET:
+            raise RuntimeError("NE APIの呼び出しが上限（{}回）に達しました。{}件で中断します。"
+                               "期間を分けて実行してください。".format(CALL_BUDGET, len(rows)))
+        params = {"fields": ",".join(fields), "limit": str(PAGE_LIMIT), "offset": str(offset)}
+        params.update(filters)
+        data = client.call(ROW_EP, params).get("data") or []
+        calls += 1
+        rows.extend(data)
+        print("[fetch] offset={} → {}件（累計{}件・呼び出し{}回）".format(
+            offset, len(data), len(rows), calls), flush=True)
+        if len(data) < PAGE_LIMIT:
+            return rows, calls
+        offset += PAGE_LIMIT
+
+
+def to_csv(rows):
+    fields = ROW_CANDIDATES + BASE_CANDIDATES
+    # 明細側と伝票側に同名の項目は無い（接頭辞が違う）。列順は固定する
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=fields, extrasaction="ignore",
+                            lineterminator=chr(13) + chr(10))
+    writer.writeheader()
+    for row in rows:
+        writer.writerow({k: ("" if row.get(k) is None else row.get(k)) for k in fields})
+    return buf.getvalue().encode("utf-8-sig")
+
+
+def export(args):
+    if args.date_from:
+        end = args.date_to or datetime.datetime.now(JST).strftime("%Y-%m-%d")
+        filters = {"receive_order_date-gte": args.date_from + " 00:00:00",
+                   "receive_order_date-lte": end + " 23:59:59"}
+        label = "受注日 {}〜{}".format(args.date_from, end)
+        whole = True
+    else:
+        since = (datetime.datetime.now(JST) - datetime.timedelta(days=args.days))
+        filters = {"receive_order_last_modified_date-gte": since.strftime("%Y-%m-%d 00:00:00")}
+        label = "直近{}日に更新のあった伝票".format(args.days)
+        whole = False
+
+    print("[ne_order_rows] {} を取ります".format(label), flush=True)
+    rows, calls = fetch(filters)
+    if not rows:
+        if whole:
+            # 範囲を指定して1件も無いのは、取れていないと考える（0件を正常にしない）
+            print("[ne_order_rows] 明細が1件も返りませんでした。保存しません。", file=sys.stderr, flush=True)
+            return 1
+        # 毎日の分は、更新が無い日もある。保存はせず、正常に終わる
+        print("[ne_order_rows] 更新のあった伝票はありませんでした（保存なし）。", flush=True)
+        return 0
+
+    name = drive_master.upload_versioned(to_csv(rows), DRIVE_PREFIX, master_store.folder_id())
+    orders = len({r.get("receive_order_row_receive_order_id") for r in rows})
+    print("[ne_order_rows] OK saved={} 明細{}行・伝票{}件・呼び出し{}回".format(
+        name, len(rows), orders, calls), flush=True)
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description="NE受注明細の取り出し")
     parser.add_argument("--probe", action="store_true",
-                        help="項目名の確認だけして終わる（API 1回）")
+                        help="項目名の確認だけして終わる")
+    parser.add_argument("--from", dest="date_from", default="",
+                        help="受注日の開始（YYYY-MM-DD）。指定すると範囲で全部取る")
+    parser.add_argument("--to", dest="date_to", default="",
+                        help="受注日の終了（YYYY-MM-DD）。省略時は今日")
+    parser.add_argument("--days", type=int, default=4,
+                        help="--from が無いとき、直近この日数に更新のあった伝票を取る")
     args = parser.parse_args()
 
-    if not args.probe:
-        # 取り出し本体は、--probe で項目名を確かめてから実装する。
-        # 推測した項目名で全件取得を組むと、1つ違うだけで全部落ちる（004002）。
-        print("[ne_order_rows] いまは --probe だけ使えます。", file=sys.stderr, flush=True)
-        return 2
-
-    code = probe()
-    usage.flush()
+    try:
+        code = probe() if args.probe else export(args)
+    finally:
+        usage.flush()      # 失敗した回も、使ったAPI回数は数える
     return code
 
 
