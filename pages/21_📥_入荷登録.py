@@ -746,6 +746,7 @@ with st.expander(f"🧾 実行履歴（このセッション {len(_hist)}件）�
 # 以前の実行で反映できなかった分（どの画面・どの人が開いても同じものが見える）。
 pending_retry_ui.render("receiving", runner.execute,
                         skip_ids=[st.session_state.get("recv_retry_id")])
+pending_retry_ui.render_manual_add("receiving")
 
 st.markdown("### ① 入荷商品の入力")
 

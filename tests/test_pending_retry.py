@@ -127,6 +127,19 @@ def test_経過日数は読めなければNoneで0日に丸めない():
     assert pr.age_days({}, now) is None
 
 
+def test_手で載せる入力は読めない行があれば全部やめる():
+    pytest.importorskip("streamlit")
+    from lib import pending_retry_ui as ui
+    assert ui.parse_yahoo_prices("code,price
+ab01,1708
+
+ cd02 , 900 ") == {"ab01": 1708, "cd02": 900}
+    for bad in ("ab01", "ab01,abc", "ab01,0", ",100", "ab01,100,200", "", "code,price"):
+        with pytest.raises(ValueError):
+            ui.parse_yahoo_prices("ok01,100
+" + bad if bad not in ("", "code,price") else bad)
+
+
 # ---------------------------------------------------------------- 滞留監視
 
 def _watch():
