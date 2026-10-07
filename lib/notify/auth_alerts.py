@@ -16,8 +16,8 @@ from lib.notify import ne_alerts
 RECEIVING_PATH = ne_alerts.RECEIVING_PATH
 
 
-def yahoo_reauth_body(app_url=""):
-    """スタッフ向け: Yahoo再認可のお願い（手順つき）。"""
+def _yahoo_steps(app_url=""):
+    """Yahoo再認可の手順（切れた後の依頼と、切れる前の依頼で同じものを使う）。"""
     url = ne_alerts.receiving_url(app_url)
     if url:
         steps = ["下のリンクを開く（入荷登録の画面が開きます）\n   " + url]
@@ -32,7 +32,31 @@ def yahoo_reauth_body(app_url=""):
         "「同意する」を押す",
         "パピー業務ツールの最初の画面に戻ります",
     ]
-    steps_text = "".join("{}. {}\n".format(i, t) for i, t in enumerate(steps, 1))
+    return "".join("{}. {}\n".format(i, t) for i, t in enumerate(steps, 1))
+
+
+def yahoo_expiring_body(deadline_text="", app_url=""):
+    """切れる前の再認可のお願い。期限までに済ませれば、業務は一度も止まらない。"""
+    return (
+        "[info][title]🔐【期限あり】Yahooの再認可をお願いします（3分）[/title]"
+        "Yahooへの自動反映は、28日ごとにログインし直さないと止まる決まりです（延長できません）。\n"
+        "**いまはまだ動いています。**" + (deadline_text + "。\n" if deadline_text else "\n") +
+        "期限までに下の操作をしておけば、価格改定も入荷登録も止まりません。\n"
+        "用意するもの: 店舗オーナーのYahoo ID・パスワード\n"
+        "[hr]"
+        "■ やること\n"
+        + _yahoo_steps(app_url) +
+        "[hr]"
+        "■ できたか確かめる\n"
+        "「📥 入荷登録」→「🔐 Yahoo API接続」を開いて、期限の日付が28日先に変わっていればOKです。\n"
+        "■ うまくいかないとき\n"
+        "このタスクに「できませんでした」と、画面に出ている赤い文字をそのまま返信してください。"
+        "[/info]")
+
+
+def yahoo_reauth_body(app_url=""):
+    """スタッフ向け: Yahoo再認可のお願い（手順つき）。"""
+    steps_text = _yahoo_steps(app_url)
     return (
         "[info][title]🔐【要対応】Yahooの再認可をお願いします（3分）[/title]"
         "価格改定の「Yahooへの自動反映」が止まっています。\n"
@@ -45,13 +69,14 @@ def yahoo_reauth_body(app_url=""):
         "[hr]"
         "■ できたか確かめる\n"
         "「📥 入荷登録」→「🔐 Yahoo API接続」を開いて、緑色で「認可済み」と出ていればOKです。\n"
-        "■ 価格改定の途中だった場合（重要）\n"
+        "■ 止まっていた分の反映（重要）\n"
+        "反映できなかった分は控えてあります。再認可のあと「📥 入荷登録」または「💰 価格改定」を開くと、\n"
+        "上のほうに「⏳ 反映できていない処理」が出るので、そこの「🔁 再実行」を押してください。\n"
         "**そのままCSVをアップし直して「確定して反映」を押さないでください。**\n"
-        "値上げ率のルールは「現販売価格 × 新下代 ÷ 旧下代」で計算します。\n"
         "楽天とネクストエンジンだけ先に新しい価格へ変わっている状態で計算し直すと、\n"
         "その新しい価格を元にもう一段階値上げした金額になってしまいます。\n"
         "（例: 363円→368円まで反映済みのとき、押し直すと373円になる）\n"
-        "犬飼に連絡してください。正しい金額を固定したCSVを用意します。\n"
+        "「⏳ 反映できていない処理」が出ていないときは、犬飼に連絡してください。\n"
         "■ うまくいかないとき\n"
         "このタスクに「できませんでした」と、画面に出ている赤い文字をそのまま返信してください。"
         "犬飼が対応します。無理に進めなくて大丈夫です。"
@@ -63,6 +88,22 @@ _STAFF_BODIES = {
     "ne": ne_alerts.reauth_body,
     "yahoo": yahoo_reauth_body,
 }
+
+
+_EXPIRING_BODIES = {
+    "yahoo": yahoo_expiring_body,
+}
+
+
+def expiring_body(provider_key, deadline_text="", app_url=""):
+    """切れる前の再認可依頼。未知の接続先でも黙って落ちない。"""
+    builder = _EXPIRING_BODIES.get(provider_key)
+    if builder:
+        return builder(deadline_text, app_url)
+    return (
+        "[info][title]🔐【期限あり】{}の再認可が必要です[/title]"
+        "{}\nこのタスクに返信してください。犬飼が対応します。"
+        "[/info]".format(provider_key, deadline_text))
 
 
 def reauth_body(provider_key, app_url=""):

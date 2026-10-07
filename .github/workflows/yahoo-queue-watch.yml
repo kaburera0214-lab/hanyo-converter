@@ -37,3 +37,15 @@ jobs:
           CHATWORK_API_TOKEN: ${{ secrets.CHATWORK_API_TOKEN }}
           APP_URL: ${{ secrets.APP_URL }}
         run: python batch/yahoo_queue_watch.py
+
+      # 入荷登録・価格改定で失敗した分の控え（lib/pending_retry.py）が、再実行されないまま
+      # 1日以上残っていたら非ゼロ終了 → 稼働監視が赤になる。上の点検が失敗していても必ず見る。
+      - name: Watch pending retries (failed updates waiting for a re-run)
+        if: always()
+        env:
+          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          CHATWORK_API_TOKEN: ${{ secrets.CHATWORK_API_TOKEN }}
+          APP_URL: ${{ secrets.APP_URL }}
+        run: python batch/pending_retry_watch.py

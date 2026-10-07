@@ -32,7 +32,7 @@ st.caption("インプットCSV（JAN・新下代）→ 新販売価格を計算�
            "反映した内容はDriveの「価格改定履歴」に自動でバックアップされます。"
            f"　（app更新: {_build}）")
 
-from lib import master_store
+from lib import master_store, pending_retry_ui
 from lib.invoice import csv_import
 from lib.ne_api import client as ne_client, goods as ne_goods, usage as ne_usage
 from lib.pricing import (apply, calc, export as ex, masters, pipeline, rakuten_price,
@@ -41,6 +41,13 @@ from lib.receiving import yahoo_queue as yq
 from lib.yahoo_api import category_repair as yahoo_category, client as yahoo_client
 
 product_folder = master_store.folder_id()
+
+# 以前の実行で反映できなかった分（どの画面・どの人が開いても同じものが見える）。
+# いまの画面で実行中の分は、下の反映結果に同じ再実行ボタンがあるので二重に出さない。
+pending_retry_ui.render(
+    "pricing", apply.execute,
+    skip_ids=[v.get("retry_id") for k, v in st.session_state.items()
+              if str(k).endswith("_api_result") and isinstance(v, dict)])
 
 
 # ══ 旧Yahoo価格キューの復旧（2026-08-24・管理者用） ══════════
@@ -601,8 +608,13 @@ def confirm_and_apply(result_df, key_prefix, tab_label,
     _show_api_result(key_prefix, tab_label, files)
 
 
-def _run_api(tasks, key_prefix, tab_label, files):
-    """APIを実行し、結果・失敗分をセッションに残してからDriveへバックアップする。"""
+def _run_api(tasks, key_prefix, tab_label, files, retry_id=None):
+    """APIを実行し、結果・失敗分をセッションに残してからDriveへバックアップする。
+
+    失敗分はDriveにも控える（retry_id は再実行のとき、前回の控えのid）。CSVを
+    アップし直して「確定して反映」を押すと、先に反映済みの価格を元にもう一段
+    値上げしてしまうので、やり直しは必ず控えからの再実行で行う。
+    """
     total = ((1 if tasks.get("ne_price") else 0) + len(tasks.get("rakuten_price") or [])
              + (1 if tasks.get("yahoo_price") else 0))
     bar = st.progress(0.0, text="反映中…")
@@ -623,7 +635,14 @@ def _run_api(tasks, key_prefix, tab_label, files):
     except Exception:  # noqa: BLE001
         pass
 
-    st.session_state[key_prefix + "_api_result"] = {"results": results, "failed": failed}
+    if retry_id:
+        retry_err = pending_retry_ui.settle(retry_id, failed, results)
+        if not failed:
+            retry_id = None
+    else:
+        retry_id, retry_err = pending_retry_ui.remember("pricing", failed, tab_label)
+    st.session_state[key_prefix + "_api_result"] = {
+        "results": results, "failed": failed, "retry_id": retry_id, "retry_err": retry_err}
 
     # 反映が終わったらバックアップ。実際に反映した内容（入力CSV・出力CSV・実行結果）を
     # ひとまとめにしてDriveへ残す。失敗した反映も含めて「何をやったか」を記録する。
@@ -665,15 +684,20 @@ def _show_api_result(key_prefix, tab_label, files):
     st.caption("表示は**直近の実行分**です（再実行するとこの表は入れ替わります）。"
                "各実行の結果はバックアップに `api_result.csv` として1回ぶんずつ残ります。")
 
+    if state.get("retry_err"):
+        st.error("⚠️ " + state["retry_err"])
     if apply.has_auth_error(results):
         st.error("🔑 認証切れが含まれています。「📥 入荷登録」ページの🔐から"
                  "ネクストエンジン／Yahooを再認可してから、下の「失敗した分だけ再実行」を押してください。")
+        st.caption("失敗した分は控えてあります。再認可で画面を離れても、このページの上のほうに出る"
+                   "「⏳ 反映できていない処理」から再実行できます。"
+                   "**CSVをアップし直して「確定して反映」は押さないでください**（価格が二重に上がります）。")
 
     if failed:
         n_failed = (len(failed.get("ne_price") or []) + len(failed.get("rakuten_price") or [])
                     + len(failed.get("yahoo_price") or {}))
         if st.button(f"🔁 失敗した分だけ再実行（{n_failed}件）", key=f"{key_prefix}_api_retry"):
-            _run_api(failed, key_prefix, tab_label, files)
+            _run_api(failed, key_prefix, tab_label, files, retry_id=state.get("retry_id"))
             st.rerun()
     elif n_ng == 0 and n_skip == 0:
         st.success("✅ すべて反映しました。CSVのアップロードは不要です。")

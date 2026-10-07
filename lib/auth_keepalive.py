@@ -1,22 +1,25 @@
 # -*- coding: utf-8 -*-
 """
-認可（OAuth）の延命を、接続先を問わない共通の仕組みとして扱う。
+認可（OAuth）を切らさないための見張りを、接続先を問わない共通の仕組みとして扱う。
 
-【なぜ必要か】
-どの接続先も、一定期間APIを呼ばないとリフレッシュトークンごと失効し、
-ブラウザでの再認可が必要になる。価格改定も入荷登録も「都度」の不定期利用なので、
-放っておけば必ず空白期間ができて失効する。使いたいときに止まる。
+【目的】使いたいときに認証切れで止まらないこと。接続先によって手段が違う。
 
-  ネクストエンジン … refresh_token は 3日
+  ネクストエンジン … refresh_token は 3日。**呼ぶたびに巻き直る**ので、毎日呼べば切れない（延命できる）
   Yahoo           … refresh_token は 28日（ストアクリエイターProに公開鍵登録済みの場合。
-                     未登録は12時間。公開鍵は2026-05-06発行・2027-05-06まで有効）
+                     未登録は12時間。公開鍵は2026-05-06発行・2027-05-06まで有効）。
+                     **認可した日から固定で、何をしても延びない**（根拠は lib/yahoo_api/client.py 冒頭）。
+                     28日ごとに人が再認可するしかないので、**切れる前に依頼する**
 
-そこで毎日1回、各接続先のトークンを転がして期限を巻き直す。
+【2026-10-07 に直したこと】
+それまでは「Yahooも毎日更新すれば28日が巻き直る」前提だった。実際には延びず、
+しかも Yahoo の分は未設定スキップで一度も実行されないまま「成功」になっていたため、
+入荷登録の最中に認証切れで止まるまで誰も気づかなかった。
+  - 必須の接続先が未設定ならスキップせず失敗にする（required）
+  - 期限まで warn_days 日を切ったら再認可を依頼し、fail_days 日を切ったら失敗にする
 
 【自動再認可はできない】
-どちらも認可コードフローで、リフレッシュトークンが死んだ後の復帰には
-「人間がブラウザでログインして同意する」操作が必須（API側の仕様）。
-自動化できるのは「切らさないこと」と「切れたら即座に知らせること」まで。
+どちらも認可コードフローで、再認可には「人間がブラウザでログインして同意する」
+操作が必須（API側の仕様）。自動化できるのは「切れる前に知らせること」まで。
 
 【楽天RMSを入れていない理由】
 RMSはserviceSecret/licenseKeyの固定値で、転がして延命する仕組みがない
@@ -84,6 +87,7 @@ def _ne_provider():
         "auth_error": client.NEAuthError,
         "touch": client.keep_alive,
         "is_configured": lambda: True,           # NEは常に必須（未設定なら失敗として出す）
+        "required": True,
         "lifetime": "3日",
         # 再認可はNEのID・パスワードでできる＝倉庫スタッフが自分で完結できる
         "reauth_audience": "staff",
@@ -99,7 +103,15 @@ def _yahoo_provider():
         "auth_error": client.YahooAuthError,
         "touch": client.keep_alive,
         "is_configured": client.is_configured,
+        # 価格改定も入荷登録もYahooへ自動反映している。未設定のまま「スキップ＝成功」に
+        # すると、見張っているつもりで何も見ていない状態になる（2026-08-31〜10-07 の実例）。
+        "required": True,
         "lifetime": "28日",
+        # 延ばせないので、期限の手前で人に再認可を頼む。
+        #   7日前 … 依頼を出し始める。通知は3日おきなので 7・4・1日前の3回届く
+        #   3日前 … ワークフローを失敗にして稼働監視を赤にする（依頼を見落としても気づける）
+        "warn_days": 7,
+        "fail_days": 3,
         # Yahooの再認可には「店舗オーナーのYahoo ID」が要る。倉庫スタッフは
         # 持っていないので現場に投げても動けない＝管理者宛にする。
         "reauth_audience": "admin",
@@ -136,10 +148,15 @@ def run_one(provider, now=None):
                 "alert": True, "message": f"モジュールを読み込めません: {provider['broken']}",
                 "state": {}}
 
-    # 未設定は「異常」ではない（Yahoo未導入の環境でも動くように）。
-    # ただし黙って成功にはせず、skipped として結果に残す。
+    # 必須の接続先が未設定なら失敗（スキップを成功に数えない）。
+    # 必須でない接続先だけ、skipped として結果に残して先へ進む。
     try:
         if not provider["is_configured"]():
+            if provider.get("required"):
+                return {"key": key, "label": label, "ok": False, "auth": False,
+                        "alert": True, "state": {},
+                        "message": "接続設定（クライアントID・シークレット）が未設定のため、"
+                                   "確認を実行できていません"}
             return {"key": key, "label": label, "ok": True, "skipped": True,
                     "message": "未設定のためスキップしました", "state": {}}
     except Exception as exc:  # noqa: BLE001
@@ -156,13 +173,41 @@ def run_one(provider, now=None):
                       "rotated": rotated, "last_error": ""})
         if info.get("expires_at"):
             state["access_token_expires_at"] = info["expires_at"]
+        base = {"key": key, "label": label, "rotated": rotated, "state": state,
+                "reauth_audience": provider.get("reauth_audience", "staff")}
+
+        # 延ばせない接続先は、期限まであと何日かで判定する。
+        if provider.get("warn_days") is not None:
+            days = info.get("days_left")
+            text = info.get("deadline_text", "")
+            state.update({"days_left": days, "deadline": text})
+            if days is None:
+                # 「分からない」を正常に丸めない。丸めると切れるまで気づけない。
+                state.update({"last_result": "error", "last_error": text})
+                save_state(state_name, state)
+                return {**base, "ok": False, "auth": False, "alert": True,
+                        "message": text or "再認可の期限を判定できません"}
+            if days <= provider["warn_days"]:
+                alert = should_alert(state, now.date())
+                if alert:
+                    state["last_alert_date"] = now.date().isoformat()
+                urgent = days <= provider.get("fail_days", 0)
+                state["last_result"] = "expiring"
+                save_state(state_name, state)
+                return {**base, "ok": not urgent, "auth": False, "expiring": True,
+                        "alert": alert, "days_left": days, "deadline_text": text,
+                        "message": f"いまは使えますが、{text}。延長はできないので再認可が必要です"}
+            state.pop("last_alert_date", None)
+            save_state(state_name, state)
+            return {**base, "ok": True, "days_left": days,
+                    "message": f"使えます。{text}"}
+
         # 復旧したら、次に失効したとき必ず通知できるようにする
         state.pop("last_alert_date", None)
         save_state(state_name, state)
-        return {"key": key, "label": label, "ok": True, "rotated": rotated,
+        return {**base, "ok": True,
                 "message": ("トークンを更新しました" if rotated
-                            else "トークンは有効です（更新不要）"),
-                "state": state}
+                            else "トークンは有効です（更新不要）")}
     except provider["auth_error"] as exc:
         # 失効。ブラウザでの再認可が必要＝現場スタッフが自分でできる
         state.update({"last_run": stamp, "last_result": "auth_error",
@@ -194,5 +239,8 @@ def summarize(results):
         "ok": sum(1 for r in results if r.get("ok") and not r.get("skipped")),
         "skipped": sum(1 for r in results if r.get("skipped")),
         "auth_error": sum(1 for r in results if r.get("auth")),
-        "error": sum(1 for r in results if not r.get("ok") and not r.get("auth")),
+        "expiring": sum(1 for r in results if r.get("expiring")),
+        "error": sum(1 for r in results
+                     if not r.get("ok") and not r.get("auth") and not r.get("expiring")),
+        "failed": sum(1 for r in results if not r.get("ok")),
     }

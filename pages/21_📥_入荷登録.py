@@ -70,7 +70,7 @@ st.caption("JANをスキャン → 資材・ロケーション・配送サイズ
            + mall_routes.summary_line()
            + f"　（app更新: {_build}）")
 
-from lib import master_store
+from lib import master_store, pending_retry_ui
 from lib.ne_api import client as ne_client
 from lib.pricing import calc, export as ex, masters, rakuten_price
 from lib.receiving import master as recv_master, plan as rp, runner, yahoo_queue as yq
@@ -226,8 +226,15 @@ with st.expander("🔐 Yahoo API接続（管理者用）", expanded=False):
             st.warning("現在【テスト環境】に接続する設定です（YAHOO_USE_TEST=true）。"
                        "本番反映するには YAHOO_USE_TEST を外してください。")
         if _yt:
-            st.success(f"認可済み（トークン保存: {_yt.get('saved_at', '不明')}）。"
-                       "アクセストークンは自動更新されます。")
+            # 期限は lib/yahoo_api/client.py が正本（認可した日から28日・延長できない）。
+            _ydays = yahoo_client.days_until_reauth(_yt)
+            _ytext = yahoo_client.deadline_text(_yt)
+            if _ydays is None or _ydays < 0:
+                st.error(f"⚠️ {_ytext}。下のボタンから再認可してください。")
+            elif _ydays <= 7:
+                st.warning(f"認可済みですが、{_ytext}。期限までに下のボタンから再認可してください。")
+            else:
+                st.success(f"認可済み。{_ytext}")
         else:
             st.warning("未認可です。店舗オーナーのYahoo IDでログインして認可してください。")
         try:
@@ -235,8 +242,9 @@ with st.expander("🔐 Yahoo API接続（管理者用）", expanded=False):
                            use_container_width=True)
         except yahoo_client.YahooNotConfigured:
             st.caption("YAHOO_REDIRECT_URI が未設定です。")
-        st.caption("公開鍵は店舗（ストアクリエイターPro）に登録済みなら共用で問題なく、"
-                   "リフレッシュトークンは28日有効です。切れたら再認可してください。")
+        st.caption(f"Yahooの認可は、認可した日から{yahoo_client.REFRESH_LIFETIME_DAYS}日で必ず切れます"
+                   "（Yahoo側の決まりで、延長はできません）。期限の7日前から犬飼にChatworkで"
+                   "再認可の依頼が届きます。期限の前でも、ボタンを押せばその日から数え直しになります。")
 
 with st.expander("🔐 楽天RMS接続（管理者用・ライセンスキーの更新手順）", expanded=False):
     if rakuten_price.is_configured():
@@ -735,6 +743,10 @@ with st.expander(f"🧾 実行履歴（このセッション {len(_hist)}件）�
     else:
         st.caption("まだ実行はありません。「更新を実行」するとここに記録されます。")
 
+# 以前の実行で反映できなかった分（どの画面・どの人が開いても同じものが見える）。
+pending_retry_ui.render("receiving", runner.execute,
+                        skip_ids=[st.session_state.get("recv_retry_id")])
+
 st.markdown("### ① 入荷商品の入力")
 
 with st.expander("📄 NE現状の点検（誤登録さがし・一覧ダウンロード）", expanded=False):
@@ -1195,6 +1207,16 @@ if plan_rows and not _plan_stale:
                                            "url": url, "err": err,
                                            "files": files, "n_dv": len(dv_rows)}
         st.session_state["recv_failed"] = failed
+        # 失敗した分をDriveに控える。画面を閉じても・再認可で画面を離れても、
+        # 「⏳ 反映できていない処理」から誰でも再実行できる。
+        _codes_label = "、".join(dict.fromkeys(
+            str(r.get("商品コード", "")) for r in plan_rows if r.get("商品コード")))
+        _rid, _rerr = pending_retry_ui.remember(
+            "receiving", failed, " / ".join(x for x in (run_name, _codes_label) if x))
+        st.session_state["recv_retry_id"] = _rid
+        if _rerr:
+            st.session_state["recv_result"]["err"] = (
+                (err + " / " if err else "") + _rerr)
         # 実行履歴に1件追記（どこまで実行したかの確認用。セッション内で保持）。
         _codes = [str(r.get("商品コード", "")) for r in plan_rows if r.get("商品コード")]
         _nok = sum(1 for r in results if r.get("状態") == "成功")
@@ -1239,6 +1261,8 @@ if res:
     if runner.has_auth_error(results):
         st.error("🔐 認証切れが発生しています。下の手順で再認可してから"
                  "「失敗した処理だけ再実行」を押してください。")
+        st.caption("失敗した分は控えてあります。この画面を閉じたり、再認可で画面を離れたりしても、"
+                   "このページの上のほうに出る「⏳ 反映できていない処理」から再実行できます。")
         # NEの認証切れは現場スタッフでもその場で直せるよう、ボタンと手順をここに出す
         # （管理者用expanderを開かせない）。ログイン後は入力内容が残ったまま戻れる。
         if any("NE API" in str(r.get("メッセージ", "")) for r in results
@@ -1272,6 +1296,10 @@ if res:
             ok_before = [r for r in results if r["状態"] == "成功"]
             st.session_state["recv_result"]["results"] = ok_before + retry_results
             st.session_state["recv_failed"] = still_failed
+            _serr = pending_retry_ui.settle(st.session_state.get("recv_retry_id"),
+                                            still_failed, retry_results)
+            if _serr:
+                st.session_state["recv_result"]["err"] = _serr
             st.rerun()
 
     if res["err"]:
@@ -1296,8 +1324,9 @@ if res:
             st.info("🔁 " + _dv_route.sentence())
 
     if st.button("🧹 フォームをクリアして次の入荷へ", key="recv_clear"):
+        # recv_retry_id を外すと、残っている失敗分は上の「⏳ 反映できていない処理」に出る
         for k in ("recv_df", "recv_plan", "recv_plan_key", "recv_result",
-                  "recv_failed", "recv_agree"):
+                  "recv_failed", "recv_agree", "recv_retry_id"):
             st.session_state.pop(k, None)
         # nonce+1 で 1商品ずつ・まとめて表の全ウィジェットを新品化（JAN・プルダウンが確実に空に）
         st.session_state["recv_nonce"] = st.session_state.get("recv_nonce", 0) + 1

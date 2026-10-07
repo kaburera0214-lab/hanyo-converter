@@ -17,9 +17,21 @@ if "uid" in _qp and "state" in _qp:          # ネクストエンジンの認可
 elif "code" in _qp:                          # Yahoo（YConnect）の認可コールバック
     from lib.yahoo_api import client as yahoo_client
     try:
-        yahoo_client.exchange_code(_qp["code"])
+        _ytokens = yahoo_client.exchange_code(_qp["code"])
         st.success("✅ Yahoo APIの認可が完了しました（トークンをDriveに保存）。"
-                   "「📥 入荷登録」に戻ってください。")
+                   + yahoo_client.deadline_text(_ytokens) + "。")
+        # 認証切れで止まっていた分が残っていれば、ここで知らせる（戻った先で消えていた、を防ぐ）。
+        from lib import pending_retry_ui
+        _left = pending_retry_ui.open_count()
+        if _left is None:
+            st.warning("反映できていない処理が残っているかを確認できませんでした。"
+                       "「📥 入荷登録」「💰 価格改定」を開いて確かめてください。")
+        elif _left:
+            st.warning(f"⏳ 反映できていない処理が **{_left}件** 残っています。"
+                       "「📥 入荷登録」または「💰 価格改定」を開き、上のほうの"
+                       "「⏳ 反映できていない処理」で「🔁 再実行」を押してください。")
+        else:
+            st.info("反映できていない処理は残っていません。「📥 入荷登録」に戻ってください。")
     except Exception as e:  # noqa: BLE001
         st.error(f"Yahoo APIの認可に失敗しました: {e}")
     st.query_params.clear()

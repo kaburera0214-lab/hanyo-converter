@@ -1,12 +1,12 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-毎日バッチ: 各接続先の認可を延命する（ネクストエンジン・Yahoo）。
+毎日バッチ: 各接続先の認可が切れないよう見張る（ネクストエンジン・Yahoo）。
 
-トークンは一定期間使わないと失効し、ブラウザでの再認可が必要になる
-（NE=3日／Yahoo=28日）。価格改定も入荷登録も「都度」の不定期利用なので、
-放っておけば必ず空白ができて、使いたいときに止まる。
-毎日1回ここを実行しておけばトークンが更新され続け、再認可はほぼ不要になる。
+  NE    … 3日で失効。呼ぶたびに巻き直るので、ここを毎日実行していれば切れない
+  Yahoo … 認可した日から28日で必ず失効し、延ばせない。期限の7日前から再認可を依頼し、
+          3日前を切ったらこのバッチを失敗にする（稼働監視が赤になる）
+経緯と根拠は lib/auth_keepalive.py と lib/yahoo_api/client.py の冒頭。
 
 GitHub Actions（.github/workflows/auth-keepalive.yml）から実行する。
 2026-08-31 に batch/ne_keepalive.py（NE専用）から移行。
@@ -18,11 +18,12 @@ GitHub Actions（.github/workflows/auth-keepalive.yml）から実行する。
   CHATWORK_API_TOKEN（任意）                                   … 失効時のアラート
   APP_URL（任意）                                              … 再認可ページへの直リンク用
 
-※ Yahooが未設定（YAHOO_CLIENT_ID等が空）なら、その分はスキップして続行する。
+※ Yahooが未設定（YAHOO_CLIENT_ID等が空）なら失敗にする（NEの分は実行される）。
+   2026-10-07 まではスキップして成功にしており、Yahooを一度も見ていなかった。
 ※ 既に失効している場合はブラウザでの再認可が必要（API仕様。自動化できない）。
    その場合はChatworkにタスクを作って知らせる。
 
-終了コード: 0=全て正常（スキップ含む） / 1=いずれか失敗
+終了コード: 0=全て正常 / 1=いずれか失敗（認証切れ・期限間近・未設定・不具合）
 """
 import os
 import sys
@@ -59,6 +60,14 @@ def _notify(result):
     from lib.notify import auth_alerts, chatwork
     label = result["label"]
 
+    if result.get("expiring"):
+        # まだ切れていない。切れる前に再認可してもらえば、業務は一度も止まらない。
+        audience = (chatwork.ADMIN if result.get("reauth_audience") == "admin"
+                    else chatwork.STAFF)
+        _alert(auth_alerts.expiring_body(result["key"], result.get("deadline_text", ""),
+                                         APP_URL), audience)
+        return
+
     if result.get("auth"):
         # 失効の復旧はブラウザでのログインだけ。ただし「誰のIDでログインするか」は
         # 接続先で違う。NEは倉庫スタッフのIDで完結するが、Yahooは店舗オーナーの
@@ -70,9 +79,9 @@ def _notify(result):
 
     # バッチ側の不具合。スタッフには直せないので管理者にだけ送る
     _alert(auth_alerts.admin_body(
-        title=f"{label}のトークン延命バッチが失敗",
+        title=f"{label}の認可の見張りが失敗",
         error=result["message"],
-        impact=(f"このまま放置すると{label}の認証が切れ、"
+        impact=(f"{label}の認証が切れても事前に気づけません。切れると"
                 f"価格改定・入荷登録の{label}への自動反映が止まります。"),
         action="ログを確認して修正 → Run workflow で再実行",
         workflow=WORKFLOW), chatwork.ADMIN)
@@ -92,22 +101,26 @@ def main():
         line = f"[auth_keepalive] {r['label']}: "
         if r.get("skipped"):
             print(line + f"SKIP {r['message']}", flush=True)
+        elif r.get("ok") and r.get("expiring"):
+            print(line + f"WARN {r['message']}", flush=True)
         elif r.get("ok"):
             print(line + f"OK {r['message']}（rotated={r.get('rotated')}）", flush=True)
         else:
-            kind = "AUTH_ERROR" if r.get("auth") else "FAILED"
+            kind = ("AUTH_ERROR" if r.get("auth")
+                    else "EXPIRING" if r.get("expiring") else "FAILED")
             print(line + f"{kind}: {r['message']}", file=sys.stderr, flush=True)
 
     s = auth_keepalive.summarize(results)
     print(f"[auth_keepalive] 正常{s['ok']} / スキップ{s['skipped']} / "
-          f"認証切れ{s['auth_error']} / 失敗{s['error']}", flush=True)
+          f"認証切れ{s['auth_error']} / 期限間近{s['expiring']} / 失敗{s['error']}",
+          flush=True)
 
     # 通知は最後にまとめて出す。1件の通知失敗で他の延命結果を失わないため。
     for r in results:
         if not r.get("ok") and r.get("alert"):
             _notify(r)
 
-    return 0 if (s["auth_error"] == 0 and s["error"] == 0) else 1
+    return 0 if s["failed"] == 0 else 1
 
 
 if __name__ == "__main__":
