@@ -357,3 +357,90 @@ def test_storage_summary_matches_count_page_shape():
     assert R.storage_summary(rows, 2026, 9) == [
         {"種別": "保管料：パレット", "第1期合計": 2.0, "第2期合計": 4.0, "平均": 3.0, "単価": 1000, "金額": 3000},
         {"種別": "保管料：当社指定ロケーション", "第1期合計": 3.0, "第2期合計": 3.0, "平均": 3.0, "単価": 600, "金額": 1800}]
+
+
+# ---- 共有シート（随時連絡・返品・配送変更・依頼台帳）と新商品 ----
+LEDGER = {
+    "取得日時": "20261007_120000",
+    "随時連絡": [{"発生日": "2026-09-05", "発生内容": "長期不在", "受注番号": "250-1", "送り状番号": "", "ステータス": "完了"}],
+    "返品": [
+        {"日付": "2026-09-16", "発生日": "2026-09-15", "到着日": "2026-09-16", "送料負担方法": "着払い",
+         "送り状番号": "111 222", "注文番号": "", "ステータス": "完了", "着払い送料": 4782, "送料の根拠": "ヤマト請求（税別）2,391＋2,391"},
+        {"日付": "2026-09-20", "発生日": "2026-09-18", "到着日": "2026-09-20", "送料負担方法": "元払い",
+         "送り状番号": "", "注文番号": "ord-1", "ステータス": "完了", "着払い送料": None, "送料の根拠": ""}],
+    "配送変更": [{"日付": "2026-09-11", "伝票番号": "76152", "変更前": "ネコポス×1", "変更後": "ネコポス×2", "備考": "イーシス"}],
+    "依頼台帳": [
+        {"依頼No": "16", "日付": "2026-09-04", "依頼日": "2026-09-02", "区分": "その他", "内容": "ラベル貼り",
+         "対応状況": "出荷済", "出荷日": "2026-09-04", "パピー記入": "", "作業費": "", "推定品目": "汎用作業料", "計上候補": True},
+        {"依頼No": "19", "日付": "2026-09-10", "依頼日": "2026-09-10", "区分": "その他", "内容": "在庫データ",
+         "対応状況": "出荷済", "出荷日": "2026-09-10", "パピー記入": "", "作業費": "通常内", "推定品目": "汎用作業料", "計上候補": False}],
+    "出典": {k: "https://example.com/" + k for k in ("随時連絡", "返品交換", "依頼台帳", "配送変更依頼")},
+}
+NEW_ITEMS = {"状態": "取得済", "件数": 2, "説明": "テスト",
+             "明細": [{"確認日": "2026-09-08", "前回の記録": "2026-09-07", "JANコード": "1", "表示用コード": "z1", "商品名": "a", "棚番": "60A-1"},
+                      {"確認日": "2026-09-12", "前回の記録": "2026-09-11", "JANコード": "2", "表示用コード": "z2", "商品名": "b", "棚番": "MB2-1"}]}
+RESULT_WITH_LEDGER = dict(SAMPLE_RESULT, 作成日時="2026-10-07T12:00:00+09:00", 台帳=LEDGER, 新商品=NEW_ITEMS)
+
+
+def test_sheet_rows_become_event_rows_and_unknown_is_not_zero():
+    rows = R.auto_event_rows(RESULT_WITH_LEDGER)
+    assert [(r["作業"], r["数量"]) for r in rows] == [
+        ("新商品 初期設定", 2), ("随時連絡対応（起票・調査）", 1), ("返品処理", 1), ("返品処理", 1), ("配送種別・個口数の変更", 1)]
+    assert all(r["根拠・備考"].startswith(R.AUTO_MARKS) for r in rows)
+    lines = R.event_lines(rows, 2026, 9)   # そのまま計算に通る（依頼IDの重複なし・対象月内）
+    assert sum(x["金額"] for x in lines) == 700 * 2 + 1200 + 950 * 2 + 650
+    assert R.return_freight(RESULT_WITH_LEDGER)[0] == 4782
+    assert R.ledger_state(RESULT_WITH_LEDGER) == ""
+    assert R.ledger_state(SAMPLE_RESULT) and R.ledger_state(dict(SAMPLE_RESULT, 台帳=None))
+    assert R.auto_event_rows(dict(SAMPLE_RESULT, 台帳=None, 新商品={"状態": "記録なし", "件数": None, "明細": []})) == []
+
+
+def test_ledger_draft_needs_quantity_before_it_is_billed():
+    rows = R.ledger_rows(RESULT_WITH_LEDGER)
+    assert [(r["依頼No"], r["計上"]) for r in rows] == [("16", True), ("19", False)]
+    with pytest.raises(ValueError, match="依頼No.16：数量"):
+        R.ledger_lines(rows, 2026, 9)
+    rows[0]["数量"] = 0.5
+    line = R.ledger_lines(rows, 2026, 9)[0]
+    assert (line["品名"], line["区分"], line["金額"]) == ("汎用作業料", "第3層", 1050)
+    rows[0]["数量"] = 0.4
+    with pytest.raises(ValueError, match="15分単位"):
+        R.ledger_lines(rows, 2026, 9)
+    rows[0].update(品目="トラックチャーター（実費）", 数量=1)
+    with pytest.raises(ValueError, match="単価"):
+        R.ledger_lines(rows, 2026, 9)
+    rows[0]["単価"] = 30000
+    line = R.ledger_lines(rows, 2026, 9)[0]
+    assert (line["区分"], line["金額"]) == ("実費", 30000)
+    rows[0]["計上"] = False
+    assert R.ledger_lines(rows, 2026, 9) == []
+
+
+def test_same_item_lines_are_merged_into_one_row():
+    fba = [{"実施日": f"2026-09-{d:02}", "依頼ID": f"FBA00{d}", "作業": "FBA対応費", "数量": 1} for d in (10, 11, 12)]
+    labor = [R.line("汎用作業料", 2100, 1, "第3層", "人時", "イレギュラー作業"), R.line("汎用作業料", 2100, 0.5, "第3層", "人時", "依頼台帳")]
+    merged = R.merge_lines(R.event_lines(fba, 2026, 9) + labor)
+    assert [(x["品名"], float(x["数量"]), x["金額"]) for x in merged] == [("FBA対応費", 3.0, 6000), ("汎用作業料", 1.5, 3150)]
+    assert merged[0]["詳細"].startswith("3件：FBA0010") and all("要約" not in x for x in merged)
+    assert R.totals(merged)["subtotal"] == 9150
+
+
+def test_page_fills_sheet_rows_and_drops_deduction_reason_inputs(monkeypatch, tmp_path):
+    monkeypatch.setenv("TEAMEC_RESULTS_DIR", _results_dir(tmp_path, RESULT_WITH_LEDGER))
+    at, _, _ = _page(monkeypatch)
+    at.run()
+    assert not at.exception, at.exception
+    assert not any("根拠" in t.label for t in at.text_input)
+    # 依頼台帳No.16 が計上候補で数量が空 → 金額を出さずに止める（人の確認待ち）
+    assert any("依頼No.16：数量" in e.value for e in at.error), [e.value for e in at.error]
+    assert not any(m.label.startswith("試算") for m in at.metric)
+
+
+def test_old_result_without_sheets_warns_instead_of_zero(monkeypatch, tmp_path):
+    monkeypatch.setenv("TEAMEC_RESULTS_DIR", _results_dir(tmp_path))
+    at, _, _ = _page(monkeypatch)
+    at.run()
+    assert not at.exception, at.exception
+    assert any("0件とは限りません" in w.value for w in at.warning)
+    items = at.dataframe[-1].value
+    assert len(items[items["品名"] == "FBA対応費"]) == 1

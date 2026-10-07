@@ -252,7 +252,9 @@ def event_lines(rows, year: int, month: int):
         if name == "車両受入費" and bool(row.get("時間外再手配", False)):
             p += price(name, 1, ver)
             details.append("時間帯外到着による段取り変更あり。待機・当社都合の前倒しは対象外")
-        result.append(line(name, p, q, LAYER[name], event_unit(name), "／".join(d for d in details if d)))
+        item = line(name, p, q, LAYER[name], event_unit(name), "／".join(d for d in details if d))
+        item["要約"] = f"{request}（{performed}）"
+        result.append(item)
     return result
 
 
@@ -327,4 +329,129 @@ def storage_summary(count_rows, year, month) -> list[dict]:
         second = sum(amount(r.get("数量", 0)) for r in rows if r.get("期") == "第2期")
         out.append({"種別": name, "第1期合計": float(first), "第2期合計": float(second),
                     "平均": float((first + second) / 2), "単価": unit_price, "金額": lines[item]["金額"]})
+    return out
+
+
+# ---- 共有シート（随時連絡・返品交換・配送変更依頼・依頼台帳）と新商品（棚番の設定）----
+AUTO_MARKS = ("【シート】", "【Eシス】")   # 自動で入れた行の根拠の先頭。人が直した行と見分ける
+# 依頼台帳のたたき台で選べる品目 → (区分, 単位, 単価。None は実費で手入力)
+LEDGER_ITEMS = {"汎用作業料": ("第3層", "人時", "汎用作業料"),
+                "トラックチャーター（実費）": ("実費", "式", None),
+                "その他（実費）": ("実費", "式", None)}
+
+
+def ledger_state(result) -> str:
+    """共有シートを読めているか。空文字なら読めている。読めていない理由を返す（0件と区別する）。"""
+    if result is None:
+        return "照合結果を読めていません"
+    if "台帳" not in result:
+        return "この照合結果は共有シートに対応する前のものです"
+    if result["台帳"] is None:
+        return "共有シートを取得できていません"
+    return ""
+
+
+def auto_event_rows(result) -> list[dict]:
+    """共有シートとEシスの棚番から、依頼ごとの作業の行を作る（人が確認・修正する前提のたたき台）。"""
+    def row(day, request, name, qty, basis):
+        return {"実施日": day, "依頼ID": request, "作業": name, "数量": qty, "通知日": "",
+                "時間外再手配": False, "根拠・備考": basis}
+
+    rows, used = [], set()
+
+    def unique(text):
+        base, n = text, 1
+        while text in used:
+            n += 1
+            text = f"{base}-{n}"
+        used.add(text)
+        return text
+
+    new = (result or {}).get("新商品") or {}
+    if new.get("件数"):
+        codes = "、".join(x.get("表示用コード") or x["JANコード"] for x in new["明細"])
+        rows.append(row(max(x["確認日"] for x in new["明細"]), f"新商品{result['対象月']}", "新商品 初期設定",
+                        new["件数"], f"【Eシス】棚番が未設定→設定：{codes}"[:300]))
+    led = (result or {}).get("台帳") or {}
+    for r in led.get("随時連絡", []):
+        rows.append(row(r["発生日"], unique(f"{r['受注番号'] or '随時連絡'}／{r['発生内容']}"), "随時連絡対応（起票・調査）",
+                        1, f"【シート】随時連絡：{r['発生内容']}（{r['ステータス']}）"))
+    for r in led.get("返品", []):
+        fee = "" if r["着払い送料"] is None else f"・送料 {r['着払い送料']:,}円"
+        rows.append(row(r["日付"], unique(r["送り状番号"] or r["注文番号"] or f"返品{r['日付']}"), "返品処理", 1,
+                        f"【シート】返品交換：{r['送料負担方法'] or '送料負担の記載なし'}{fee}（{r['ステータス']}）"))
+    for r in led.get("配送変更", []):
+        rows.append(row(r["日付"], unique(f"伝票{r['伝票番号'] or r['日付']}"), "配送種別・個口数の変更", 1,
+                        f"【シート】配送変更依頼：{r['変更前']}→{r['変更後']}（備考 {r['備考']}）"))
+    return rows
+
+
+def return_freight(result) -> tuple[int, str]:
+    """返品交換シートの着払い返品にかかった送料の合計と内訳。"""
+    rows = [r for r in ((result or {}).get("台帳") or {}).get("返品", []) if r.get("着払い送料")]
+    return (sum(r["着払い送料"] for r in rows),
+            "、".join(f"{r['日付']} {r['着払い送料']:,}円（{r['送料の根拠']}）" for r in rows))
+
+
+def ledger_rows(result) -> list[dict]:
+    """依頼台帳のその月の行を、たたき台の表にする。数量（人時）や金額は台帳に無いので空欄のまま人が入れる。"""
+    return [{"計上": bool(r["計上候補"]), "依頼No": r["依頼No"], "日付": r["日付"], "内容": r["内容"],
+             "対応状況": r["対応状況"], "作業費（台帳）": r["作業費"], "品目": r["推定品目"], "数量": None, "単価": None}
+            for r in ((result or {}).get("台帳") or {}).get("依頼台帳", [])]
+
+
+def ledger_lines(rows, year, month):
+    """依頼台帳のたたき台のうち「計上」にした行を明細にする。数量・単価が空のまま計上にはしない。"""
+    ver = version(year, month)
+    result = []
+    for r in rows:
+        if not (r.get("計上") is True or r.get("計上") == 1):
+            continue
+        no = f"依頼No.{r.get('依頼No', '')}"
+        name = str(r.get("品目", "")).strip()
+        if name not in LEDGER_ITEMS:
+            raise ValueError(f"{no}：品目を選んでください")
+        layer, unit, priced = LEDGER_ITEMS[name]
+        if r.get("数量") in ("", None) or pd_isna(r.get("数量")):
+            raise ValueError(f"{no}：数量（{unit}）を入れるか、「計上」を外してください")
+        q = amount(r["数量"], no + "の数量")
+        if not q:
+            raise ValueError(f"{no}：数量が0です。計上しないなら「計上」を外してください")
+        if priced:
+            if q * 4 != (q * 4).to_integral_value():
+                raise ValueError(f"{no}：人時は15分単位（0.25刻み）で入れてください")
+            p = price(priced, ver=ver)
+        else:
+            if r.get("単価") in ("", None) or pd_isna(r.get("単価")):
+                raise ValueError(f"{no}：実費の単価（税抜・円）を入れてください")
+            p = amount(r["単価"], no + "の単価")
+        item = line(name, p, q, layer, unit, f"依頼台帳 No.{r.get('依頼No', '')}（{r.get('日付', '')}）{str(r.get('内容', ''))[:60]}")
+        item["要約"] = f"依頼台帳No.{r.get('依頼No', '')}"
+        result.append(item)
+    return result
+
+
+def pd_isna(value) -> bool:
+    return isinstance(value, float) and value != value
+
+
+def merge_lines(lines):
+    """品名・単価・区分・単位が同じ明細を1行にまとめる（FBA対応費が依頼の数だけ並ぶのを防ぐ）。"""
+    merged, order = {}, []
+    for x in lines:
+        key = (x["区分"], x["品名"], x["単価"], x["単位"])
+        if key not in merged:
+            merged[key] = {"line": dict(x), "parts": []}
+            order.append(key)
+        else:
+            merged[key]["line"]["数量"] += x["数量"]
+        merged[key]["parts"].append(x)
+    out = []
+    for key in order:
+        m, parts = merged[key]["line"], merged[key]["parts"]
+        if len(parts) > 1:
+            m["金額"] = yen(m["単価"] * m["数量"])
+            m["詳細"] = f"{len(parts)}件：" + "、".join(str(p.get("要約") or p["詳細"]) for p in parts)
+        m.pop("要約", None)
+        out.append(m)
     return out
