@@ -426,13 +426,18 @@ def test_one_table_per_sheet_with_price_and_new_item_notice():
     from lib.invoice.teamec import ui
     for name, widths in ui.SHEET_COLUMNS.items():
         cols = list(widths)
-        # 名称 → 金額 → 計上 → 理由。列は元データにある（列をまとめて作らない）。幅の合計は横スクロールが出ない範囲
-        assert cols.index("計上") in (2, 3) and cols[1] in ui.MONEY_COLUMNS and sum(widths.values()) <= 960, name
+        # 計上（一番左）→ 名称 → 金額 → 理由。列は元データにある（列をまとめて作らない）。幅の合計は横スクロールが出ない範囲
+        assert cols[0] == "計上" and cols[2] in ui.MONEY_COLUMNS and sum(widths.values()) <= 960, name
         assert set(cols) - {"金額"} <= set(tables[name][0]), name
     new5 = dict(tables, 新商品=[dict(tables["新商品"][0], JANコード=str(i)) for i in range(5)])
     plain = R.event_lines(R.sheet_event_rows({"新商品": new5["新商品"]}, "2026-09"), 2026, 9)
-    noticed = R.event_lines(R.sheet_event_rows({"新商品": new5["新商品"]}, "2026-09", notice=True), 2026, 9)
-    assert (plain[0]["金額"], noticed[0]["金額"]) == (700 * 5, 450 * 5)
+    assert [x["金額"] for x in plain] == [700 * 5]
+    all_noticed = [dict(r, **{"14日前通知": True}) for r in new5["新商品"]]
+    assert [x["金額"] for x in R.event_lines(R.sheet_event_rows({"新商品": all_noticed}, "2026-09"), 2026, 9)] == [450 * 5]
+    # 同じ月に通知あり・なしが混ざる：通知ありが4SKUなら割引に届かず700円、通知なしも700円（行は分かれる）
+    mixed = all_noticed[:4] + new5["新商品"][4:]
+    lines = R.event_lines(R.sheet_event_rows({"新商品": mixed}, "2026-09"), 2026, 9)
+    assert [(int(x["単価"]), int(x["数量"])) for x in lines] == [(700, 4), (700, 1)]
 
 
 def test_ledger_draft_gives_candidates_per_request_and_needs_human_input():

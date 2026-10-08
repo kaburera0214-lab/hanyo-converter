@@ -407,14 +407,18 @@ def sheet_tables(result, ver=None) -> dict:
     changes = [{"注文ID": r.get("注文ID") or r["伝票番号"], "金額": yen_("配送種別・個口数の変更"), "計上": True,
                 "日付": r["日付"], "変更前": r["変更前"], "変更後": r["変更後"], "伝票番号欄": r["伝票番号"]}
                for r in led.get("配送変更", [])]
-    new = [{"表示用コード": x.get("表示用コード") or x["JANコード"], "計上": True, "商品名": x.get("商品名", ""),
+    new = [{"表示用コード": x.get("表示用コード") or x["JANコード"], "計上": True, "14日前通知": False, "商品名": x.get("商品名", ""),
             "棚番": x.get("棚番", ""), "確認日": x["確認日"], "根拠": x.get("根拠", "棚番が未設定→設定"), "JANコード": x["JANコード"]}
            for x in ((result or {}).get("新商品") or {}).get("明細", [])]
     return {"FBA": fba, "随時連絡": contacts, "返品": returns, "配送変更": changes, "新商品": new}
 
 
-def sheet_event_rows(tables, target_ym, notice=False) -> list[dict]:
-    """確認表で「計上」になっている行を、依頼ごとの作業の行にする。notice＝新商品の事前通知（14日前まで）あり。"""
+def sheet_event_rows(tables, target_ym) -> list[dict]:
+    """確認表で「計上」になっている行を、依頼ごとの作業の行にする。
+
+    新商品は行ごとの「14日前通知」で分ける（同じ月に通知があるもの・無いものが混ざるため。2026-10-08 本人指示）。
+    通知ありのSKU数が5以上・10以上なら単価が下がる。通知なしは通常の単価。
+    """
     from datetime import timedelta
 
     def row(day, request, name, qty, basis, notified=""):
@@ -434,12 +438,15 @@ def sheet_event_rows(tables, target_ym, notice=False) -> list[dict]:
     for r in tables.get("FBA", []):
         if _on(r):
             rows.append(row(r["発送日"], unique(r["受注番号"]), "FBA対応費", 1, f"Eシス注文ID {r['注文ID']}"))
-    new = [r for r in tables.get("新商品", []) if _on(r)]
-    if new:
-        day = max(r["確認日"] for r in new)
-        notified = (date.fromisoformat(day[:10]) - timedelta(days=14)).isoformat() if notice else ""
-        codes = "、".join(r["表示用コード"] for r in new)
-        rows.append(row(day, f"新商品{target_ym}", "新商品 初期設定", len(new), f"【Eシス】新商品：{codes}"[:300], notified))
+    for noticed in (True, False):
+        new = [r for r in tables.get("新商品", [])
+               if _on(r) and (r.get("14日前通知") is True or r.get("14日前通知") == 1) == noticed]
+        if new:
+            day = max(r["確認日"] for r in new)
+            notified = (date.fromisoformat(day[:10]) - timedelta(days=14)).isoformat() if noticed else ""
+            codes = "、".join(r["表示用コード"] for r in new)
+            rows.append(row(day, f"新商品{target_ym}{'・14日前通知あり' if noticed else ''}", "新商品 初期設定", len(new),
+                            f"【Eシス】新商品：{codes}"[:300], notified))
     for r in tables.get("随時連絡", []):
         if _on(r):
             rows.append(row(r["発生日"], unique(f"{r['受注番号'] or '随時連絡'}／{r['発生内容']}"), "随時連絡対応（起票・調査）",
