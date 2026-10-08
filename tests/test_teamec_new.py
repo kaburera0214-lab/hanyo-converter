@@ -430,14 +430,19 @@ def test_one_table_per_sheet_with_price_and_new_item_notice():
         assert cols[0] == "計上" and cols[2] in ui.MONEY_COLUMNS and sum(widths.values()) <= 960, name
         assert set(cols) - {"金額"} <= set(tables[name][0]), name
     new5 = dict(tables, 新商品=[dict(tables["新商品"][0], JANコード=str(i)) for i in range(5)])
-    plain = R.event_lines(R.sheet_event_rows({"新商品": new5["新商品"]}, "2026-09"), 2026, 9)
-    assert [x["金額"] for x in plain] == [700 * 5]
-    all_noticed = [dict(r, **{"14日前通知": True}) for r in new5["新商品"]]
-    assert [x["金額"] for x in R.event_lines(R.sheet_event_rows({"新商品": all_noticed}, "2026-09"), 2026, 9)] == [450 * 5]
-    # 同じ月に通知あり・なしが混ざる：通知ありが4SKUなら割引に届かず700円、通知なしも700円（行は分かれる）
-    mixed = all_noticed[:4] + new5["新商品"][4:]
-    lines = R.event_lines(R.sheet_event_rows({"新商品": mixed}, "2026-09"), 2026, 9)
-    assert [(int(x["単価"]), int(x["数量"])) for x in lines] == [(700, 4), (700, 1)]
+    def lines(rows):
+        return R.event_lines(R.sheet_event_rows({"新商品": rows}, "2026-09"), 2026, 9)
+
+    assert R.new_item_prices(VER) == [700, 450, 350] and tables["新商品"][0]["金額"] == 700   # 初期値は通常の単価
+    assert [x["金額"] for x in lines(new5["新商品"])] == [700 * 5]
+    assert [x["金額"] for x in lines([dict(r, 金額=450) for r in new5["新商品"]])] == [450 * 5]
+    # 同じ月に単価が混ざってよい（単価ごとに1行）。450円は5SKU以上、350円は10SKU以上あること
+    mixed = [dict(r, 金額=450) for r in new5["新商品"]] + [dict(new5["新商品"][0], JANコード="x", 表示用コード="zx")]
+    assert [(int(x["単価"]), int(x["数量"])) for x in lines(mixed)] == [(700, 1), (450, 5)]
+    with pytest.raises(ValueError, match="450円は5SKU以上"):
+        lines([dict(r, 金額=450) for r in new5["新商品"][:4]])
+    with pytest.raises(ValueError, match="350円は10SKU以上"):
+        lines([dict(r, 金額=350) for r in new5["新商品"]])
 
 
 def test_ledger_draft_gives_candidates_per_request_and_needs_human_input():

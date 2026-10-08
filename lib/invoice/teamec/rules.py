@@ -240,6 +240,19 @@ def event_lines(rows, year: int, month: int):
                 if notified > performed:
                     raise ValueError(f"{request}：通知日が実施日より後です")
                 early = (performed - notified).days >= 14
+            if name == "新商品 初期設定" and row.get("単価指定") not in ("", None):
+                # 確認表で単価を選んだ場合（2026-10-08 本人指示）。割引の単価は、その単価の商品が規定のSKU数あること
+                p = amount(row["単価指定"], request + "の単価")
+                need = {price(name, 0, ver): 0, price(name, 1, ver): 5, price(name, 2, ver): 10}
+                if p not in need:
+                    raise ValueError(f"新商品 初期設定：単価 {p}円は料金表にありません")
+                if q < need[p]:
+                    raise ValueError(f"新商品 初期設定：{int(p):,}円は{need[p]}SKU以上が条件です（いま{int(q)}SKU）。"
+                                     f"単価を選び直すか、対象の商品を{need[p]}SKU以上にしてください")
+                details.append(f"単価 {int(p):,}円（14日前までの通知・{need[p]}SKU以上）" if need[p] else f"単価 {int(p):,}円")
+                result.append({**line(name, p, q, LAYER[name], event_unit(name), "／".join(d for d in details if d)),
+                               "要約": f"{request}（{performed}）"})
+                continue
             if name == "新商品 初期設定":
                 p = price(name, 2 if q >= 10 else 1, ver) if early and q >= 5 else price(name, 0, ver)
             else:
@@ -407,7 +420,8 @@ def sheet_tables(result, ver=None) -> dict:
     changes = [{"注文ID": r.get("注文ID") or r["伝票番号"], "金額": yen_("配送種別・個口数の変更"), "計上": True,
                 "日付": r["日付"], "変更前": r["変更前"], "変更後": r["変更後"], "伝票番号欄": r["伝票番号"]}
                for r in led.get("配送変更", [])]
-    new = [{"表示用コード": x.get("表示用コード") or x["JANコード"], "計上": True, "14日前通知": False, "商品名": x.get("商品名", ""),
+    new = [{"表示用コード": x.get("表示用コード") or x["JANコード"], "計上": True, "金額": yen_("新商品 初期設定"),
+            "商品名": x.get("商品名", ""),
             "棚番": x.get("棚番", ""), "確認日": x["確認日"], "根拠": x.get("根拠", "棚番が未設定→設定"), "JANコード": x["JANコード"]}
            for x in ((result or {}).get("新商品") or {}).get("明細", [])]
     return {"FBA": fba, "随時連絡": contacts, "返品": returns, "配送変更": changes, "新商品": new}
@@ -416,11 +430,9 @@ def sheet_tables(result, ver=None) -> dict:
 def sheet_event_rows(tables, target_ym) -> list[dict]:
     """確認表で「計上」になっている行を、依頼ごとの作業の行にする。
 
-    新商品は行ごとの「14日前通知」で分ける（同じ月に通知があるもの・無いものが混ざるため。2026-10-08 本人指示）。
-    通知ありのSKU数が5以上・10以上なら単価が下がる。通知なしは通常の単価。
+    新商品は行ごとに選んだ単価（金額）で分ける。通常の単価のほか、14日前までの通知があり5SKU以上・10SKU以上のときの
+    単価を選べる（2026-10-08 本人指示）。選んだ単価の商品が規定のSKU数に足りなければ event_lines が止める。
     """
-    from datetime import timedelta
-
     def row(day, request, name, qty, basis, notified=""):
         return {"実施日": day, "依頼ID": request, "作業": name, "数量": qty, "通知日": notified,
                 "時間外再手配": False, "根拠・備考": basis}
@@ -438,15 +450,12 @@ def sheet_event_rows(tables, target_ym) -> list[dict]:
     for r in tables.get("FBA", []):
         if _on(r):
             rows.append(row(r["発送日"], unique(r["受注番号"]), "FBA対応費", 1, f"Eシス注文ID {r['注文ID']}"))
-    for noticed in (True, False):
-        new = [r for r in tables.get("新商品", [])
-               if _on(r) and (r.get("14日前通知") is True or r.get("14日前通知") == 1) == noticed]
-        if new:
-            day = max(r["確認日"] for r in new)
-            notified = (date.fromisoformat(day[:10]) - timedelta(days=14)).isoformat() if noticed else ""
-            codes = "、".join(r["表示用コード"] for r in new)
-            rows.append(row(day, f"新商品{target_ym}{'・14日前通知あり' if noticed else ''}", "新商品 初期設定", len(new),
-                            f"【Eシス】新商品：{codes}"[:300], notified))
+    new = [r for r in tables.get("新商品", []) if _on(r)]
+    for unit in sorted({int(r["金額"]) for r in new}, reverse=True):
+        group = [r for r in new if int(r["金額"]) == unit]
+        codes = "、".join(r["表示用コード"] for r in group)
+        rows.append({**row(max(r["確認日"] for r in group), f"新商品{target_ym}・{unit:,}円", "新商品 初期設定", len(group),
+                           f"【Eシス】新商品：{codes}"[:300]), "単価指定": unit})
     for r in tables.get("随時連絡", []):
         if _on(r):
             rows.append(row(r["発生日"], unique(f"{r['受注番号'] or '随時連絡'}／{r['発生内容']}"), "随時連絡対応（起票・調査）",
@@ -716,3 +725,8 @@ def _plain(text) -> str:
     for mark in AUTO_MARKS + ("（自動）",):
         t = t.replace(mark, "")
     return t.strip()
+
+
+def new_item_prices(ver=None) -> list[int]:
+    """新商品 初期設定で選べる単価（通常・5SKU以上・10SKU以上）。"""
+    return [int(price("新商品 初期設定", i, ver)) for i in range(3)]

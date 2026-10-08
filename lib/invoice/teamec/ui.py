@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import copy
 import csv
+import html
 import io
 import json
 import os
@@ -119,14 +120,14 @@ SHEET_COLUMNS = {
     "返品": {"計上": 55, "送り状番号": 200, "返品処理料": 90, "計上する送料": 105, "送料の状態": 85, "ヤマト請求額": 90,
              "パピー記入欄": 85, "運送会社": 85, "送料負担": 70, "到着日": 95},
     "配送変更": {"計上": 60, "注文ID": 110, "金額": 90, "日付": 110, "変更前": 150, "変更後": 150, "伝票番号欄": 120},
-    "新商品": {"計上": 60, "表示用コード": 130, "金額": 90, "14日前通知": 90, "商品名": 200, "棚番": 110, "確認日": 110, "根拠": 170},
+    "新商品": {"計上": 60, "表示用コード": 130, "金額": 110, "商品名": 220, "棚番": 110, "確認日": 110, "根拠": 200},
 }
-CHECK_COLUMNS = ("計上", "14日前通知")
+CHECK_COLUMNS = ("計上",)
 MONEY_COLUMNS = ("金額", "返品処理料", "計上する送料", "ヤマト請求額")
 ATTENTION = "background-color: #fff3b0; color: #1a1a1a"   # 入力・確認が要る行の色
 
 
-def _confirm_table(key, name, rows, edit=(), attention=None):
+def _confirm_table(key, name, rows, edit=(), attention=None, choices=None):
     """確認表。どの表も同じ形：計上（一番左）→ 名称 → 金額 → 理由。直せるのは「計上」と edit の列だけ。
 
     attention(row) が True の行は色をつけて、入力・確認を促す（色は直せない列に付く。Streamlit の仕様）。
@@ -143,6 +144,8 @@ def _confirm_table(key, name, rows, edit=(), attention=None):
     for c, w in widths.items():
         if c in CHECK_COLUMNS:
             config[c] = st.column_config.CheckboxColumn(c, width=w)
+        elif choices and c in choices:   # 金額を選ぶ列（新商品の単価）
+            config[c] = st.column_config.SelectboxColumn(c, width=w, options=choices[c], required=True)
         elif c in MONEY_COLUMNS:
             config[c] = st.column_config.NumberColumn(c, width=w, format="%d円", min_value=0, step=1)
         else:
@@ -349,6 +352,8 @@ def render(year, month, client, db_ids=None, notion_ready=False):
                            "「計上する送料」を直してください。")
                 sheets_now["返品"] = _confirm_table(prefix + "sh_returns", "返品", sheets_init["返品"], edit=("計上する送料",),
                                                     attention=lambda r: r["送料の状態"] == "仮")
+                if st.checkbox("注文番号・運送会社の根拠も見る", key=prefix + "ret_more"):
+                    _table(sheets_now["返品"], ["送り状番号", "注文番号", "運送会社の根拠"])
             cod_extra = st.number_input("返品交換シートに無い着払い送料（税抜合計・円）", min_value=0, value=cod_extra, step=1,
                                         key=prefix + "cod")
             try:
@@ -367,26 +372,20 @@ def render(year, month, client, db_ids=None, notion_ready=False):
 
         st.markdown("##### 新商品 初期設定 ｜ Eシスの棚番")
         if new_items.get("状態") == "取得済":
-            def _unit_new():
-                """通知あり・なしそれぞれの単価（通知ありはSKU数で変わる）。"""
-                base_price = int(R.price("新商品 初期設定", ver=ver))
-                out = {True: base_price, False: base_price}
-                for x in _sheet_lines("新商品"):
-                    out["14日前通知あり" in x["要約"]] = int(x["単価"])
-                return out
-
+            prices = R.new_item_prices(ver)
             if sheets_init["新商品"]:
-                st.caption("14日前までに事前通知があった商品は「14日前通知」にチェックを入れます。"
-                           "チェックした商品が5SKU以上・10SKU以上になると、その分の単価が下がります。")
-                unit = _unit_new()
-                shown_new = [{**r, "14日前通知": bool(n.get("14日前通知")), "金額": unit[bool(n.get("14日前通知"))]}
-                             for r, n in zip(sheets_init["新商品"], sheets_now["新商品"])]
-                sheets_now["新商品"] = [{k: v for k, v in r.items() if k != "金額"} for r in _confirm_table(
-                    prefix + "sh_new", "新商品", shown_new, edit=("14日前通知",))]
-            lines_new = _sheet_lines("新商品")
-            st.caption(f"小計：{sum(x['金額'] for x in lines_new):,}円"
-                       + "".join(f"（{int(x['単価']):,}円×{float(x['数量']):g}SKU{'・通知あり' if '通知あり' in x['要約'] else ''}）"
-                                 for x in lines_new) + f"　{new_items.get('説明', '')}")
+                st.caption(f"金額は商品ごとに選びます。通常は{prices[0]:,}円。14日前までに事前通知があり、"
+                           f"5SKU以上なら{prices[1]:,}円、10SKU以上なら{prices[2]:,}円を選びます"
+                           f"（{prices[1]:,}円を選んだ商品が5SKU以上、{prices[2]:,}円を選んだ商品が10SKU以上あること）。")
+                sheets_now["新商品"] = _confirm_table(prefix + "sh_new", "新商品", sheets_init["新商品"], edit=("金額",),
+                                                      choices={"金額": prices})
+            try:
+                lines_new = _sheet_lines("新商品")
+                st.caption(f"小計：{sum(x['金額'] for x in lines_new):,}円"
+                           + "".join(f"（{int(x['単価']):,}円×{float(x['数量']):g}SKU）" for x in lines_new)
+                           + f"　{new_items.get('説明', '')}")
+            except ValueError as exc:
+                st.error(str(exc))
         else:
             st.warning("新商品 初期設定は自動で数えられていません（" + new_items.get("説明", "この照合結果は未対応") + "）。"
                        "ある場合は下の「そのほかの作業」に足してください。")
@@ -419,9 +418,16 @@ def render(year, month, client, db_ids=None, notion_ready=False):
                     else "##### 依頼台帳")
         if not ledger_missing:
             st.markdown(f"**{target_ym} の依頼：{len(requests)}件**（出荷日。無ければ依頼日がこの月のもの）")
+            rule = "border-top:1px solid rgba(128,128,128,.45);padding:.45rem .2rem"
+            body = ""
             for q in requests:
                 note = "／".join(x for x in (q.get("対応状況"), q.get("作業費（台帳）"), q.get("パピー記入")) if x)
-                st.markdown(f"- **No.{q['依頼No']}（{q['日付']}）** {q['内容']}" + (f"　〔台帳の記入：{note}〕" if note else ""))
+                body += (f'<div style="{rule}"><b>No.{html.escape(str(q["依頼No"]))}（{html.escape(str(q["日付"]))}）</b>　'
+                         f'{html.escape(str(q["内容"]))}'
+                         + (f'<br><span style="opacity:.75">台帳の記入：{html.escape(note)}</span>' if note else "") + "</div>")
+            if body:
+                st.markdown(f'<div style="border-bottom:1px solid rgba(128,128,128,.45);margin-bottom:.6rem">{body}</div>',
+                            unsafe_allow_html=True)
         st.caption("下が請求のたたき台です。品目は文面からの候補なので、確認して、変更・行の追加・削除をしてください"
                    "（1つの依頼に複数の品目があれば行を足す）。汎用作業料は人時（0.25刻み・単価2,100円固定）、"
                    "実費（チャーター・資材など）は数量と単価（税抜）を入れます。**請求しない依頼は品目を空にする（または行を削除）。** "
