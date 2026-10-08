@@ -380,67 +380,37 @@ def _md(day) -> str:
 
 
 def sheet_tables(result, ver=None) -> dict:
-    """シートごとの確認表（1シート＝1表）の元データ。
+    """確認する元ごとの確認表（1つの元＝1表）の元データ。1列は1つの意味だけを持つ（列をまとめない）。
 
-    画面では「名称 → 金額 → 内容（理由）」の順に見せる（2026-10-08 本人指示）。各行は「計上」を持ち、人が外せる。
-    名称は表の中で重ならないようにする（外す行を名称で選ぶため）。
+    画面の列順は ui.SHEET_COLUMNS（名称 → 金額 → 計上 → 理由）。各行の「計上」を外すと請求から外れる。
     """
     led = (result or {}).get("台帳") or {}
 
     def yen_(name):
         return int(price(name, ver=ver))
 
-    def named(rows):
-        seen = {}
-        for r in rows:
-            seen[r["名称"]] = seen.get(r["名称"], 0) + 1
-            if seen[r["名称"]] > 1:
-                r["名称"] = f"{r['名称']}（{seen[r['名称']]}）"
-        return rows
-
-    contacts = named([{
-        "名称": f"{_md(r['発生日'])} {r['発生内容']}", "単価": yen_("随時連絡対応（起票・調査）"), "計上": True,
-        "内容": f"受注番号 {r['受注番号'] or 'なし'}・{r['ステータス']}" + (f"・送り状 {r['送り状番号']}" if r.get("送り状番号") else ""),
-        "発生日": r["発生日"], "受注番号": r["受注番号"], "発生内容": r["発生内容"], "ステータス": r["ステータス"]}
-        for r in led.get("随時連絡", [])])
+    fba = [{"受注番号": f["注文番号"], "金額": yen_("FBA対応費"), "計上": True, "発送日": f["発送日"], "注文ID": f["注文ID"]}
+           for f in (result or {}).get("FBA依頼", [])]
+    contacts = [{"発生内容": r["発生内容"], "金額": yen_("随時連絡対応（起票・調査）"), "計上": True, "発生日": r["発生日"],
+                 "受注番号": r["受注番号"], "ステータス": r["ステータス"], "送り状番号": r.get("送り状番号", "")}
+                for r in led.get("随時連絡", [])]
     returns = []
     for r in led.get("返品", []):
         cod = "着払" in str(r.get("送料負担方法", ""))
         confirmed, noted = r.get("着払い送料"), _yen_or_none(r.get("パピー記入欄"))
-        carrier = r.get("運送会社", "")
-        if not cod:
-            state = "元払い（送料なし）"
-        elif confirmed is not None:
-            state = "確定（ヤマト請求）"
-        elif carrier in ("日本郵便", "佐川"):
-            state = f"仮：{carrier}の請求を確認"
-        else:
-            state = "仮：佐川・日本郵便の請求を確認"
-        carrier_text = carrier + (f"（{r['運送会社の根拠']}）" if r.get("運送会社の根拠") and carrier != "ヤマト" else "")
-        detail = [r.get("送料負担方法") or "送料負担の記載なし", carrier_text]
-        if cod and confirmed is None:
-            detail.append(f"パピー記入欄 {r.get('パピー記入欄') or '空欄'}（仮）")
-        if r.get("注文番号"):
-            detail.append(f"注文 {r['注文番号']}")
-        detail.append(r.get("ステータス", ""))
-        returns.append({"名称": f"{_md(r['日付'])}着 {r['送り状番号'] or r.get('注文番号') or '送り状なし'}",
-                        "返品処理料": yen_("返品処理"), "計上する送料": (confirmed if confirmed is not None else noted) if cod else 0,
-                        "計上": True, "状態": state, "内容": "・".join(x for x in detail if x),
-                        "到着日": r["日付"], "送り状番号": r["送り状番号"], "注文番号": r.get("注文番号", ""),
-                        "送料負担": r.get("送料負担方法", ""), "運送会社": carrier_text,
-                        "請求で確認した送料": confirmed, "パピー記入欄（仮）": r.get("パピー記入欄", "")})
-    changes = named([{
-        "名称": f"{_md(r['日付'])} 注文ID {r.get('注文ID') or r['伝票番号']}", "単価": yen_("配送種別・個口数の変更"), "計上": True,
-        "内容": f"{r['変更前']} → {r['変更後']}（シートの伝票番号欄 {r['伝票番号']}）",
-        "日付": r["日付"], "伝票番号": r["伝票番号"], "注文ID": r.get("注文ID", ""), "変更前": r["変更前"], "変更後": r["変更後"]}
-        for r in led.get("配送変更", [])])
-    new = named([{
-        "名称": f"{x.get('表示用コード') or x['JANコード']} {x.get('商品名', '')}".strip(), "計上": True,
-        "内容": f"棚番 {x.get('棚番', '')}・{_md(x['確認日'])}・{x.get('根拠', '棚番が未設定→設定')}",
-        "確認日": x["確認日"], "表示用コード": x.get("表示用コード", ""), "商品名": x.get("商品名", ""),
-        "棚番": x.get("棚番", ""), "JANコード": x["JANコード"], "根拠": x.get("根拠", "棚番が未設定→設定")}
-        for x in ((result or {}).get("新商品") or {}).get("明細", [])])
-    return {"随時連絡": contacts, "返品": named(returns), "配送変更": changes, "新商品": new}
+        state = "元払い" if not cod else "確定" if confirmed is not None else "仮"
+        returns.append({"送り状番号": r["送り状番号"], "返品処理料": yen_("返品処理"),
+                        "計上する送料": (confirmed if confirmed is not None else noted) if cod else 0, "計上": True,
+                        "送料の状態": state, "ヤマト請求額": confirmed, "パピー記入欄": r.get("パピー記入欄", ""),
+                        "運送会社": r.get("運送会社", ""), "送料負担": r.get("送料負担方法", ""), "到着日": r["日付"],
+                        "注文番号": r.get("注文番号", ""), "運送会社の根拠": r.get("運送会社の根拠", "")})
+    changes = [{"注文ID": r.get("注文ID") or r["伝票番号"], "金額": yen_("配送種別・個口数の変更"), "計上": True,
+                "日付": r["日付"], "変更前": r["変更前"], "変更後": r["変更後"], "伝票番号欄": r["伝票番号"]}
+               for r in led.get("配送変更", [])]
+    new = [{"表示用コード": x.get("表示用コード") or x["JANコード"], "計上": True, "商品名": x.get("商品名", ""),
+            "棚番": x.get("棚番", ""), "確認日": x["確認日"], "根拠": x.get("根拠", "棚番が未設定→設定"), "JANコード": x["JANコード"]}
+           for x in ((result or {}).get("新商品") or {}).get("明細", [])]
+    return {"FBA": fba, "随時連絡": contacts, "返品": returns, "配送変更": changes, "新商品": new}
 
 
 def sheet_event_rows(tables, target_ym, notice=False) -> list[dict]:
@@ -461,11 +431,14 @@ def sheet_event_rows(tables, target_ym, notice=False) -> list[dict]:
         used.add(text)
         return text
 
+    for r in tables.get("FBA", []):
+        if _on(r):
+            rows.append(row(r["発送日"], unique(r["受注番号"]), "FBA対応費", 1, f"Eシス注文ID {r['注文ID']}"))
     new = [r for r in tables.get("新商品", []) if _on(r)]
     if new:
         day = max(r["確認日"] for r in new)
         notified = (date.fromisoformat(day[:10]) - timedelta(days=14)).isoformat() if notice else ""
-        codes = "、".join(r.get("表示用コード") or r["JANコード"] for r in new)
+        codes = "、".join(r["表示用コード"] for r in new)
         rows.append(row(day, f"新商品{target_ym}", "新商品 初期設定", len(new), f"【Eシス】新商品：{codes}"[:300], notified))
     for r in tables.get("随時連絡", []):
         if _on(r):
@@ -474,11 +447,11 @@ def sheet_event_rows(tables, target_ym, notice=False) -> list[dict]:
     for r in tables.get("返品", []):
         if _on(r):
             rows.append(row(r["到着日"], unique(r["送り状番号"] or r.get("注文番号") or f"返品{r['到着日']}"), "返品処理", 1,
-                            f"【シート】返品交換：{r['送料負担'] or '送料負担の記載なし'}・{str(r['運送会社']).split('（')[0]}"))
+                            f"【シート】返品交換：{r['送料負担'] or '送料負担の記載なし'}・{r['運送会社']}"))
     for r in tables.get("配送変更", []):
         if _on(r):
-            rows.append(row(r["日付"], unique(f"注文ID {r.get('注文ID') or r['伝票番号']}"), "配送種別・個口数の変更", 1,
-                            f"【シート】配送変更依頼：{r['変更前']}→{r['変更後']}（伝票番号欄 {r['伝票番号']}）"))
+            rows.append(row(r["日付"], unique(f"注文ID {r['注文ID']}"), "配送種別・個口数の変更", 1,
+                            f"【シート】配送変更依頼：{r['変更前']}→{r['変更後']}（伝票番号欄 {r['伝票番号欄']}）"))
     return rows
 
 
@@ -512,7 +485,7 @@ def return_freight(rows) -> tuple[int, str]:
         n = int(amount(value, "返品の着払い送料", integer=True))
         if n:
             total += n
-            parts.append(f"{r.get('到着日', '')}着 {n:,}円（{str(r.get('運送会社', '')).split('（')[0]}）")
+            parts.append(f"{r.get('到着日', '')}着 {n:,}円（{r.get('運送会社', '')}）")
     return total, "、".join(parts)
 
 
@@ -716,8 +689,8 @@ def breakdown_sheets(items, result, active_days, counts, irregular_work, request
                                    "作業詳細": r.get("作業詳細", "")} for r in (irregular_work or [])], "金額"))
     sheets.append(("依頼ごとの作業", [{"作業": x["品名"], "金額": int(x["金額"]), "単価": num(x["単価"]), "数量": num(x["数量"]),
                                        "依頼": x.get("要約", ""), "内容": _plain(x.get("詳細", ""))} for x in request_lines], "金額"))
-    sheets.append(("返品の着払い送料", [{"返品": r["名称"], "金額": int(r["計上する送料"]), "運送会社": str(r.get("運送会社", "")).split("（")[0],
-                                         "送り状番号": r.get("送り状番号", ""), "到着日": r.get("到着日", "")}
+    sheets.append(("返品の着払い送料", [{"送り状番号": r.get("送り状番号", ""), "金額": int(r["計上する送料"]),
+                                         "運送会社": r.get("運送会社", ""), "到着日": r.get("到着日", "")}
                                         for r in return_rows if _on(r) and r.get("計上する送料") not in ("", None)
                                         and not pd_isna(r.get("計上する送料")) and int(r["計上する送料"])], "金額"))
     piece = int(price("入庫：ピース納品", ver=ver))

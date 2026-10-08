@@ -392,21 +392,21 @@ RESULT_WITH_LEDGER = dict(SAMPLE_RESULT, 作成日時="2026-10-07T12:00:00+09:00
 def test_sheet_rows_become_event_rows_and_unknown_is_not_zero():
     rows = R.auto_event_rows(RESULT_WITH_LEDGER)
     assert [(r["作業"], r["数量"]) for r in rows] == [
-        ("新商品 初期設定", 2), ("随時連絡対応（起票・調査）", 1), ("返品処理", 1), ("返品処理", 1), ("返品処理", 1),
-        ("配送種別・個口数の変更", 1)]
-    assert all(r["根拠・備考"].startswith(R.AUTO_MARKS) for r in rows)
+        ("FBA対応費", 1), ("新商品 初期設定", 2), ("随時連絡対応（起票・調査）", 1), ("返品処理", 1), ("返品処理", 1),
+        ("返品処理", 1), ("配送種別・個口数の変更", 1)]
     lines = R.event_lines(rows, 2026, 9)   # そのまま計算に通る（依頼IDの重複なし・対象月内）
-    assert sum(x["金額"] for x in lines) == 700 * 2 + 1200 + 950 * 3 + 650
+    assert sum(x["金額"] for x in lines) == 2000 + 700 * 2 + 1200 + 950 * 3 + 650
     assert R.ledger_state(RESULT_WITH_LEDGER) == ""
     assert R.ledger_state(SAMPLE_RESULT) and R.ledger_state(dict(SAMPLE_RESULT, 台帳=None))
-    assert R.auto_event_rows(dict(SAMPLE_RESULT, 台帳=None, 新商品={"状態": "記録なし", "件数": None, "明細": []})) == []
+    only_fba = R.auto_event_rows(dict(SAMPLE_RESULT, 台帳=None, 新商品={"状態": "記録なし", "件数": None, "明細": []}))
+    assert [r["作業"] for r in only_fba] == ["FBA対応費"]
 
 
 def test_return_freight_keeps_confirmed_and_provisional_apart():
     rows = R.return_freight_rows(RESULT_WITH_LEDGER)
-    assert [(r["請求で確認した送料"], r["パピー記入欄（仮）"], r["計上する送料"]) for r in rows] == [
+    assert [(r["ヤマト請求額"], r["パピー記入欄"], r["計上する送料"]) for r in rows] == [
         (4782, "4782", 4782), (None, "1900", 1900), (None, "", 0)]
-    assert rows[0]["状態"].startswith("確定") and rows[1]["状態"] == "仮：日本郵便の請求を確認" and rows[2]["状態"].startswith("元払い")
+    assert [r["送料の状態"] for r in rows] == ["確定", "仮", "元払い"] and rows[1]["運送会社"] == "日本郵便"
     assert R.return_freight(rows)[0] == 6682
     rows[1]["計上する送料"] = 1727          # 請求を見て人が直す
     assert R.return_freight(rows)[0] == 6509
@@ -421,10 +421,14 @@ def test_return_freight_keeps_confirmed_and_provisional_apart():
 
 def test_one_table_per_sheet_with_price_and_new_item_notice():
     tables = R.sheet_tables(RESULT_WITH_LEDGER, VER)
-    assert {k: len(v) for k, v in tables.items()} == {"随時連絡": 1, "返品": 3, "配送変更": 1, "新商品": 2}
-    for rows in tables.values():   # 画面は「名称 → 金額 → 内容」。名称は表の中で重ならない
-        assert all(r["名称"] and r["内容"] for r in rows) and len({r["名称"] for r in rows}) == len(rows)
-    assert tables["随時連絡"][0]["単価"] == 1200 and tables["返品"][0]["返品処理料"] == 950 and tables["配送変更"][0]["単価"] == 650
+    assert {k: len(v) for k, v in tables.items()} == {"FBA": 1, "随時連絡": 1, "返品": 3, "配送変更": 1, "新商品": 2}
+    assert tables["随時連絡"][0]["金額"] == 1200 and tables["返品"][0]["返品処理料"] == 950 and tables["配送変更"][0]["金額"] == 650
+    from lib.invoice.teamec import ui
+    for name, widths in ui.SHEET_COLUMNS.items():
+        cols = list(widths)
+        # 名称 → 金額 → 計上 → 理由。列は元データにある（列をまとめて作らない）。幅の合計は横スクロールが出ない範囲
+        assert cols.index("計上") in (2, 3) and cols[1] in ui.MONEY_COLUMNS and sum(widths.values()) <= 960, name
+        assert set(cols) - {"金額"} <= set(tables[name][0]), name
     new5 = dict(tables, 新商品=[dict(tables["新商品"][0], JANコード=str(i)) for i in range(5)])
     plain = R.event_lines(R.sheet_event_rows({"新商品": new5["新商品"]}, "2026-09"), 2026, 9)
     noticed = R.event_lines(R.sheet_event_rows({"新商品": new5["新商品"]}, "2026-09", notice=True), 2026, 9)

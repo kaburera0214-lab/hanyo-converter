@@ -112,6 +112,46 @@ def _table(rows, cols=None, first=()):
         st.table(df.set_index(df.columns[0]))
 
 
+# 確認表の列順と幅（px）。名称 → 金額 → 計上 → 理由。1列は1つの意味だけ。幅の合計は横スクロールが出ない範囲（約950px）に収める
+SHEET_COLUMNS = {
+    "FBA": {"受注番号": 130, "金額": 90, "計上": 60, "発送日": 110, "注文ID": 110},
+    "随時連絡": {"発生内容": 150, "金額": 90, "計上": 60, "発生日": 110, "受注番号": 210, "ステータス": 130, "送り状番号": 150},
+    "返品": {"送り状番号": 200, "返品処理料": 90, "計上する送料": 105, "計上": 55, "送料の状態": 85, "ヤマト請求額": 90,
+             "パピー記入欄": 85, "運送会社": 85, "送料負担": 70, "到着日": 95},
+    "配送変更": {"注文ID": 110, "金額": 90, "計上": 60, "日付": 110, "変更前": 150, "変更後": 150, "伝票番号欄": 120},
+    "新商品": {"表示用コード": 130, "金額": 90, "計上": 60, "商品名": 200, "棚番": 110, "確認日": 110, "根拠": 250},
+}
+MONEY_COLUMNS = ("金額", "返品処理料", "計上する送料", "ヤマト請求額")
+ATTENTION = "background-color: #fff3b0; color: #1a1a1a"   # 入力・確認が要る行の色
+
+
+def _confirm_table(key, name, rows, edit=(), attention=None):
+    """確認表。どの表も同じ形：名称 → 金額 → 計上 → 理由。直せるのは「計上」と edit の列だけ。
+
+    attention(row) が True の行は色をつけて、入力・確認を促す（色は直せない列に付く。Streamlit の仕様）。
+    """
+    widths = SHEET_COLUMNS[name]
+    df = pd.DataFrame(rows)
+    df["計上"] = df["計上"].map(lambda v: v is True or v == 1).astype(bool)
+    for c in MONEY_COLUMNS:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c])
+    config = {}
+    for c, w in widths.items():
+        if c == "計上":
+            config[c] = st.column_config.CheckboxColumn(c, width=w)
+        elif c in MONEY_COLUMNS:
+            config[c] = st.column_config.NumberColumn(c, width=w, format="%d円", min_value=0, step=1)
+        else:
+            config[c] = st.column_config.Column(c, width=w)
+    data = df
+    if attention is not None:
+        data = df.style.apply(lambda r: [ATTENTION if attention(r) else ""] * len(r), axis=1)
+    out = st.data_editor(data, hide_index=True, key=key, width="stretch", column_order=list(widths),
+                         disabled=[c for c in df.columns if c not in ("計上", *edit)], column_config=config)
+    return _records(out)
+
+
 def _section(key, title, summary):
     """縦に並ぶ1段。「確認済み」にすると要約1行にたたむ。戻り値 True のとき中身を描く。"""
     st.markdown(f"#### {title}")
@@ -165,9 +205,7 @@ def render(year, month, client, db_ids=None, notion_ready=False):
                    f"{result.get('商品数', 0):,}個・{result.get('個口数', 0):,}個口")
         if must:
             st.error("確定前に確認が必要な項目があります。")
-            _table([{"区分": i["区分"], "内容": i.get("内容", ""),
-                     "対象": "・".join(f"{k} {i[k]}" for k in ("注文ID", "注文番号", "伝票番号", "表示用コード") if i.get(k))}
-                    for i in must])
+            _table(must, ["区分", "内容", "注文ID", "注文番号", "伝票番号", "表示用コード", "JANコード"])
         with st.expander("内訳（商品サイズ別PCS・資材・学習した項目1）"):
             st.write("出荷作業料（商品サイズ別PCS）", result["出荷作業料_サイズ別"])
             _table(result["資材費_サイズ別"], ["サイズ", "金額", "個口数", "単価"])
@@ -248,10 +286,6 @@ def render(year, month, client, db_ids=None, notion_ready=False):
 
     # ---- 4. 依頼ごとの作業（シートごとの確認表 → 依頼台帳）----
     choices = R.event_choices(ver)
-    fba_price = int(R.price("FBA対応費", ver=ver))
-    fba_rows = [{"実施日": f["発送日"], "依頼ID": f["注文番号"], "作業": "FBA対応費", "数量": 1, "通知日": "",
-                 "時間外再手配": False, "根拠・備考": f"Eシス注文ID {f['注文ID']}（自動）"}
-                for f in (result or {}).get("FBA依頼", [])]
     ledger_missing = R.ledger_state(result)
     links = ((result or {}).get("台帳") or {}).get("出典", {})
     columns = ["作業", "数量", "依頼ID", "実施日", "根拠・備考"]
@@ -263,26 +297,17 @@ def render(year, month, client, db_ids=None, notion_ready=False):
     requests = R.ledger_requests(result)
     ledger_init = base.get("ledger") if base.get("ledger") is not None else R.ledger_rows(result)
     ledger_now = prev.get("ledger", ledger_init)
-    sheets_now = copy.deepcopy(prev.get("sheets") or R.sheet_tables(result, ver))
+    sheets_init = base.get("sheets") if base.get("sheets") is not None else R.sheet_tables(result, ver)
+    sheets_now = dict(prev.get("sheets") or sheets_init)
     cod_extra = prev.get("other", {}).get("cod", 0)
     new_notice = bool(prev.get("new_notice", False))
 
     def _sheet_lines(name):
         return R.event_lines(R.sheet_event_rows({name: sheets_now[name]}, target_ym, new_notice), year, month)
 
-    def _exclude(name, label):
-        """確認表の下の「請求しない行」。選んだ行の「計上」を外す。"""
-        rows = sheets_now[name]
-        off = st.multiselect(f"請求しない行（{label}）", [r["名称"] for r in rows],
-                             default=[r["名称"] for r in rows if not r["計上"]], key=prefix + "off_" + name,
-                             placeholder="外す行があれば選ぶ（無ければ空のまま）")
-        for r in rows:
-            r["計上"] = r["名称"] not in off
-
     def _request_total():
         """この段の金額（単価の決まった作業＋着払い送料＋依頼台帳）。入力が足りなければ ValueError。"""
-        ev = R.event_lines(fba_rows + R.sheet_event_rows(sheets_now, target_ym, new_notice)
-                           + R.choice_rows(manual_rows, ver), year, month)
+        ev = R.event_lines(R.sheet_event_rows(sheets_now, target_ym, new_notice) + R.choice_rows(manual_rows, ver), year, month)
         led = R.ledger_lines(ledger_now, year, month)
         cod = R.return_freight(sheets_now["返品"])[0] + cod_extra
         return sum(x["金額"] for x in ev), cod, sum(x["金額"] for x in led)
@@ -294,86 +319,61 @@ def render(year, month, client, db_ids=None, notion_ready=False):
     except ValueError as exc:
         summary = f"未確定：{exc}"
     if _section(prefix + "done_events", "4. 依頼ごとの作業（依頼された内容と金額）", summary):
-        st.caption("確認する元（シート）ごとに、見出し → 確認表 → 小計の順に並べています。表はどれも「名称 → 金額 → 内容（理由）」の順です。")
+        st.caption("確認する元ごとに、見出し → 確認表 → 小計の順です。どの表も「名称 → 金額 → 計上 → 理由」の並びで、"
+                   "請求から外す行は「計上」のチェックを外します。色のついた行は、入力・確認が要る行です。")
         if ledger_missing:
             st.warning(f"共有シート（随時連絡・返品交換・配送変更依頼・依頼台帳）は自動で入っていません（{ledger_missing}）。"
                        "0件とは限りません。シートを見て「そのほかの作業」に入力してください。")
 
         st.markdown("##### FBA対応費 ｜ Eシス（受注番号 FBA00xx）")
-        if fba_rows:
-            _table([{"受注番号": r["依頼ID"], "金額": _yen(fba_price), "内容": f"発送日 {r['実施日']}・{r['根拠・備考']}"}
-                    for r in fba_rows])
+        if sheets_init["FBA"]:
+            sheets_now["FBA"] = _confirm_table(prefix + "sh_fba", "FBA", sheets_init["FBA"])
         elif result is None:
             st.caption("照合結果を読み込むと表示されます。")
-        st.caption(f"小計：{fba_price * len(fba_rows):,}円（{len(fba_rows)}件）")
+        st.caption(f"小計：{sum(x['金額'] for x in _sheet_lines('FBA')):,}円（{len(sheets_init['FBA'])}件）")
 
         if not ledger_missing:
             st.markdown(f"##### 随時連絡 ｜ [シートを開く]({links.get('随時連絡', '')})")
-            if sheets_now["随時連絡"]:
-                _exclude("随時連絡", "随時連絡")
-                _table([{"随時連絡": r["名称"], "金額": _yen(r["単価"]) if r["計上"] else "請求しない", "内容": r["内容"]}
-                        for r in sheets_now["随時連絡"]])
+            if sheets_init["随時連絡"]:
+                sheets_now["随時連絡"] = _confirm_table(prefix + "sh_contacts", "随時連絡", sheets_init["随時連絡"])
             st.caption(f"小計：{sum(x['金額'] for x in _sheet_lines('随時連絡')):,}円"
-                       f"（発生日が {target_ym} の行 {len(sheets_now['随時連絡'])}件）")
+                       f"（発生日が {target_ym} の行 {len(sheets_init['随時連絡'])}件）")
 
             st.markdown(f"##### 返品交換 ｜ [シートを開く]({links.get('返品交換', '')})")
-            if sheets_now["返品"]:
-                st.caption("送料は、送り状番号がヤマトの請求にあればその金額（税別）で確定。無いものは追跡で運送会社を確かめ、"
-                           "シートの「パピー記入欄」を仮の金額として入れています。**「仮」の行は、その運送会社（佐川・日本郵便）の"
-                           "請求を見て、表の下の欄で送料を直してください。**")
-                shown_ret = st.container()
-                _exclude("返品", "返品交換")
-                for i, r in enumerate(sheets_now["返品"]):
-                    if r["状態"].startswith("仮") and r["計上"]:
-                        value = r.get("計上する送料")
-                        value = None if value in ("", None) or (isinstance(value, float) and value != value) else int(value)
-                        r["計上する送料"] = st.number_input(
-                            f"{r['名称']} の着払い送料（税抜・円）｜{r['状態']}", min_value=0, value=value, step=1,
-                            key=f"{prefix}ret_fee_{i}", placeholder="請求を確認して入力")
-                with shown_ret:
-                    rows = []
-                    for r in sheets_now["返品"]:
-                        fee = r.get("計上する送料")
-                        empty = fee in ("", None) or (isinstance(fee, float) and fee != fee)
-                        if not r["計上"]:
-                            money = "請求しない"
-                        elif empty:
-                            money = f"未確定（処理料 {r['返品処理料']:,}円＋送料 未入力）"
-                        else:
-                            money = f"{r['返品処理料'] + int(fee):,}円（処理料 {r['返品処理料']:,}円＋送料 {int(fee):,}円）"
-                        rows.append({"返品": r["名称"], "金額": money, "送料の状態": r["状態"], "内容": r["内容"]})
-                    _table(rows)
+            if sheets_init["返品"]:
+                st.caption("送料の状態が「確定」＝送り状番号がヤマトの請求にあった金額（税別）。「仮」（色のついた行）＝ヤマトの請求に無く、"
+                           "シートのパピー記入欄の金額を仮に入れています。運送会社の列の会社（佐川・日本郵便）の請求を見て、"
+                           "「計上する送料」を直してください。")
+                sheets_now["返品"] = _confirm_table(prefix + "sh_returns", "返品", sheets_init["返品"], edit=("計上する送料",),
+                                                    attention=lambda r: r["送料の状態"] == "仮")
             cod_extra = st.number_input("返品交換シートに無い着払い送料（税抜合計・円）", min_value=0, value=cod_extra, step=1,
                                         key=prefix + "cod")
             try:
                 fee_sum = sum(x["金額"] for x in _sheet_lines("返品"))
                 freight_sum = R.return_freight(sheets_now["返品"])[0] + cod_extra
                 st.caption(f"小計：{fee_sum + freight_sum:,}円（返品処理料 {fee_sum:,}円＋着払い送料 {freight_sum:,}円。"
-                           f"到着日が {target_ym} の行 {len(sheets_now['返品'])}件）")
+                           f"到着日が {target_ym} の行 {len(sheets_init['返品'])}件）")
             except ValueError as exc:
                 st.error(str(exc))
 
             st.markdown(f"##### 配送変更依頼 ｜ [シートを開く]({links.get('配送変更依頼', '')})")
-            if sheets_now["配送変更"]:
-                _exclude("配送変更", "配送変更依頼")
-                _table([{"配送変更": r["名称"], "金額": _yen(r["単価"]) if r["計上"] else "請求しない", "内容": r["内容"]}
-                        for r in sheets_now["配送変更"]])
+            if sheets_init["配送変更"]:
+                sheets_now["配送変更"] = _confirm_table(prefix + "sh_changes", "配送変更", sheets_init["配送変更"])
             st.caption(f"小計：{sum(x['金額'] for x in _sheet_lines('配送変更')):,}円"
-                       f"（伝票番号がEシスの注文IDに当たる行 {len(sheets_now['配送変更'])}件）")
+                       f"（伝票番号がEシスの注文IDに当たる行 {len(sheets_init['配送変更'])}件）")
 
         st.markdown("##### 新商品 初期設定 ｜ Eシスの棚番")
         if new_items.get("状態") == "取得済":
-            if sheets_now["新商品"]:
-                _exclude("新商品", "新商品 初期設定")
+            lines_new = _sheet_lines("新商品")
+            unit_new = int(lines_new[0]["単価"]) if lines_new else int(R.price("新商品 初期設定", ver=ver))
+            if sheets_init["新商品"]:
+                sheets_now["新商品"] = [{k: v for k, v in r.items() if k != "金額"} for r in _confirm_table(
+                    prefix + "sh_new", "新商品", [{**r, "金額": unit_new} for r in sheets_init["新商品"]])]
                 new_notice = st.checkbox("14日前までに事前通知があった（5SKU以上・10SKU以上で単価が下がる）", value=new_notice,
                                          key=prefix + "new_notice")
             lines_new = _sheet_lines("新商品")
-            unit_new = int(lines_new[0]["単価"]) if lines_new else 0
-            if sheets_now["新商品"]:
-                _table([{"新商品": r["名称"], "金額": _yen(unit_new) if r["計上"] else "請求しない", "内容": r["内容"]}
-                        for r in sheets_now["新商品"]])
             st.caption(f"小計：{sum(x['金額'] for x in lines_new):,}円"
-                       + (f"（{unit_new:,}円×{float(lines_new[0]['数量']):g}SKU）" if lines_new else "")
+                       + (f"（{int(lines_new[0]['単価']):,}円×{float(lines_new[0]['数量']):g}SKU）" if lines_new else "")
                        + f"　{new_items.get('説明', '')}")
         else:
             st.warning("新商品 初期設定は自動で数えられていません（" + new_items.get("説明", "この照合結果は未対応") + "）。"
@@ -450,7 +450,7 @@ def render(year, month, client, db_ids=None, notion_ready=False):
                 row = R.ROWS[name]
                 st.markdown(f"**{name}**：{row[2]}  \n{row[3]}")
 
-    event_rows = fba_rows + R.sheet_event_rows(sheets_now, target_ym, new_notice) + R.choice_rows(manual_rows, ver)
+    event_rows = R.sheet_event_rows(sheets_now, target_ym, new_notice) + R.choice_rows(manual_rows, ver)
     returns_now = sheets_now["返品"]
 
     # ---- 5. 汎用作業 ----
