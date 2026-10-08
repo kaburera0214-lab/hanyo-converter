@@ -468,3 +468,23 @@ def test_old_result_without_sheets_warns_instead_of_zero(monkeypatch, tmp_path):
     assert any("0件とは限りません" in w.value for w in at.warning)
     items = at.dataframe[-1].value
     assert len(items[items["品名"] == "FBA対応費"]) == 1
+
+
+def test_event_choices_carry_price_and_map_back_to_rules():
+    choices = R.event_choices(VER)
+    assert "返品処理（950円/件）" in choices and "FBA対応費（2,000円/依頼）" in choices
+    notice = next(k for k in choices if k.startswith("新商品") and R.NOTICE in k)
+    off = next(k for k in choices if k.startswith("車両受入費") and R.OFF_HOURS in k)
+    assert "7,000円" in off and "450円" in notice and "350円" in notice
+    rows = [{"実施日": "2026-09-20", "依頼ID": "a", "作業": notice, "数量": 5},
+            {"実施日": "2026-09-21", "依頼ID": "b", "作業": off, "数量": 1},
+            {"実施日": "2026-09-22", "依頼ID": "c", "作業": "返品処理（950円/件）", "数量": 2}]
+    lines = R.event_lines(R.choice_rows(rows, VER), 2026, 9)
+    assert [x["金額"] for x in lines] == [450 * 5, 7000, 1900]
+    assert [r["金額"] for r in R.amount_rows(lines)] == [2250, 7000, 1900]
+    # 計算用の行・古い下書き（通知日・時間外再手配の列）からも同じ選択肢に戻せる
+    assert R.choice_label({"作業": "車両受入費", "時間外再手配": True}, VER) == off
+    assert R.choice_label({"作業": "新商品 初期設定", "通知日": "2026-09-01"}, VER) == notice
+    assert R.choice_label({"作業": "返品処理"}, VER) == "返品処理（950円/件）"
+    for row in R.auto_event_rows(RESULT_WITH_LEDGER):
+        assert R.choice_label(row, VER) in choices

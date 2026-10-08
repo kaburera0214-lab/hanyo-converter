@@ -514,6 +514,73 @@ def ledger_lines(rows, year, month):
     return result
 
 
+# ---- 依頼ごとの作業の選択肢（単価を名前に入れる。条件で単価が変わるものは選択肢を分ける）----
+NOTICE = "・14日前までに通知あり"
+OFF_HOURS = "・時間帯外の到着で段取り変更"
+
+
+def event_choices(ver=None) -> dict:
+    """画面の「作業」の選択肢 → (料金表の項目, 事前通知あり, 時間帯外)。単価は版から作る（文言をベタ書きしない）。"""
+    def yen_(name, i=0):
+        return f"{int(price(name, i, ver)):,}円"
+
+    out = {}
+    for name in EVENT_NAMES:
+        unit = event_unit(name)
+        if name == "新商品 初期設定":
+            out[f"{name}（{yen_(name)}/{unit}）"] = (name, False, False)
+            out[f"{name}{NOTICE}（5{unit}以上 {yen_(name, 1)}・10{unit}以上 {yen_(name, 2)}）"] = (name, True, False)
+        elif name == "追加便対応料（3便目以降）":
+            out[f"{name}{NOTICE}（{yen_(name)}/{unit}）"] = (name, True, False)
+            out[f"{name}・通知なし（{yen_(name, 1)}/{unit}）"] = (name, False, False)
+        elif name == "車両受入費":
+            out[f"{name}（{yen_(name)}/{unit}）"] = (name, False, False)
+            out[f"{name}{OFF_HOURS}（{int(price(name, 0, ver) + price(name, 1, ver)):,}円/{unit}）"] = (name, False, True)
+        else:
+            out[f"{name}（{yen_(name)}/{unit}）"] = (name, False, False)
+    return out
+
+
+def choice_label(row, ver=None) -> str:
+    """計算用の行（作業・通知日・時間外再手配）や古い下書きの行を、画面の選択肢の名前にする。"""
+    choices = event_choices(ver)
+    name = str(row.get("作業") or "").strip()
+    if name in choices or not name:
+        return name
+    noticed = bool(str(row.get("通知日") or "").strip())
+    off = row.get("時間外再手配") is True or row.get("時間外再手配") == 1
+    if name == "追加便対応料（3便目以降）" and not noticed:
+        return next(k for k, v in choices.items() if v[0] == name and not v[1])
+    for label, (n, notice, off_hours) in choices.items():
+        if n == name and notice == (noticed and name != "車両受入費") and off_hours == off:
+            return label
+    return next((k for k, v in choices.items() if v[0] == name), name)
+
+
+def choice_rows(rows, ver=None) -> list[dict]:
+    """画面の行（作業＝選択肢の名前）を計算用の行に戻す。「通知あり」は実施日の14日前を通知日として渡す。"""
+    from datetime import timedelta
+    choices = event_choices(ver)
+    out = []
+    for r in rows:
+        label = str(r.get("作業") or "").strip()
+        name, notice, off = choices.get(label, (label, False, False))
+        notified = ""
+        if notice:
+            try:
+                notified = (date.fromisoformat(str(r.get("実施日"))[:10]) - timedelta(days=14)).isoformat()
+            except Exception:
+                notified = ""
+        out.append({**r, "作業": name, "通知日": notified, "時間外再手配": off})
+    return out
+
+
+def amount_rows(lines) -> list[dict]:
+    """明細を「依頼・作業・単価・数量・金額」の表にする（依頼に対する金額を、その場で見せるため）。"""
+    return [{"依頼": x.get("要約", ""), "作業": x["品名"], "単価": float(x["単価"]), "数量": float(x["数量"]),
+             "金額": x["金額"]} for x in lines]
+
+
 def pd_isna(value) -> bool:
     return isinstance(value, float) and value != value
 
