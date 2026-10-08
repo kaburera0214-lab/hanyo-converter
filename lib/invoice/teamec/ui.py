@@ -158,7 +158,7 @@ def render(year, month, client, db_ids=None, notion_ready=False):
         if drafts.get(draft_key):
             carried = drafts[draft_key]
         else:  # 初めて開く照合結果：シート由来の行を入れ直し、手で入れた行だけ引き継ぐ
-            carried = {k: v for k, v in drafts.get(f"{target_ym}|none", {}).items() if k not in ("calendar", "ledger")}
+            carried = {k: v for k, v in drafts.get(f"{target_ym}|none", {}).items() if k not in ("calendar", "ledger", "returns")}
             carried["_fresh"] = True
         st.session_state["_teamec_form_base"] = copy.deepcopy(carried)
     base = st.session_state["_teamec_form_base"]   # 編集欄の初期値（切り替えるまで固定。変えると入力が消える）
@@ -272,7 +272,7 @@ def render(year, month, client, db_ids=None, notion_ready=False):
         else:
             led = result["台帳"]
             st.caption(f"共有シート（取得 {led['取得日時']}）から：随時連絡 {len(led['随時連絡'])}件・返品 {len(led['返品'])}件・"
-                       f"配送変更（備考イーシス） {len(led['配送変更'])}件。根拠が【シート】で始まる行です。違っていれば直す・消すができます。 "
+                       f"配送変更（伝票番号がEシスの注文ID） {len(led['配送変更'])}件。根拠が【シート】で始まる行です。違っていれば直す・消すができます。 "
                        + " ／ ".join(f"[{k}]({v})" for k, v in led["出典"].items() if k != "依頼台帳"))
         if new_items.get("状態") == "取得済":
             st.caption(f"新商品 初期設定：棚番が未設定→設定になった商品 {new_items['件数']}件（{new_items['説明']}）。"
@@ -303,54 +303,80 @@ def render(year, month, client, db_ids=None, notion_ready=False):
     event_rows = fba_rows + manual_rows
 
     # ---- 6. 依頼台帳（たたき台）----
-    ledger_cols = ["計上", "依頼No", "日付", "内容", "対応状況", "作業費（台帳）", "品目", "数量", "単価"]
+    ledger_cols = ["依頼No", "日付", "品目", "数量", "単価", "メモ"]
+    requests = R.ledger_requests(result)
     ledger_init = base.get("ledger") if base.get("ledger") is not None else R.ledger_rows(result)
     ledger_now = prev.get("ledger", ledger_init)
-    n_on = len([r for r in ledger_now if r.get("計上") is True])
+    n_lines = len([r for r in ledger_now if str(r.get("品目") or "").strip()])
     if _section(prefix + "done_ledger", "6. 依頼台帳（たたき台）",
-                ledger_missing or f"その月の依頼 {len(ledger_now)}件・計上 {n_on}件"):
+                ledger_missing or f"その月の依頼 {len(requests)}件・請求の行 {n_lines}行"):
         if ledger_missing:
-            st.warning(f"依頼台帳を読めていません（{ledger_missing}）。0件とは限りません。台帳を見て「5」か汎用作業に入力してください。")
-        elif not ledger_init:
-            st.caption(f"{target_ym} の依頼は台帳にありません（[依頼台帳]({result['台帳']['出典']['依頼台帳']})）。")
+            st.warning(f"依頼台帳を読めていません（{ledger_missing}）。0件とは限りません。台帳を見て下の表に行を足してください。")
         else:
-            st.caption(f"[依頼台帳]({result['台帳']['出典']['依頼台帳']})から、出荷日（無ければ依頼日）が {target_ym} の依頼を並べています。"
-                       "請求するものは「計上」にして、汎用作業料なら人時（0.25刻み。単価は2,100円固定）、"
-                       "チャーターなど実費なら数量と単価（税抜）を入れてください。台帳の作業費が「通常内」のものは最初から外しています。")
-            st.caption("同じ作業を「イレギュラー作業」ページにも入力済みなら二重になります。その場合は「計上」を外してください。")
-            ledger_df = pd.DataFrame(ledger_init, columns=ledger_cols)
-            ledger_df["数量"] = pd.to_numeric(ledger_df["数量"])
-            ledger_df["単価"] = pd.to_numeric(ledger_df["単価"])
-            ledger_df["計上"] = ledger_df["計上"].map(lambda v: v is True or v == 1).astype(bool)
-            edited = st.data_editor(
-                ledger_df, hide_index=True, key=prefix + "ledger", width="stretch",
-                disabled=["依頼No", "日付", "内容", "対応状況", "作業費（台帳）"],
-                column_config={
-                    "計上": st.column_config.CheckboxColumn("計上"),
-                    "内容": st.column_config.TextColumn("内容", width="large"),
-                    "品目": st.column_config.SelectboxColumn("品目", options=list(R.LEDGER_ITEMS), required=True),
-                    "数量": st.column_config.NumberColumn("数量", min_value=0.0, step=0.25, help="汎用作業料は人時"),
-                    "単価": st.column_config.NumberColumn("単価", min_value=0, step=1, help="実費のときだけ（税抜・円）"),
-                })
-            ledger_now = _records(edited)
+            st.markdown(f"**{target_ym} の依頼：{len(requests)}件**（[依頼台帳]({result['台帳']['出典']['依頼台帳']})で、"
+                        "出荷日（無ければ依頼日）がこの月のもの）")
+            if requests:
+                st.dataframe(pd.DataFrame(requests), hide_index=True, width="stretch",
+                             column_config={"内容": st.column_config.TextColumn("内容", width="large")})
+        st.markdown("**請求のたたき台**（依頼の文面から品目の候補を出しています。確認して、行の追加・削除・変更をしてください）")
+        st.caption("1つの依頼に複数の品目があれば行を足します。汎用作業料は人時（0.25刻み・単価2,100円固定）、"
+                   "実費（チャーター・資材など）は数量と単価（税抜）を入れます。請求しない候補は行ごと削除してください。"
+                   "台帳の作業費が「通常内」・対応状況が「対応なし」の依頼は候補に出していません。")
+        st.caption("同じ作業を「イレギュラー作業」ページにも入力済みなら二重になります。その場合はこちらの行を削除してください。")
+        ledger_df = pd.DataFrame(ledger_init, columns=ledger_cols)
+        for col in ("依頼No", "日付", "品目", "メモ"):
+            ledger_df[col] = ledger_df[col].astype("object").where(ledger_df[col].notna(), None)
+        ledger_df["数量"] = pd.to_numeric(ledger_df["数量"])
+        ledger_df["単価"] = pd.to_numeric(ledger_df["単価"])
+        edited = st.data_editor(
+            ledger_df, hide_index=True, num_rows="dynamic", key=prefix + "ledger", width="stretch",
+            column_config={
+                "依頼No": st.column_config.TextColumn("依頼No", required=True),
+                "日付": st.column_config.TextColumn("日付"),
+                "品目": st.column_config.SelectboxColumn("品目", options=list(R.LEDGER_ITEMS), required=True, width="medium"),
+                "数量": st.column_config.NumberColumn("数量", min_value=0.0, step=0.25, help="汎用作業料は人時"),
+                "単価": st.column_config.NumberColumn("単価", min_value=0, step=1, help="実費のときだけ（税抜・円）。ほかは料金表の単価"),
+                "メモ": st.column_config.TextColumn("メモ", width="large"),
+            })
+        ledger_now = _records(edited)
 
     # ---- 7. 着払い送料・控除 ----
     keep = prev.get("other", {})
-    cod_auto, cod_detail = R.return_freight(result)
-    summary = (f"着払い送料 {cod_auto + keep.get('cod', 0):,}円・応援控除 {keep.get('support', 0):,}円・"
+    returns_init = base.get("returns") if base.get("returns") is not None else R.return_freight_rows(result)
+    returns_now = prev.get("returns", returns_init)
+    try:
+        cod_auto, cod_detail = R.return_freight(returns_now)
+        cod_text = f"{cod_auto + keep.get('cod', 0):,}円"
+    except ValueError:
+        cod_text = "未確定"
+    summary = (f"着払い送料 {cod_text}・応援控除 {keep.get('support', 0):,}円・"
                f"保管費値引き {keep.get('discount', 0):,}円")
     if _section(prefix + "done_other", "7. 着払い送料・控除", summary):
         if ledger_missing:
             st.warning(f"返品の着払い送料は自動で入っていません（{ledger_missing}）。")
+        elif returns_init:
+            st.markdown("**返品の送料**（返品交換シート）")
+            st.caption("送り状番号がヤマトの請求にあればその金額（税別）で確定。無いものは、追跡で運送会社を確かめ、"
+                       "シートの「パピー記入欄」を仮の金額として入れています。**状態が「仮」の行は、その運送会社"
+                       "（佐川・日本郵便）の請求を見て「計上する送料」を直してください。**")
+            ret_df = pd.DataFrame(returns_init)
+            ret_df["請求で確認した金額"] = pd.to_numeric(ret_df["請求で確認した金額"])
+            ret_df["計上する送料"] = pd.to_numeric(ret_df["計上する送料"])
+            edited_ret = st.data_editor(
+                ret_df, hide_index=True, key=prefix + "returns", width="stretch",
+                disabled=[c for c in ret_df.columns if c != "計上する送料"],
+                column_config={"計上する送料": st.column_config.NumberColumn("計上する送料（税抜）", min_value=0, step=1)})
+            returns_now = _records(edited_ret)
         else:
-            st.caption(f"返品の着払い送料（返品交換シート×ヤマト請求）：{cod_auto:,}円" + (f"　{cod_detail}" if cod_detail else ""))
+            st.caption(f"{target_ym} の返品は返品交換シートにありません。")
         keep = {
             "cod": st.number_input("上のほかの着払い送料（税抜合計・円）", min_value=0, value=keep.get("cod", 0), step=1, key=prefix + "cod"),
             "support": st.number_input("応援控除（税抜・円）", min_value=0, value=keep.get("support", 0), step=1, key=prefix + "support"),
             "discount": st.number_input("保管費値引き（税抜・円）", min_value=0, value=keep.get("discount", 0), step=1, key=prefix + "discount"),
         }
         st.caption("控除は請求額から最後に差し引きます（管理費は控除前の第1層で計算）。")
-    drafts[draft_key] = {"calendar": shown_rows, "events": manual_rows, "other": keep, "ledger": ledger_now}
+    drafts[draft_key] = {"calendar": shown_rows, "events": manual_rows, "other": keep, "ledger": ledger_now,
+                         "returns": returns_now}
 
     # ---- 8. 試算 ----
     st.markdown("#### 8. 試算")
@@ -368,6 +394,7 @@ def render(year, month, client, db_ids=None, notion_ready=False):
         lines += R.labor_lines(irregular_work, year, month)
         lines += R.event_lines(event_rows, year, month)
         lines += R.ledger_lines(ledger_now, year, month)
+        cod_auto, cod_detail = R.return_freight(returns_now)
         cod_total = cod_auto + keep.get("cod", 0)
         if cod_total:
             detail = "；".join(x for x in (cod_detail, f"ほか手入力 {keep['cod']:,}円" if keep.get("cod") else "") if x)
@@ -387,14 +414,14 @@ def render(year, month, client, db_ids=None, notion_ready=False):
     if calc is not None:
         bundle = review_bundle(calc, {"対象年月": target_ym, "出荷稼働日": active, "照合結果の読込元": source,
                                       "照合結果": result, "保管カウント": counts, "イレギュラー作業": irregular_work,
-                                      "依頼ごとの作業": event_rows, "依頼台帳": ledger_now, "その他": keep}, ver)
+                                      "依頼ごとの作業": event_rows, "依頼台帳": ledger_now, "返品の送料": returns_now, "その他": keep}, ver)
         st.download_button("試算明細・入力根拠を保存（ZIP／MF取込不可）", bundle,
                            file_name=f"TeamEC新体系_試算_{year}{month:02}.zip", mime="application/zip",
                            key=prefix + "download")
     if calc is not None:
         _issue_section(calc, result, source, client, year, month, prefix, db_ids, notion_ready,
                        {"出荷稼働日": active, "保管カウント": counts, "イレギュラー作業": irregular_work,
-                        "依頼ごとの作業": event_rows, "依頼台帳": ledger_now, "その他": keep}, ver)
+                        "依頼ごとの作業": event_rows, "依頼台帳": ledger_now, "返品の送料": returns_now, "その他": keep}, ver)
     with st.expander("料金の根拠"):
         st.markdown(f"[新料金単価表]({R.SOURCE['source_url']})（{R.SOURCE['checked_at']}取得）・版 {ver['id']}")
         st.write(disp["source"])
@@ -477,6 +504,7 @@ def _issue_section(calc, result, source, client, year, month, prefix, db_ids, no
               ("汎用作業費", pd.DataFrame(inputs["イレギュラー作業"] or []).drop(columns=["id"], errors="ignore"), None),
               ("依頼ごとの作業", pd.DataFrame(inputs["依頼ごとの作業"]), None),
               ("依頼台帳", pd.DataFrame(inputs.get("依頼台帳") or []), None),
+              ("返品の送料", pd.DataFrame(inputs.get("返品の送料") or []), None),
               ("入庫", pd.DataFrame(result.get("入庫", [])), None)]
     xlsx_bytes = excel_export.build_breakdown_excel([{"費目": it["品名"], "金額": it["金額"]} for it in items], sheets)
     xlsx_name = f"内訳明細_{R.CLIENT_NAME}_{inv_no}.xlsx"

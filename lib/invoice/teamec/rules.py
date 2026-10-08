@@ -334,10 +334,25 @@ def storage_summary(count_rows, year, month) -> list[dict]:
 
 # ---- 共有シート（随時連絡・返品交換・配送変更依頼・依頼台帳）と新商品（棚番の設定）----
 AUTO_MARKS = ("【シート】", "【Eシス】")   # 自動で入れた行の根拠の先頭。人が直した行と見分ける
-# 依頼台帳のたたき台で選べる品目 → (区分, 単位, 単価。None は実費で手入力)
+# 依頼台帳のたたき台で選べる品目 → (区分, 単位, 料金表の項目名。None は実費で単価を手入力)
 LEDGER_ITEMS = {"汎用作業料": ("第3層", "人時", "汎用作業料"),
                 "トラックチャーター（実費）": ("実費", "式", None),
+                "資材（実費）": ("実費", "式", None),
                 "その他（実費）": ("実費", "式", None)}
+LEDGER_ITEMS.update({n: (LAYER[n], event_unit(n), n) for n in (
+    STOCK_RESTORE, "随時連絡対応（起票・調査）", "入庫差異の報告・照会", "配送種別・個口数の変更")})
+# 依頼の文面 → 品目の候補（当たったものを全部たたき台に出す。1つの依頼が複数行になってよい）。
+# あくまで「こうかな？」の候補。人が確認して、追加・削除・変更する（2026-10-08 本人指示）
+LEDGER_RULES = (
+    (r"ラベル|シール|張替|貼り替|貼付|タグ付", "汎用作業料", "ラベル・シールの作業"),
+    (r"セット.{0,6}(作成|組|変換)|組換|組み替|入れ替え|詰め替|バラ", "汎用作業料", "セット組み・入れ替えの作業"),
+    (r"検品|仕分|梱包|袋詰|同梱", "汎用作業料", "検品・梱包の作業"),
+    (r"チャーター|トラック|配車", "トラックチャーター（実費）", "チャーター便"),
+    (r"資材.{0,4}(依頼|使用|手配)|手書き", "資材（実費）", "資材・手書き伝票"),
+    (r"在庫.{0,3}(移動|戻)|在庫調整", STOCK_RESTORE, "在庫の移動・戻し"),
+    (r"在庫.{0,6}(ずれ|差異|合わ)|原因調査", "入庫差異の報告・照会", "在庫差異の調査"),
+)
+LEDGER_FREE = ("通常内", "無償")
 
 
 def ledger_state(result) -> str:
@@ -377,56 +392,124 @@ def auto_event_rows(result) -> list[dict]:
         rows.append(row(r["発生日"], unique(f"{r['受注番号'] or '随時連絡'}／{r['発生内容']}"), "随時連絡対応（起票・調査）",
                         1, f"【シート】随時連絡：{r['発生内容']}（{r['ステータス']}）"))
     for r in led.get("返品", []):
-        fee = "" if r["着払い送料"] is None else f"・送料 {r['着払い送料']:,}円"
         rows.append(row(r["日付"], unique(r["送り状番号"] or r["注文番号"] or f"返品{r['日付']}"), "返品処理", 1,
-                        f"【シート】返品交換：{r['送料負担方法'] or '送料負担の記載なし'}{fee}（{r['ステータス']}）"))
+                        f"【シート】返品交換：{r['送料負担方法'] or '送料負担の記載なし'}・{r.get('運送会社', '')}（{r['ステータス']}）"))
     for r in led.get("配送変更", []):
-        rows.append(row(r["日付"], unique(f"伝票{r['伝票番号'] or r['日付']}"), "配送種別・個口数の変更", 1,
-                        f"【シート】配送変更依頼：{r['変更前']}→{r['変更後']}（備考 {r['備考']}）"))
+        rows.append(row(r["日付"], unique(f"注文ID {r.get('注文ID') or r['伝票番号']}"), "配送種別・個口数の変更", 1,
+                        f"【シート】配送変更依頼：{r['変更前']}→{r['変更後']}（伝票番号欄 {r['伝票番号']}）"))
     return rows
 
 
-def return_freight(result) -> tuple[int, str]:
-    """返品交換シートの着払い返品にかかった送料の合計と内訳。"""
-    rows = [r for r in ((result or {}).get("台帳") or {}).get("返品", []) if r.get("着払い送料")]
-    return (sum(r["着払い送料"] for r in rows),
-            "、".join(f"{r['日付']} {r['着払い送料']:,}円（{r['送料の根拠']}）" for r in rows))
+def _yen_or_none(text):
+    t = str(text if text is not None else "").replace(",", "").replace("円", "").strip()
+    return int(t) if t.isdigit() else None
 
 
-def ledger_rows(result) -> list[dict]:
-    """依頼台帳のその月の行を、たたき台の表にする。数量（人時）や金額は台帳に無いので空欄のまま人が入れる。"""
-    return [{"計上": bool(r["計上候補"]), "依頼No": r["依頼No"], "日付": r["日付"], "内容": r["内容"],
-             "対応状況": r["対応状況"], "作業費（台帳）": r["作業費"], "品目": r["推定品目"], "数量": None, "単価": None}
+def return_freight_rows(result) -> list[dict]:
+    """返品の送料の確認表。請求で確かめられた金額と、シートの「パピー記入欄」（仮）を別の列に分ける。
+
+    「計上する送料」の初期値は、請求で確かめた金額。無ければ仮の金額（着払いのときだけ）。人が直せる。
+    """
+    rows = []
+    for r in ((result or {}).get("台帳") or {}).get("返品", []):
+        cod = "着払" in str(r.get("送料負担方法", ""))
+        confirmed, noted = r.get("着払い送料"), _yen_or_none(r.get("パピー記入欄"))
+        carrier = r.get("運送会社", "")
+        if not cod:
+            state = "元払い（送料なし）"
+        elif confirmed is not None:
+            state = "確定（ヤマト請求）"
+        elif carrier in ("日本郵便", "佐川"):
+            state = f"仮：{carrier}の請求を確認"
+        else:
+            state = "仮：佐川・日本郵便の請求を確認"
+        rows.append({"到着日": r["日付"], "送り状番号": r["送り状番号"], "送料負担": r.get("送料負担方法", ""),
+                     "運送会社": carrier + (f"（{r['運送会社の根拠']}）" if r.get("運送会社の根拠") and carrier != "ヤマト" else ""),
+                     "請求で確認した金額": confirmed, "パピー記入欄（仮）": r.get("パピー記入欄", ""),
+                     "状態": state, "計上する送料": (confirmed if confirmed is not None else noted) if cod else 0})
+    return rows
+
+
+def return_freight(rows) -> tuple[int, str]:
+    """確認表（人が直したあと）から、着払い送料の合計と内訳。着払いなのに金額が空なら止める。"""
+    total, parts = 0, []
+    for r in rows:
+        value = r.get("計上する送料")
+        if value in ("", None) or pd_isna(value):
+            if "着払" in str(r.get("送料負担", "")):
+                raise ValueError(f"返品 {r.get('到着日', '')}（送り状 {r.get('送り状番号') or 'なし'}）：着払い送料が空です。"
+                                 "運送会社の請求を確認して「計上する送料」に入れてください（請求しないなら0）")
+            continue
+        n = int(amount(value, "返品の着払い送料", integer=True))
+        if n:
+            total += n
+            parts.append(f"{r.get('到着日', '')} {n:,}円（{str(r.get('状態', '')).split('（')[0].split('：')[0]}・{str(r.get('運送会社', '')).split('（')[0]}）")
+    return total, "、".join(parts)
+
+
+def ledger_requests(result) -> list[dict]:
+    """依頼台帳のその月の依頼（見るだけの一覧）。"""
+    return [{"依頼No": r["依頼No"], "日付": r["日付"], "区分": r.get("区分", ""), "内容": r["内容"],
+             "対応状況": r["対応状況"], "作業費（台帳）": r["作業費"], "パピー記入": r.get("パピー記入", "")}
             for r in ((result or {}).get("台帳") or {}).get("依頼台帳", [])]
 
 
+def ledger_rows(result) -> list[dict]:
+    """依頼台帳から、請求のたたき台（依頼×品目の行）を作る。1つの依頼が複数行になってよい。
+
+    文面に当たった品目を全部候補に出す。当たらなければ汎用作業料を1行。台帳で「通常内」「対応なし」の依頼は出さない。
+    数量（人時）や実費の金額は台帳に無いので空欄のまま。人が入れる・消す・足す。
+    """
+    import re
+    rows = []
+    for r in ((result or {}).get("台帳") or {}).get("依頼台帳", []):
+        if any(w in str(r.get("作業費", "")) for w in LEDGER_FREE) or r.get("対応状況") == "対応なし":
+            continue
+        found = {}
+        for pattern, item, why in LEDGER_RULES:
+            if re.search(pattern, r["内容"]):
+                found.setdefault(item, []).append(why)
+        if not found:
+            found = {"汎用作業料": ["文面から品目を決められません（仮に汎用作業）"]}
+        for item, whys in found.items():
+            fixed = LEDGER_ITEMS[item][2]
+            rows.append({"依頼No": r["依頼No"], "日付": r["日付"], "品目": item,
+                         "数量": 1 if fixed and fixed != "汎用作業料" else None, "単価": None,
+                         "メモ": "候補：" + "・".join(whys)})
+    return rows
+
+
 def ledger_lines(rows, year, month):
-    """依頼台帳のたたき台のうち「計上」にした行を明細にする。数量・単価が空のまま計上にはしない。"""
+    """依頼台帳のたたき台の行を明細にする。数量・単価が空の行は0円にせず止める（消すか入れるかを人が決める）。"""
     ver = version(year, month)
     result = []
     for r in rows:
-        if not (r.get("計上") is True or r.get("計上") == 1):
+        name = str(r.get("品目") or "").strip()
+        no = str(r.get("依頼No") or "").strip()
+        if not name and not no:
             continue
-        no = f"依頼No.{r.get('依頼No', '')}"
-        name = str(r.get("品目", "")).strip()
+        label = f"依頼No.{no or '（空欄）'}"
+        if not no:
+            raise ValueError(f"依頼台帳のたたき台：「{name}」の行に依頼Noを入れてください")
         if name not in LEDGER_ITEMS:
-            raise ValueError(f"{no}：品目を選んでください")
+            raise ValueError(f"{label}：品目を選んでください")
         layer, unit, priced = LEDGER_ITEMS[name]
         if r.get("数量") in ("", None) or pd_isna(r.get("数量")):
-            raise ValueError(f"{no}：数量（{unit}）を入れるか、「計上」を外してください")
-        q = amount(r["数量"], no + "の数量")
+            raise ValueError(f"{label}「{name}」：数量（{unit}）を入れるか、請求しないなら行を削除してください")
+        q = amount(r["数量"], label + "の数量")
         if not q:
-            raise ValueError(f"{no}：数量が0です。計上しないなら「計上」を外してください")
+            raise ValueError(f"{label}「{name}」：数量が0です。請求しないなら行を削除してください")
+        if priced == "汎用作業料" and q * 4 != (q * 4).to_integral_value():
+            raise ValueError(f"{label}：人時は15分単位（0.25刻み）で入れてください")
         if priced:
-            if q * 4 != (q * 4).to_integral_value():
-                raise ValueError(f"{no}：人時は15分単位（0.25刻み）で入れてください")
-            p = price(priced, ver=ver)
+            p_ = price(priced, ver=ver)
         else:
             if r.get("単価") in ("", None) or pd_isna(r.get("単価")):
-                raise ValueError(f"{no}：実費の単価（税抜・円）を入れてください")
-            p = amount(r["単価"], no + "の単価")
-        item = line(name, p, q, layer, unit, f"依頼台帳 No.{r.get('依頼No', '')}（{r.get('日付', '')}）{str(r.get('内容', ''))[:60]}")
-        item["要約"] = f"依頼台帳No.{r.get('依頼No', '')}"
+                raise ValueError(f"{label}「{name}」：実費の単価（税抜・円）を入れてください")
+            p_ = amount(r["単価"], label + "の単価")
+        memo = str(r.get("メモ") or "")
+        item = line(name, p_, q, layer, unit, f"依頼台帳 No.{no}（{r.get('日付') or ''}）{'' if memo.startswith('候補：') else memo}"[:120])
+        item["要約"] = f"依頼台帳No.{no}"
         result.append(item)
     return result
 
