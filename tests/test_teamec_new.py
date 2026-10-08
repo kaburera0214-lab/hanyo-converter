@@ -404,7 +404,7 @@ def test_sheet_rows_become_event_rows_and_unknown_is_not_zero():
 
 def test_return_freight_keeps_confirmed_and_provisional_apart():
     rows = R.return_freight_rows(RESULT_WITH_LEDGER)
-    assert [(r["請求で確認した金額"], r["パピー記入欄（仮）"], r["計上する送料"]) for r in rows] == [
+    assert [(r["請求で確認した送料"], r["パピー記入欄（仮）"], r["計上する送料"]) for r in rows] == [
         (4782, "4782", 4782), (None, "1900", 1900), (None, "", 0)]
     assert rows[0]["状態"].startswith("確定") and rows[1]["状態"] == "仮：日本郵便の請求を確認" and rows[2]["状態"].startswith("元払い")
     assert R.return_freight(rows)[0] == 6682
@@ -413,6 +413,20 @@ def test_return_freight_keeps_confirmed_and_provisional_apart():
     rows[1]["計上する送料"] = None          # 着払いなのに空 → 0円にせず止める
     with pytest.raises(ValueError, match="着払い送料が空"):
         R.return_freight(rows)
+    rows[1]["計上"] = False                  # 計上を外した返品は、処理料も送料も請求しない
+    assert R.return_freight(rows)[0] == 4782
+    tables = dict(R.sheet_tables(RESULT_WITH_LEDGER), 返品=rows)
+    assert [r["作業"] for r in R.sheet_event_rows(tables, "2026-09")].count("返品処理") == 2
+
+
+def test_one_table_per_sheet_with_price_and_new_item_notice():
+    tables = R.sheet_tables(RESULT_WITH_LEDGER, VER)
+    assert {k: len(v) for k, v in tables.items()} == {"随時連絡": 1, "返品": 3, "配送変更": 1, "新商品": 2}
+    assert tables["随時連絡"][0]["単価"] == 1200 and tables["返品"][0]["返品処理料"] == 950 and tables["配送変更"][0]["単価"] == 650
+    new5 = dict(tables, 新商品=[dict(tables["新商品"][0], JANコード=str(i)) for i in range(5)])
+    plain = R.event_lines(R.sheet_event_rows({"新商品": new5["新商品"]}, "2026-09"), 2026, 9)
+    noticed = R.event_lines(R.sheet_event_rows({"新商品": new5["新商品"]}, "2026-09", notice=True), 2026, 9)
+    assert (plain[0]["金額"], noticed[0]["金額"]) == (700 * 5, 450 * 5)
 
 
 def test_ledger_draft_gives_candidates_per_request_and_needs_human_input():
@@ -420,8 +434,8 @@ def test_ledger_draft_gives_candidates_per_request_and_needs_human_input():
     rows = R.ledger_rows(RESULT_WITH_LEDGER)
     # No.16 は文面から2品目、No.18 は当たらないので汎用作業料を1行、No.19 は通常内なので候補なし
     assert [(r["依頼No"], r["品目"]) for r in rows] == [
-        ("16", "汎用作業料"), ("16", "トラックチャーター（実費）"), ("18", "汎用作業料")]
-    assert all(r["メモ"].startswith("候補：") for r in rows)
+        ("16", "汎用作業料"), ("16", "トラックチャーター（実費）"), ("18", "汎用作業料"), ("19", None)]
+    assert all(r["内容"] for r in rows) and all(r["メモ"].startswith("候補：") for r in rows[:3])
     with pytest.raises(ValueError, match="依頼No.16「汎用作業料」：数量"):
         R.ledger_lines(rows, 2026, 9)
     rows[0]["数量"] = 0.5
@@ -431,6 +445,7 @@ def test_ledger_draft_gives_candidates_per_request_and_needs_human_input():
     rows[1]["単価"] = 30000
     del rows[2]                                           # 請求しない候補は行ごと削除
     rows.append({"依頼No": "16", "日付": "", "品目": R.STOCK_RESTORE, "数量": 2, "単価": None, "メモ": "人が追加"})
+    assert R.amount_text(R.ledger_lines(rows, 2026, 9)).splitlines()[0].rstrip().endswith("2,100円×0.5＝1,050円")
     got = [(x["品名"], x["区分"], x["金額"]) for x in R.ledger_lines(rows, 2026, 9)]
     assert got == [("汎用作業料", "第3層", 1050), ("トラックチャーター（実費）", "実費", 30000), (R.STOCK_RESTORE, R.LAYER[R.STOCK_RESTORE], 800)]
     rows[0]["数量"] = 0.4

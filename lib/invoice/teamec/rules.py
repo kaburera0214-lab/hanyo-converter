@@ -366,10 +366,51 @@ def ledger_state(result) -> str:
     return ""
 
 
-def auto_event_rows(result) -> list[dict]:
-    """共有シートとEシスの棚番から、依頼ごとの作業の行を作る（人が確認・修正する前提のたたき台）。"""
-    def row(day, request, name, qty, basis):
-        return {"実施日": day, "依頼ID": request, "作業": name, "数量": qty, "通知日": "",
+def _on(row) -> bool:
+    return row.get("計上") is True or row.get("計上") == 1
+
+
+def sheet_tables(result, ver=None) -> dict:
+    """シートごとの確認表（1シート＝1表）。各行に「計上」と金額の元になる単価を持たせる。人は「計上」を外せる。"""
+    led = (result or {}).get("台帳") or {}
+
+    def yen_(name):
+        return int(price(name, ver=ver))
+
+    contacts = [{"計上": True, "発生日": r["発生日"], "受注番号": r["受注番号"], "発生内容": r["発生内容"],
+                 "ステータス": r["ステータス"], "単価": yen_("随時連絡対応（起票・調査）")} for r in led.get("随時連絡", [])]
+    returns = []
+    for r in led.get("返品", []):
+        cod = "着払" in str(r.get("送料負担方法", ""))
+        confirmed, noted = r.get("着払い送料"), _yen_or_none(r.get("パピー記入欄"))
+        carrier = r.get("運送会社", "")
+        if not cod:
+            state = "元払い（送料なし）"
+        elif confirmed is not None:
+            state = "確定（ヤマト請求）"
+        elif carrier in ("日本郵便", "佐川"):
+            state = f"仮：{carrier}の請求を確認"
+        else:
+            state = "仮：佐川・日本郵便の請求を確認"
+        returns.append({"計上": True, "到着日": r["日付"], "送り状番号": r["送り状番号"], "注文番号": r.get("注文番号", ""),
+                        "送料負担": r.get("送料負担方法", ""),
+                        "運送会社": carrier + (f"（{r['運送会社の根拠']}）" if r.get("運送会社の根拠") and carrier != "ヤマト" else ""),
+                        "返品処理料": yen_("返品処理"), "請求で確認した送料": confirmed, "パピー記入欄（仮）": r.get("パピー記入欄", ""),
+                        "状態": state, "計上する送料": (confirmed if confirmed is not None else noted) if cod else 0})
+    changes = [{"計上": True, "日付": r["日付"], "伝票番号": r["伝票番号"], "注文ID": r.get("注文ID", ""),
+                "変更前": r["変更前"], "変更後": r["変更後"], "単価": yen_("配送種別・個口数の変更")} for r in led.get("配送変更", [])]
+    new = [{"計上": True, "確認日": x["確認日"], "表示用コード": x.get("表示用コード", ""), "商品名": x.get("商品名", ""),
+            "棚番": x.get("棚番", ""), "JANコード": x["JANコード"], "根拠": x.get("根拠", "棚番が未設定→設定")}
+           for x in ((result or {}).get("新商品") or {}).get("明細", [])]
+    return {"随時連絡": contacts, "返品": returns, "配送変更": changes, "新商品": new}
+
+
+def sheet_event_rows(tables, target_ym, notice=False) -> list[dict]:
+    """確認表で「計上」になっている行を、依頼ごとの作業の行にする。notice＝新商品の事前通知（14日前まで）あり。"""
+    from datetime import timedelta
+
+    def row(day, request, name, qty, basis, notified=""):
+        return {"実施日": day, "依頼ID": request, "作業": name, "数量": qty, "通知日": notified,
                 "時間外再手配": False, "根拠・備考": basis}
 
     rows, used = [], set()
@@ -382,22 +423,30 @@ def auto_event_rows(result) -> list[dict]:
         used.add(text)
         return text
 
-    new = (result or {}).get("新商品") or {}
-    if new.get("件数"):
-        codes = "、".join(x.get("表示用コード") or x["JANコード"] for x in new["明細"])
-        rows.append(row(max(x["確認日"] for x in new["明細"]), f"新商品{result['対象月']}", "新商品 初期設定",
-                        new["件数"], f"【Eシス】棚番が未設定→設定：{codes}"[:300]))
-    led = (result or {}).get("台帳") or {}
-    for r in led.get("随時連絡", []):
-        rows.append(row(r["発生日"], unique(f"{r['受注番号'] or '随時連絡'}／{r['発生内容']}"), "随時連絡対応（起票・調査）",
-                        1, f"【シート】随時連絡：{r['発生内容']}（{r['ステータス']}）"))
-    for r in led.get("返品", []):
-        rows.append(row(r["日付"], unique(r["送り状番号"] or r["注文番号"] or f"返品{r['日付']}"), "返品処理", 1,
-                        f"【シート】返品交換：{r['送料負担方法'] or '送料負担の記載なし'}・{r.get('運送会社', '')}（{r['ステータス']}）"))
-    for r in led.get("配送変更", []):
-        rows.append(row(r["日付"], unique(f"注文ID {r.get('注文ID') or r['伝票番号']}"), "配送種別・個口数の変更", 1,
-                        f"【シート】配送変更依頼：{r['変更前']}→{r['変更後']}（伝票番号欄 {r['伝票番号']}）"))
+    new = [r for r in tables.get("新商品", []) if _on(r)]
+    if new:
+        day = max(r["確認日"] for r in new)
+        notified = (date.fromisoformat(day[:10]) - timedelta(days=14)).isoformat() if notice else ""
+        codes = "、".join(r.get("表示用コード") or r["JANコード"] for r in new)
+        rows.append(row(day, f"新商品{target_ym}", "新商品 初期設定", len(new), f"【Eシス】新商品：{codes}"[:300], notified))
+    for r in tables.get("随時連絡", []):
+        if _on(r):
+            rows.append(row(r["発生日"], unique(f"{r['受注番号'] or '随時連絡'}／{r['発生内容']}"), "随時連絡対応（起票・調査）",
+                            1, f"【シート】随時連絡：{r['発生内容']}（{r['ステータス']}）"))
+    for r in tables.get("返品", []):
+        if _on(r):
+            rows.append(row(r["到着日"], unique(r["送り状番号"] or r.get("注文番号") or f"返品{r['到着日']}"), "返品処理", 1,
+                            f"【シート】返品交換：{r['送料負担'] or '送料負担の記載なし'}・{str(r['運送会社']).split('（')[0]}"))
+    for r in tables.get("配送変更", []):
+        if _on(r):
+            rows.append(row(r["日付"], unique(f"注文ID {r.get('注文ID') or r['伝票番号']}"), "配送種別・個口数の変更", 1,
+                            f"【シート】配送変更依頼：{r['変更前']}→{r['変更後']}（伝票番号欄 {r['伝票番号']}）"))
     return rows
+
+
+def auto_event_rows(result) -> list[dict]:
+    """共有シートとEシスの棚番から作る、依頼ごとの作業の行（確認表をそのまま全部計上した場合）。"""
+    return sheet_event_rows(sheet_tables(result), (result or {}).get("対象月", ""))
 
 
 def _yen_or_none(text):
@@ -406,34 +455,16 @@ def _yen_or_none(text):
 
 
 def return_freight_rows(result) -> list[dict]:
-    """返品の送料の確認表。請求で確かめられた金額と、シートの「パピー記入欄」（仮）を別の列に分ける。
-
-    「計上する送料」の初期値は、請求で確かめた金額。無ければ仮の金額（着払いのときだけ）。人が直せる。
-    """
-    rows = []
-    for r in ((result or {}).get("台帳") or {}).get("返品", []):
-        cod = "着払" in str(r.get("送料負担方法", ""))
-        confirmed, noted = r.get("着払い送料"), _yen_or_none(r.get("パピー記入欄"))
-        carrier = r.get("運送会社", "")
-        if not cod:
-            state = "元払い（送料なし）"
-        elif confirmed is not None:
-            state = "確定（ヤマト請求）"
-        elif carrier in ("日本郵便", "佐川"):
-            state = f"仮：{carrier}の請求を確認"
-        else:
-            state = "仮：佐川・日本郵便の請求を確認"
-        rows.append({"到着日": r["日付"], "送り状番号": r["送り状番号"], "送料負担": r.get("送料負担方法", ""),
-                     "運送会社": carrier + (f"（{r['運送会社の根拠']}）" if r.get("運送会社の根拠") and carrier != "ヤマト" else ""),
-                     "請求で確認した金額": confirmed, "パピー記入欄（仮）": r.get("パピー記入欄", ""),
-                     "状態": state, "計上する送料": (confirmed if confirmed is not None else noted) if cod else 0})
-    return rows
+    """返品交換の確認表（請求で確かめた送料と、シートの「パピー記入欄」＝仮を別の列に分ける）。"""
+    return sheet_tables(result)["返品"]
 
 
 def return_freight(rows) -> tuple[int, str]:
-    """確認表（人が直したあと）から、着払い送料の合計と内訳。着払いなのに金額が空なら止める。"""
+    """返品交換の確認表（人が直したあと）から、着払い送料の合計と内訳。計上する着払いの金額が空なら止める。"""
     total, parts = 0, []
     for r in rows:
+        if not _on(r):
+            continue
         value = r.get("計上する送料")
         if value in ("", None) or pd_isna(value):
             if "着払" in str(r.get("送料負担", "")):
@@ -455,15 +486,19 @@ def ledger_requests(result) -> list[dict]:
 
 
 def ledger_rows(result) -> list[dict]:
-    """依頼台帳から、請求のたたき台（依頼×品目の行）を作る。1つの依頼が複数行になってよい。
+    """依頼台帳の確認表（1表）。依頼の内容と、請求のたたき台（品目・数量・単価）を同じ行に並べる。
 
-    文面に当たった品目を全部候補に出す。当たらなければ汎用作業料を1行。台帳で「通常内」「対応なし」の依頼は出さない。
+    文面に当たった品目を全部候補に出す（1つの依頼が複数行になってよい）。当たらなければ汎用作業料を1行。
+    台帳で「通常内」「対応なし」の依頼は、品目を空にして1行だけ出す（＝請求しない。必要なら人が品目を入れる）。
     数量（人時）や実費の金額は台帳に無いので空欄のまま。人が入れる・消す・足す。
     """
     import re
     rows = []
     for r in ((result or {}).get("台帳") or {}).get("依頼台帳", []):
+        info = {"依頼No": r["依頼No"], "日付": r["日付"], "内容": r["内容"],
+                "台帳の記入": "／".join(x for x in (r.get("対応状況", ""), r.get("作業費", ""), r.get("パピー記入", "")) if x)}
         if any(w in str(r.get("作業費", "")) for w in LEDGER_FREE) or r.get("対応状況") == "対応なし":
+            rows.append({**info, "品目": None, "数量": None, "単価": None, "メモ": "台帳で通常内・対応なしのため請求なし"})
             continue
         found = {}
         for pattern, item, why in LEDGER_RULES:
@@ -473,8 +508,7 @@ def ledger_rows(result) -> list[dict]:
             found = {"汎用作業料": ["文面から品目を決められません（仮に汎用作業）"]}
         for item, whys in found.items():
             fixed = LEDGER_ITEMS[item][2]
-            rows.append({"依頼No": r["依頼No"], "日付": r["日付"], "品目": item,
-                         "数量": 1 if fixed and fixed != "汎用作業料" else None, "単価": None,
+            rows.append({**info, "品目": item, "数量": 1 if fixed and fixed != "汎用作業料" else None, "単価": None,
                          "メモ": "候補：" + "・".join(whys)})
     return rows
 
@@ -486,8 +520,8 @@ def ledger_lines(rows, year, month):
     for r in rows:
         name = str(r.get("品目") or "").strip()
         no = str(r.get("依頼No") or "").strip()
-        if not name and not no:
-            continue
+        if not name:
+            continue   # 品目が空の行は請求しない（依頼の内容を見せるためだけの行）
         label = f"依頼No.{no or '（空欄）'}"
         if not no:
             raise ValueError(f"依頼台帳のたたき台：「{name}」の行に依頼Noを入れてください")
@@ -495,10 +529,10 @@ def ledger_lines(rows, year, month):
             raise ValueError(f"{label}：品目を選んでください")
         layer, unit, priced = LEDGER_ITEMS[name]
         if r.get("数量") in ("", None) or pd_isna(r.get("数量")):
-            raise ValueError(f"{label}「{name}」：数量（{unit}）を入れるか、請求しないなら行を削除してください")
+            raise ValueError(f"{label}「{name}」：数量（{unit}）を入れるか、請求しないなら品目を空にしてください")
         q = amount(r["数量"], label + "の数量")
         if not q:
-            raise ValueError(f"{label}「{name}」：数量が0です。請求しないなら行を削除してください")
+            raise ValueError(f"{label}「{name}」：数量が0です。請求しないなら品目を空にしてください")
         if priced == "汎用作業料" and q * 4 != (q * 4).to_integral_value():
             raise ValueError(f"{label}：人時は15分単位（0.25刻み）で入れてください")
         if priced:
@@ -573,6 +607,11 @@ def choice_rows(rows, ver=None) -> list[dict]:
                 notified = ""
         out.append({**r, "作業": name, "通知日": notified, "時間外再手配": off})
     return out
+
+
+def amount_text(lines) -> str:
+    """明細を「依頼 作業 単価×数量＝金額」の1行ずつにする（表を増やさずに金額を見せる）。"""
+    return "  \n".join(f"{x.get('要約', '')}　{x['品名']}　{int(x['単価']):,}円×{float(x['数量']):g}＝{x['金額']:,}円" for x in lines)
 
 
 def amount_rows(lines) -> list[dict]:
