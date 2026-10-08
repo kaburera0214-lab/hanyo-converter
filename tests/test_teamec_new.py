@@ -265,7 +265,7 @@ def test_team_ec_september_uses_new_system_and_keeps_old_for_august(monkeypatch,
     labels = [m.label for m in at.metric]
     assert "出荷作業料" in labels and "試算合計" in labels
     # 出荷稼働日は照合結果の日（9/19土曜は1回）：(2+1)×1,200
-    items = at.dataframe[-1].value
+    items = at.table[-1].value.reset_index()
     assert int(items.loc[items["品名"] == "出荷指示作成料", "金額"].iloc[0]) == 3600
     assert "FBA対応費" in set(items["品名"])
     at.checkbox(key=next(k for k in at.session_state.filtered_state if k.endswith("done_days"))).check().run()
@@ -346,7 +346,7 @@ def test_result_loaded_later_refreshes_fba_and_days(monkeypatch, tmp_path):
     _results_dir(tmp_path)
     at.run()
     assert not at.exception, at.exception
-    items = at.dataframe[-1].value
+    items = at.table[-1].value.reset_index()
     assert "FBA対応費" in set(items["品名"])
     assert int(items.loc[items["品名"] == "出荷指示作成料", "金額"].iloc[0]) == 3600
 
@@ -422,6 +422,8 @@ def test_return_freight_keeps_confirmed_and_provisional_apart():
 def test_one_table_per_sheet_with_price_and_new_item_notice():
     tables = R.sheet_tables(RESULT_WITH_LEDGER, VER)
     assert {k: len(v) for k, v in tables.items()} == {"随時連絡": 1, "返品": 3, "配送変更": 1, "新商品": 2}
+    for rows in tables.values():   # 画面は「名称 → 金額 → 内容」。名称は表の中で重ならない
+        assert all(r["名称"] and r["内容"] for r in rows) and len({r["名称"] for r in rows}) == len(rows)
     assert tables["随時連絡"][0]["単価"] == 1200 and tables["返品"][0]["返品処理料"] == 950 and tables["配送変更"][0]["単価"] == 650
     new5 = dict(tables, 新商品=[dict(tables["新商品"][0], JANコード=str(i)) for i in range(5)])
     plain = R.event_lines(R.sheet_event_rows({"新商品": new5["新商品"]}, "2026-09"), 2026, 9)
@@ -435,7 +437,7 @@ def test_ledger_draft_gives_candidates_per_request_and_needs_human_input():
     # No.16 は文面から2品目、No.18 は当たらないので汎用作業料を1行、No.19 は通常内なので候補なし
     assert [(r["依頼No"], r["品目"]) for r in rows] == [
         ("16", "汎用作業料"), ("16", "トラックチャーター（実費）"), ("18", "汎用作業料"), ("19", None)]
-    assert all(r["内容"] for r in rows) and all(r["メモ"].startswith("候補：") for r in rows[:3])
+    assert all(r["メモ"].startswith("候補：") for r in rows[:3])
     with pytest.raises(ValueError, match="依頼No.16「汎用作業料」：数量"):
         R.ledger_lines(rows, 2026, 9)
     rows[0]["数量"] = 0.5
@@ -481,7 +483,7 @@ def test_old_result_without_sheets_warns_instead_of_zero(monkeypatch, tmp_path):
     at.run()
     assert not at.exception, at.exception
     assert any("0件とは限りません" in w.value for w in at.warning)
-    items = at.dataframe[-1].value
+    items = at.table[-1].value.reset_index()
     assert len(items[items["品名"] == "FBA対応費"]) == 1
 
 
@@ -503,3 +505,22 @@ def test_event_choices_carry_price_and_map_back_to_rules():
     assert R.choice_label({"作業": "返品処理"}, VER) == "返品処理（950円/件）"
     for row in R.auto_event_rows(RESULT_WITH_LEDGER):
         assert R.choice_label(row, VER) in choices
+
+
+def test_breakdown_sheets_put_name_then_amount_then_reason():
+    rows = R.sheet_tables(RESULT_WITH_LEDGER, VER)
+    req = R.event_lines(R.sheet_event_rows(rows, "2026-09"), 2026, 9)
+    items = R.totals(R.merge_lines(R.result_lines(RESULT_WITH_LEDGER, VER) + req))["items"]
+    counts = [{"期": p, "種別": "保管料：パレット", "数量": n} for p, n in (("第1期", 2), ("第2期", 4))]
+    work = [{"日付": "2026/09/04", "作業項目": "ラベル貼り", "時間数": 0.5, "人数": 2}]
+    sheets = R.breakdown_sheets(items, RESULT_WITH_LEDGER, ["2026-09-01", "2026-09-19"], counts, work, req, rows["返品"], 2026, 9)
+    names = [n for n, _, _ in sheets]
+    assert names[0] == "請求明細" and "返品の着払い送料" in names and "出荷稼働日" in names
+    for name, data, col in sheets:
+        assert list(data[0])[1] == "金額" == col, name          # 2列目は必ず金額
+    by = {n: d for n, d, _ in sheets}
+    assert [r["金額"] for r in by["出荷稼働日"]] == [2 * 1200 + 700 + 1150, 1200 + 700 + 1150]
+    assert by["汎用作業費"][0]["金額"] == 2100 and by["保管費"][0]["金額"] == 3000
+    assert sum(r["金額"] for r in by["返品の着払い送料"]) == 6682
+    text = json.dumps([d for _, d, _ in sheets], ensure_ascii=False)
+    assert "【シート】" not in text and "（仮）" not in text and "パピー記入欄" not in text

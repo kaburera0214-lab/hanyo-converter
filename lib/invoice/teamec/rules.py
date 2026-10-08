@@ -59,7 +59,7 @@ VERSIONS = [{
     },
     # 料金表にない月限定の項目。管理費の対象外。
     "extras": [
-        {"品名": "協力費", "金額": 20000, "months": ["2026-09"],
+        {"品名": "協力費", "金額": 20000, "months": ["2026-09"], "note": "2026年9月分",   # note＝請求書に載る文
          "source": "2026-10-02 本人回答：9月までの協力費は合意済みのため請求"},
     ],
     # 丸め・控除（2026-10-02 本人回答）
@@ -261,7 +261,7 @@ def event_lines(rows, year: int, month: int):
 def extra_lines(year, month):
     ver = version(year, month)
     ym = f"{int(year)}-{int(month):02}"
-    return [line(x["品名"], x["金額"], 1, "その他", "式", x["source"])
+    return [line(x["品名"], x["金額"], 1, "その他", "式", x.get("note", x["source"]))
             for x in ver["extras"] if ym in x["months"]]
 
 
@@ -370,15 +370,39 @@ def _on(row) -> bool:
     return row.get("計上") is True or row.get("計上") == 1
 
 
+def _md(day) -> str:
+    """2026-09-07 → 9/7（表の名称用）。"""
+    try:
+        d = date.fromisoformat(str(day)[:10])
+        return f"{d.month}/{d.day}"
+    except Exception:
+        return str(day or "")
+
+
 def sheet_tables(result, ver=None) -> dict:
-    """シートごとの確認表（1シート＝1表）。各行に「計上」と金額の元になる単価を持たせる。人は「計上」を外せる。"""
+    """シートごとの確認表（1シート＝1表）の元データ。
+
+    画面では「名称 → 金額 → 内容（理由）」の順に見せる（2026-10-08 本人指示）。各行は「計上」を持ち、人が外せる。
+    名称は表の中で重ならないようにする（外す行を名称で選ぶため）。
+    """
     led = (result or {}).get("台帳") or {}
 
     def yen_(name):
         return int(price(name, ver=ver))
 
-    contacts = [{"計上": True, "発生日": r["発生日"], "受注番号": r["受注番号"], "発生内容": r["発生内容"],
-                 "ステータス": r["ステータス"], "単価": yen_("随時連絡対応（起票・調査）")} for r in led.get("随時連絡", [])]
+    def named(rows):
+        seen = {}
+        for r in rows:
+            seen[r["名称"]] = seen.get(r["名称"], 0) + 1
+            if seen[r["名称"]] > 1:
+                r["名称"] = f"{r['名称']}（{seen[r['名称']]}）"
+        return rows
+
+    contacts = named([{
+        "名称": f"{_md(r['発生日'])} {r['発生内容']}", "単価": yen_("随時連絡対応（起票・調査）"), "計上": True,
+        "内容": f"受注番号 {r['受注番号'] or 'なし'}・{r['ステータス']}" + (f"・送り状 {r['送り状番号']}" if r.get("送り状番号") else ""),
+        "発生日": r["発生日"], "受注番号": r["受注番号"], "発生内容": r["発生内容"], "ステータス": r["ステータス"]}
+        for r in led.get("随時連絡", [])])
     returns = []
     for r in led.get("返品", []):
         cod = "着払" in str(r.get("送料負担方法", ""))
@@ -392,17 +416,31 @@ def sheet_tables(result, ver=None) -> dict:
             state = f"仮：{carrier}の請求を確認"
         else:
             state = "仮：佐川・日本郵便の請求を確認"
-        returns.append({"計上": True, "到着日": r["日付"], "送り状番号": r["送り状番号"], "注文番号": r.get("注文番号", ""),
-                        "送料負担": r.get("送料負担方法", ""),
-                        "運送会社": carrier + (f"（{r['運送会社の根拠']}）" if r.get("運送会社の根拠") and carrier != "ヤマト" else ""),
-                        "返品処理料": yen_("返品処理"), "請求で確認した送料": confirmed, "パピー記入欄（仮）": r.get("パピー記入欄", ""),
-                        "状態": state, "計上する送料": (confirmed if confirmed is not None else noted) if cod else 0})
-    changes = [{"計上": True, "日付": r["日付"], "伝票番号": r["伝票番号"], "注文ID": r.get("注文ID", ""),
-                "変更前": r["変更前"], "変更後": r["変更後"], "単価": yen_("配送種別・個口数の変更")} for r in led.get("配送変更", [])]
-    new = [{"計上": True, "確認日": x["確認日"], "表示用コード": x.get("表示用コード", ""), "商品名": x.get("商品名", ""),
-            "棚番": x.get("棚番", ""), "JANコード": x["JANコード"], "根拠": x.get("根拠", "棚番が未設定→設定")}
-           for x in ((result or {}).get("新商品") or {}).get("明細", [])]
-    return {"随時連絡": contacts, "返品": returns, "配送変更": changes, "新商品": new}
+        carrier_text = carrier + (f"（{r['運送会社の根拠']}）" if r.get("運送会社の根拠") and carrier != "ヤマト" else "")
+        detail = [r.get("送料負担方法") or "送料負担の記載なし", carrier_text]
+        if cod and confirmed is None:
+            detail.append(f"パピー記入欄 {r.get('パピー記入欄') or '空欄'}（仮）")
+        if r.get("注文番号"):
+            detail.append(f"注文 {r['注文番号']}")
+        detail.append(r.get("ステータス", ""))
+        returns.append({"名称": f"{_md(r['日付'])}着 {r['送り状番号'] or r.get('注文番号') or '送り状なし'}",
+                        "返品処理料": yen_("返品処理"), "計上する送料": (confirmed if confirmed is not None else noted) if cod else 0,
+                        "計上": True, "状態": state, "内容": "・".join(x for x in detail if x),
+                        "到着日": r["日付"], "送り状番号": r["送り状番号"], "注文番号": r.get("注文番号", ""),
+                        "送料負担": r.get("送料負担方法", ""), "運送会社": carrier_text,
+                        "請求で確認した送料": confirmed, "パピー記入欄（仮）": r.get("パピー記入欄", "")})
+    changes = named([{
+        "名称": f"{_md(r['日付'])} 注文ID {r.get('注文ID') or r['伝票番号']}", "単価": yen_("配送種別・個口数の変更"), "計上": True,
+        "内容": f"{r['変更前']} → {r['変更後']}（シートの伝票番号欄 {r['伝票番号']}）",
+        "日付": r["日付"], "伝票番号": r["伝票番号"], "注文ID": r.get("注文ID", ""), "変更前": r["変更前"], "変更後": r["変更後"]}
+        for r in led.get("配送変更", [])])
+    new = named([{
+        "名称": f"{x.get('表示用コード') or x['JANコード']} {x.get('商品名', '')}".strip(), "計上": True,
+        "内容": f"棚番 {x.get('棚番', '')}・{_md(x['確認日'])}・{x.get('根拠', '棚番が未設定→設定')}",
+        "確認日": x["確認日"], "表示用コード": x.get("表示用コード", ""), "商品名": x.get("商品名", ""),
+        "棚番": x.get("棚番", ""), "JANコード": x["JANコード"], "根拠": x.get("根拠", "棚番が未設定→設定")}
+        for x in ((result or {}).get("新商品") or {}).get("明細", [])])
+    return {"随時連絡": contacts, "返品": named(returns), "配送変更": changes, "新商品": new}
 
 
 def sheet_event_rows(tables, target_ym, notice=False) -> list[dict]:
@@ -474,7 +512,7 @@ def return_freight(rows) -> tuple[int, str]:
         n = int(amount(value, "返品の着払い送料", integer=True))
         if n:
             total += n
-            parts.append(f"{r.get('到着日', '')} {n:,}円（{str(r.get('状態', '')).split('（')[0].split('：')[0]}・{str(r.get('運送会社', '')).split('（')[0]}）")
+            parts.append(f"{r.get('到着日', '')}着 {n:,}円（{str(r.get('運送会社', '')).split('（')[0]}）")
     return total, "、".join(parts)
 
 
@@ -486,7 +524,7 @@ def ledger_requests(result) -> list[dict]:
 
 
 def ledger_rows(result) -> list[dict]:
-    """依頼台帳の確認表（1表）。依頼の内容と、請求のたたき台（品目・数量・単価）を同じ行に並べる。
+    """依頼台帳の請求のたたき台（依頼×品目の行）。依頼の内容そのものは ledger_requests で別に見せる。
 
     文面に当たった品目を全部候補に出す（1つの依頼が複数行になってよい）。当たらなければ汎用作業料を1行。
     台帳で「通常内」「対応なし」の依頼は、品目を空にして1行だけ出す（＝請求しない。必要なら人が品目を入れる）。
@@ -495,8 +533,7 @@ def ledger_rows(result) -> list[dict]:
     import re
     rows = []
     for r in ((result or {}).get("台帳") or {}).get("依頼台帳", []):
-        info = {"依頼No": r["依頼No"], "日付": r["日付"], "内容": r["内容"],
-                "台帳の記入": "／".join(x for x in (r.get("対応状況", ""), r.get("作業費", ""), r.get("パピー記入", "")) if x)}
+        info = {"依頼No": r["依頼No"], "日付": r["日付"], "内容": r["内容"]}
         if any(w in str(r.get("作業費", "")) for w in LEDGER_FREE) or r.get("対応状況") == "対応なし":
             rows.append({**info, "品目": None, "数量": None, "単価": None, "メモ": "台帳で通常内・対応なしのため請求なし"})
             continue
@@ -644,3 +681,58 @@ def merge_lines(lines):
         m.pop("要約", None)
         out.append(m)
     return out
+
+
+# ---- 先方に送る内訳明細（Excel）のシート。どのシートも「名称 → 金額 → 理由」の列順（2026-10-08 本人指示）----
+def breakdown_sheets(items, result, active_days, counts, irregular_work, request_lines, return_rows, year, month):
+    """[(シート名, 行のリスト, 合計を出す列)]。社内の確認用の言葉（仮・要確認・自動など）は載せない。"""
+    ver = version(year, month)
+
+    def num(v):
+        f = float(v)
+        return int(f) if f == int(f) else f
+
+    sheets = [("請求明細", [{"品名": x["品名"], "金額": int(x["金額"]), "単価": num(x["単価"]), "数量": num(x["数量"]),
+                             "単位": x.get("単位", ""), "内容": _plain(x.get("詳細", ""))} for x in items], "金額")]
+    days = {r["日付"]: r for r in calendar_rows(year, month)}
+    d_ = dispatch(ver)
+    daily = int(price("日次締め処理", ver=ver) + price("日次運用費", ver=ver))
+    sheets.append(("出荷稼働日", [{"日付": d, "金額": days[d]["定額回数"] * d_["price"] + daily,
+                                   "出荷指示作成料": days[d]["定額回数"] * d_["price"], "日次締め処理": int(price("日次締め処理", ver=ver)),
+                                   "日次運用費": int(price("日次運用費", ver=ver)), "曜日": days[d]["曜日"], "祝日": days[d]["祝日"]}
+                                  for d in active_days], "金額"))
+    pick = result.get("出荷作業料_明細") or []
+    sheets.append(("出荷作業費", [{"注文ID": r["注文ID"], "金額": r["金額"], "単価": r["単価"], "数量": r["数量"], "サイズ": r["サイズ"],
+                                   "表示用コード": r.get("表示用コード", ""), "JANコード": r.get("JANコード", ""),
+                                   "発送日": r.get("発送日", "")} for r in pick], "金額"))
+    sheets.append(("資材費", [{"サイズ": r["サイズ"], "金額": r["金額"], "単価": r["単価"], "個口数": r["個口数"]}
+                              for r in result["資材費_サイズ別"]], "金額"))
+    sheets.append(("保管費", [{"種別": r["種別"], "金額": r["金額"], "単価": r["単価"], "平均": r["平均"],
+                               "第1期合計": r["第1期合計"], "第2期合計": r["第2期合計"]}
+                              for r in storage_summary(counts or [], year, month)], "金額"))
+    unit = price("汎用作業料", ver=ver)
+    sheets.append(("汎用作業費", [{"作業項目": r.get("作業項目", ""), "金額": yen(amount(r["時間数"]) * amount(r["人数"]) * unit),
+                                   "単価": int(unit), "時間数": num(r["時間数"]), "人数": num(r["人数"]), "日付": r.get("日付", ""),
+                                   "作業詳細": r.get("作業詳細", "")} for r in (irregular_work or [])], "金額"))
+    sheets.append(("依頼ごとの作業", [{"作業": x["品名"], "金額": int(x["金額"]), "単価": num(x["単価"]), "数量": num(x["数量"]),
+                                       "依頼": x.get("要約", ""), "内容": _plain(x.get("詳細", ""))} for x in request_lines], "金額"))
+    sheets.append(("返品の着払い送料", [{"返品": r["名称"], "金額": int(r["計上する送料"]), "運送会社": str(r.get("運送会社", "")).split("（")[0],
+                                         "送り状番号": r.get("送り状番号", ""), "到着日": r.get("到着日", "")}
+                                        for r in return_rows if _on(r) and r.get("計上する送料") not in ("", None)
+                                        and not pd_isna(r.get("計上する送料")) and int(r["計上する送料"])], "金額"))
+    piece = int(price("入庫：ピース納品", ver=ver))
+    sheets.append(("入庫", [{"表示用コード": r.get("表示用コード", ""), "金額": r["数量"] * piece, "単価": piece, "数量": r["数量"],
+                             "入庫日": r.get("入庫日", ""), "仕入先": r.get("仕入先", ""), "伝票番号": r.get("伝票番号", "")}
+                            for r in result.get("入庫", [])], "金額"))
+    return [(name, rows, col) for name, rows, col in sheets if rows]
+
+
+def _plain(text) -> str:
+    """社内向けの印（【シート】【Eシス】（自動）や「依頼 xxx／日付／」の前置き）を落として、先方に見せる文にする。"""
+    t = str(text or "")
+    parts = t.split("／")
+    if len(parts) >= 2 and parts[0].startswith("依頼 "):
+        t = f"{parts[0][3:]}（{parts[1]}）" + "／".join(parts[2:])
+    for mark in AUTO_MARKS + ("（自動）",):
+        t = t.replace(mark, "")
+    return t.strip()
