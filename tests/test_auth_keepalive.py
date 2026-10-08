@@ -391,3 +391,46 @@ def test_切れた後の依頼は控えからの再実行を案内する():
     from lib.notify import auth_alerts
     body = auth_alerts.reauth_body("yahoo", "https://example.streamlit.app")
     assert "反映できていない処理" in body and "再実行" in body
+
+
+# ---------------------------------------------------------------- 期限の控え（業務デスクが読む）
+
+def _deadline_result(key="yahoo", authorized="2026-10-07T05:43:05+00:00",
+                     deadline="2026-11-04T05:43:05+00:00"):
+    return {"key": key, "label": "Yahoo", "ok": True, "authorized_at": authorized,
+            "deadline": deadline, "warn_days": 7, "fail_days": 3}
+
+
+def test_期限の控えは再認可したときだけ中身が変わる():
+    first = ak.deadline_status([_deadline_result()])
+    assert first["connections"]["yahoo"]["deadline"] == "2026-11-04T05:43:05+00:00"
+    assert first["connections"]["yahoo"]["warn_days"] == 7
+    # 同じ認可のまま何度実行しても同じ（確認時刻や残り日数を入れていない＝コミットが増えない）
+    assert ak.deadline_status([_deadline_result()], first) == first
+    again = ak.deadline_status(
+        [_deadline_result(authorized="2026-10-30T01:00:00+00:00",
+                          deadline="2026-11-27T01:00:00+00:00")], first)
+    assert again != first
+    assert again["connections"]["yahoo"]["deadline"] == "2026-11-27T01:00:00+00:00"
+
+
+def test_期限を読めなかった回は前回の控えを消さない():
+    """認証切れや不具合で期限が取れない回に控えを空にすると、見張りごと消える。"""
+    first = ak.deadline_status([_deadline_result()])
+    broken = [{"key": "yahoo", "label": "Yahoo", "ok": False, "auth": True}]
+    assert ak.deadline_status(broken, first) == first
+    # 期限の無い接続先（NE）は載らない
+    assert "ne" not in ak.deadline_status(
+        [{"key": "ne", "label": "ネクストエンジン", "ok": True}], first)["connections"]
+
+
+def test_延ばせない接続先の結果に認可日時と期限が載る(_no_drive):
+    prov = _provider(touch=lambda: {
+        "rotated": False, "days_left": 20, "deadline_text": "x",
+        "authorized_at": "2026-10-07T05:43:05+00:00",
+        "deadline": "2026-11-04T05:43:05+00:00"})
+    prov.update({"warn_days": 7, "fail_days": 3})
+    r = ak.run_one(prov)
+    status = ak.deadline_status([r])
+    assert status["connections"]["test"]["authorized_at"] == "2026-10-07T05:43:05+00:00"
+    assert status["connections"]["test"]["fail_days"] == 3

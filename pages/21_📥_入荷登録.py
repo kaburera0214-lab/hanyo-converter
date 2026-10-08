@@ -214,7 +214,19 @@ with st.expander("🔐 NE API接続（管理者用）", expanded=False):
             except Exception as e:  # noqa: BLE001
                 st.error(f"トークン取得に失敗しました: {e}")
 
-with st.expander("🔐 Yahoo API接続（管理者用）", expanded=False):
+# 業務デスクの「再認可する」から来たとき（…/入荷登録?reauth=yahoo）は、パネルを探させず、
+# ここにボタンを出す。押すとYahooのログイン画面へ行く。
+_reauth_yahoo = st.query_params.get("reauth") == "yahoo"
+if _reauth_yahoo and yahoo_client.is_configured():
+    st.info("🔐 **Yahooの再認可**　" + yahoo_client.deadline_text(yahoo_client.token_status())
+            + "。下のボタンを押し、**店舗オーナーのYahoo ID**でログインして「同意する」を押してください。")
+    try:
+        st.link_button("🔑 Yahooにログインして認可する", yahoo_client.authorize_url(),
+                       type="primary", use_container_width=True)
+    except yahoo_client.YahooNotConfigured:
+        st.error("YAHOO_REDIRECT_URI が未設定のため、再認可のボタンを出せません。")
+
+with st.expander("🔐 Yahoo API接続（管理者用）", expanded=_reauth_yahoo):
     if not yahoo_client.is_configured():
         st.info("Secrets に YAHOO_CLIENT_ID / YAHOO_CLIENT_SECRET / YAHOO_SELLER_ID / "
                 "YAHOO_REDIRECT_URI を設定すると、Yahooの価格も自動更新（updateItems＋反映予約）"

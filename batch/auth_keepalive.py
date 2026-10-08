@@ -44,6 +44,27 @@ from lib import auth_keepalive                         # noqa: E402
 
 APP_URL = os.environ.get("APP_URL", "").strip()
 WORKFLOW = "auth-keepalive.yml"
+# 再認可の期限の控え。ワークフローがリポジトリへコミットし、業務デスク（work-desk）が読む。
+STATUS_PATH = os.path.join(ROOT, "data", "auth_status.json")
+
+
+def _write_status(results):
+    """期限の控えを書く。中身が同じなら触らない（＝コミットも増えない）。"""
+    import json
+    previous = {}
+    try:
+        with open(STATUS_PATH, encoding="utf-8") as fh:
+            previous = json.load(fh)
+    except (OSError, ValueError):
+        pass
+    status = auth_keepalive.deadline_status(results, previous)
+    if status == previous:
+        return False
+    os.makedirs(os.path.dirname(STATUS_PATH), exist_ok=True)
+    with open(STATUS_PATH, "w", encoding="utf-8", newline="\n") as fh:
+        json.dump(status, fh, ensure_ascii=False, indent=2)
+        fh.write("\n")
+    return True
 
 
 def _alert(body, audience):
@@ -114,6 +135,14 @@ def main():
     print(f"[auth_keepalive] 正常{s['ok']} / スキップ{s['skipped']} / "
           f"認証切れ{s['auth_error']} / 期限間近{s['expiring']} / 失敗{s['error']}",
           flush=True)
+
+    try:
+        if _write_status(results):
+            print("[auth_keepalive] 再認可の期限の控えを更新しました（data/auth_status.json）",
+                  flush=True)
+    except Exception as e:  # noqa: BLE001 - 控えの失敗で見張り自体を止めない
+        print(f"[auth_keepalive] WARN: 期限の控えを書けませんでした: {e}",
+              file=sys.stderr, flush=True)
 
     # 通知は最後にまとめて出す。1件の通知失敗で他の延命結果を失わないため。
     for r in results:

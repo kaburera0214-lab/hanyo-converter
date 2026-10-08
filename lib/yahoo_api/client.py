@@ -299,4 +299,13 @@ def keep_alive():
             "saved_at": after.get("saved_at", ""),
             "expires_at": after.get("expires_at", ""),
             "days_left": days_until_reauth(after),
-            "deadline_text": deadline_text(after)}
+            "deadline_text": deadline_text(after),
+            # 業務デスクなど外の画面が期限を自分で数えられるように、日時そのものも返す
+            # （サーバーの時計はUTC。時差を明示して渡す）
+            "authorized_at": _utc_iso(authorized_at(after)),
+            "deadline": _utc_iso(reauth_deadline(after))}
+
+
+def _utc_iso(value):
+    return value.replace(tzinfo=datetime.timezone.utc).isoformat(timespec="seconds") \
+        if value else ""

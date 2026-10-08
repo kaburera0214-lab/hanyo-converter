@@ -1,0 +1,12 @@
+{
+  "note": "batch/auth_keepalive.py が書く。再認可の期限がある接続先の一覧（正本は lib/auth_keepalive.py と lib/yahoo_api/client.py）",
+  "connections": {
+    "yahoo": {
+      "label": "Yahoo",
+      "authorized_at": "2026-10-07T05:43:05+00:00",
+      "deadline": "2026-11-04T05:43:05+00:00",
+      "warn_days": 7,
+      "fail_days": 3
+    }
+  }
+}

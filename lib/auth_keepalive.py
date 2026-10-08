@@ -181,6 +181,10 @@ def run_one(provider, now=None):
             days = info.get("days_left")
             text = info.get("deadline_text", "")
             state.update({"days_left": days, "deadline": text})
+            base.update({"authorized_at": info.get("authorized_at", ""),
+                         "deadline": info.get("deadline", ""),
+                         "warn_days": provider["warn_days"],
+                         "fail_days": provider.get("fail_days", 0)})
             if days is None:
                 # 「分からない」を正常に丸めない。丸めると切れるまで気づけない。
                 state.update({"last_result": "error", "last_error": text})
@@ -230,6 +234,30 @@ def run_one(provider, now=None):
 def run_all(keys=None, now=None):
     """全接続先を延命する。1つが失敗しても他は必ず実行する。"""
     return [run_one(p, now=now) for p in providers(keys)]
+
+
+def deadline_status(results, previous=None):
+    """再認可の期限がある接続先の状況（data/auth_status.json の中身）。純関数。
+
+    業務デスクがこれを読んで「あと何日」を自分で数え、再認可のタスクを出す。
+    **中身が変わるのは再認可したときだけ**になるよう、確認した時刻や残り日数は入れない
+    （毎回変わるものを入れると、1日2回コミットが増え続ける）。
+    今回期限を読めなかった接続先（認証切れ・不具合）は、前回の内容を残す
+    ＝「分からなくなった」ことで期限の見張りまで消さない。
+    """
+    connections = dict((previous or {}).get("connections") or {})
+    for r in results:
+        if r.get("authorized_at") and r.get("deadline"):
+            connections[r["key"]] = {
+                "label": r["label"],
+                "authorized_at": r["authorized_at"],
+                "deadline": r["deadline"],
+                "warn_days": r.get("warn_days"),
+                "fail_days": r.get("fail_days"),
+            }
+    return {"note": "batch/auth_keepalive.py が書く。再認可の期限がある接続先の一覧"
+                    "（正本は lib/auth_keepalive.py と lib/yahoo_api/client.py）",
+            "connections": connections}
 
 
 def summarize(results):
