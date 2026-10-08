@@ -344,6 +344,21 @@ def set_shipping_method_group(manage_number, group_id):
     return rms_api.patch(f"/es/2.0/items/manage-numbers/{manage_number}", body)
 
 
+def current_prices(manage_number):
+    """商品のSKUごとの現在の販売価格 {SKU管理番号: 価格}。
+
+    値上げ・値下げの「変更前」を画面に出すために使う（EC 施策デスクの差分プレビュー）。
+    SKU側に価格が入っていない商品では商品単位の価格で補う（_get_variants_and_price と同じ理由）。
+    """
+    variants, item_price = _get_variants_and_price(manage_number)
+    prices = {}
+    for sku, v in variants.items():
+        price = _variant_price(v) or item_price
+        if price:
+            prices[str(sku)] = int(price)
+    return prices
+
+
 def price_patch_body(sku_prices):
     """指定SKUの価格を更新するPATCHボディ。
     - standardPrice: 販売価格

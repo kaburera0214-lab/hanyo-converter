@@ -273,3 +273,18 @@ def test_empty_tasks_do_nothing(stub):
     results, failed = apply.execute({})
     assert results == [] and failed == {}
     assert stub["ne"] == [] and stub["rakuten"] == [] and stub["yahoo"] == []
+
+
+def test_current_prices_falls_back_to_item_price(monkeypatch):
+    """値上げの差分プレビュー用。SKU側に価格が無い商品は商品単位の価格で埋める。
+
+    バリエーションがあっても価格を全SKU一律で持つ商品では、SKU側が空になる。
+    そこで「価格が取れない」と出すと、変更前が空欄のまま値上げすることになる。
+    """
+    monkeypatch.setattr(rakuten_price, "_get_variants_and_price",
+                        lambda mn: ({"a-01": {"standardPrice": "4500"}, "a-02": {}}, 3980))
+    assert rakuten_price.current_prices("a") == {"a-01": 4500, "a-02": 3980}
+
+    monkeypatch.setattr(rakuten_price, "_get_variants_and_price",
+                        lambda mn: ({"a-01": {}}, None))
+    assert rakuten_price.current_prices("a") == {}      # 取れないものは黙って0にしない
