@@ -20,7 +20,7 @@ from lib.event import rms_api
 def get_item(manage_number):
     """商品を取得して主要フィールドを抜き出す。
 
-    戻り値: {manage_number, title, sp_description, pc_description,
+    戻り値: {manage_number, title, tagline, sp_description, pc_description,
              sales_description, hide_item, raw}
     """
     data = rms_api.get(f"/es/2.0/items/manage-numbers/{manage_number}")
@@ -29,6 +29,7 @@ def get_item(manage_number):
     return {
         "manage_number": manage_number,
         "title": item.get("title") or "",
+        "tagline": item.get("tagline") or "",
         "sp_description": desc.get("sp") or "",
         "pc_description": desc.get("pc") or "",
         "sales_description": item.get("salesDescription") or "",
@@ -42,6 +43,18 @@ def patch_sp_description(manage_number, sp_text):
     return rms_api.patch(
         f"/es/2.0/items/manage-numbers/{manage_number}",
         {"productDescription": {"sp": sp_text}},
+    )
+
+
+def patch_title_tagline(manage_number, title, tagline):
+    """商品名とキャッチコピーだけを更新する。
+
+    Item API 2.0 の JSON Merge Patch を使い、価格・画像・説明文など未指定の
+    フィールドには触れない。施策デスクのSEO改善から利用する。
+    """
+    return rms_api.patch(
+        f"/es/2.0/items/manage-numbers/{manage_number}",
+        {"title": str(title), "tagline": str(tagline)},
     )
 
 
