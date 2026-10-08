@@ -24,14 +24,21 @@ API = "api"          # このツールがAPIで自動反映する
 CSV = "csv"          # 人がCSVをモール管理画面へアップして反映する
 RMS_UI = "rms_ui"    # 人がモールの管理画面で直接直す
 
+# scope: どの業務の経路か。正本は1つのまま、画面ごとに関係する分だけ出す。
+# 入荷登録の画面に「クーポンは手動です」と出ても意味が無い（かえって読み飛ばされる）。
+RECEIVING = "receiving"    # 入荷登録・価格改定（hanyo-converter の画面）
+PROMO = "promo"            # 施策の実行（EC 施策デスクが GO で走らせる）
+
 
 class Route:
     def __init__(self, mall, field, label, mode, how, why="",
-                 api_symbol=None, forbidden_symbols=(), checked="", source=""):
+                 api_symbol=None, forbidden_symbols=(), checked="", source="",
+                 scope=RECEIVING):
         self.mall = mall                  # 表示名（ネクストエンジン / 楽天 / Yahoo）
         self.field = field                # 項目キー
         self.label = label                # 項目の表示名
         self.mode = mode
+        self.scope = scope                # どの業務の経路か（画面ごとに出し分ける）
         self.how = how                    # 「どう反映されるか」の一文
         self.why = why                    # CSV/手動が残っている理由（APIなら空でよい）
         self.api_symbol = api_symbol
@@ -95,6 +102,62 @@ ROUTES = [
           api_symbol="lib.yahoo_api.item_upload:upload_field_specified",
           checked="2026-09-10",
           source="https://developer.yahoo.co.jp/webapi/shopping/uploadItemFile.html"),
+
+    # ══ 施策の経路（scope=PROMO）══════════════════════════════════
+    # EC 施策デスク（AIworkspace/ec-action-desk）が GO を押されたときに通る道。
+    # API のものはそのまま実行し、手動のものは作業指示カードにして人に渡す。
+    # 「APIが無い」と書いた経路は、モールが出したら必ずここを直す（下の見張りが落ちる）。
+    Route("楽天", "point_campaign", "ポイント変倍",
+          API, "RMS Item API 2.0 の pointCampaign で自動設定し、終了後は自動で解除します。",
+          api_symbol="lib.event.point:set_campaign",
+          checked="2026-09-18", scope=PROMO),
+
+    Route("楽天", "coupon", "クーポンの発行・削除",
+          API, "RMS クーポンAPIで自動発行し、終了時は削除まで行います。",
+          api_symbol="lib.event.coupon:issue",
+          checked="2026-09-18", scope=PROMO),
+
+    Route("楽天", "sp_description", "商品ページ（スマホ用説明文）",
+          API, "RMS Item API 2.0 で自動更新します。",
+          api_symbol="lib.autopage.rms_items:patch_sp_description",
+          checked="2026-09-18", scope=PROMO),
+
+    Route("楽天", "item_name", "商品名・キャッチコピー",
+          API, "RMS Item API 2.0 のJSON Merge Patchで、商品名とキャッチコピーだけを自動更新します。",
+          api_symbol="lib.autopage.rms_items:patch_title_tagline",
+          checked="2026-09-18", scope=PROMO),
+
+    Route("楽天", "item_image", "商品画像（サムネイル）",
+          RMS_UI, "R-Cabinetへの登録と商品への割り当てを人が行います（施策デスクが作業指示カードを出します）。",
+          why="画像の登録と割り当てをAPIで行う実装がまだ無い",
+          forbidden_symbols=("lib.autopage.rms_items:set_images",),
+          checked="2026-09-18", scope=PROMO),
+
+    Route("楽天", "rpp_bid", "RPP・TDA の入札",
+          CSV, "施策デスクが商品別レポートを基に入札・除外を判断してCSVを自動生成し、"
+               "人はRMSへアップロードだけ行います。",
+          why="入札を書き換えるAPIが公開されていないため、最後のCSVアップロードだけ手動",
+          forbidden_symbols=("lib.ads.rakuten_rpp:set_bid",),
+          checked="2026-09-18", scope=PROMO,
+          source="https://webservice.rms.rakuten.co.jp/merchant-portal/view"),
+
+    Route("楽天", "ss_search_entry", "スーパーSALE サーチのエントリー",
+          RMS_UI, "RMSのイベント申請画面で人が申し込みます（施策デスクが作業指示カードを出します）。",
+          why="エントリーのAPIが公開されていない（10%以上の値引きが条件・締切18時・在庫0は不合格）",
+          forbidden_symbols=("lib.event.ss_search:entry",),
+          checked="2026-09-18", scope=PROMO),
+
+    Route("Yahoo", "coupon", "クーポンの発行",
+          RMS_UI, "ストアクリエイターProの販促画面で人が作成します（施策デスクが作業指示カードを出します）。",
+          why="クーポン発行のAPIが公開されていない",
+          forbidden_symbols=("lib.yahoo_api.coupon:issue",),
+          checked="2026-09-18", scope=PROMO),
+
+    Route("Yahoo", "item_reach_bid", "アイテムリーチの入札",
+          RMS_UI, "Yahoo!広告の管理画面で人が入力します（施策デスクが作業指示カードを出します）。",
+          why="入札を書き換えるAPIが公開されていない",
+          forbidden_symbols=("lib.yahoo_api.ads:set_bid",),
+          checked="2026-09-18", scope=PROMO),
 ]
 
 _BY_KEY = {r.key: r for r in ROUTES}
@@ -136,19 +199,28 @@ def get(mall, field):
     return _BY_KEY[(mall, field)]
 
 
-def manual_routes():
+def routes(scope=None):
+    """経路の一覧。scope を渡すとその業務の分だけ返す（既定は全部）。"""
+    return [r for r in ROUTES if scope is None or r.scope == scope]
+
+
+def manual_routes(scope=None):
     """人の作業が残っている経路（＝忘れると永久に反映されない経路）。"""
-    return [r for r in ROUTES if r.mode != API]
+    return [r for r in routes(scope) if r.mode != API]
 
 
-def api_routes():
-    return [r for r in ROUTES if r.mode == API]
+def api_routes(scope=None):
+    return [r for r in routes(scope) if r.mode == API]
 
 
-def summary_line():
-    """画面上部のキャプション用。API自動のモールと、手動が残る項目を1行で。"""
-    malls = sorted({r.mall for r in api_routes()})
-    manual = manual_routes()
+def summary_line(scope=RECEIVING):
+    """画面上部のキャプション用。API自動のモールと、手動が残る項目を1行で。
+
+    既定が RECEIVING なのは、この一文が入荷登録の画面のものだから。
+    関係ない業務の経路（クーポン・広告）まで並べると読み飛ばされる。
+    """
+    malls = sorted({r.mall for r in api_routes(scope)})
+    manual = manual_routes(scope)
     text = "・".join(malls) + "は自動更新されます"
     if manual:
         text += "（" + "／".join(f"{r.mall}の{r.label}だけ手動" for r in manual) + "）"
