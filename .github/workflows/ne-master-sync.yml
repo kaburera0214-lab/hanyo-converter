@@ -3,7 +3,12 @@ name: ne-master-sync-weekly
 on:
   schedule:
     - cron: "0 20 * * 0"   # 毎週日曜20:00 UTC = 月曜05:00 JST
-  workflow_dispatch: {}     # 手動実行も可
+  workflow_dispatch:        # 手動実行も可
+    inputs:
+      probe:
+        description: "在庫の項目が使えるかだけ確かめる（項目名しか出さない・保存しない）"
+        type: boolean
+        default: false
 
 concurrency:
   group: ne-master-sync
@@ -33,4 +38,11 @@ jobs:
           # PRODUCT_MASTER_FOLDER_ID はコード既定値を使うため未設定でよい（設定するなら secrets へ）
           CHATWORK_API_TOKEN: ${{ secrets.CHATWORK_API_TOKEN }}
           APP_URL: ${{ secrets.APP_URL }}   # 再認可手順の案内リンク（未設定でも動く）
-        run: python batch/ne_master_sync.py
+          IN_PROBE: ${{ inputs.probe }}
+        run: |
+          # 入力は環境変数で受ける（式をコマンドに直接埋め込まない）
+          if [ "$IN_PROBE" = "true" ]; then
+            python batch/ne_master_sync.py --probe
+          else
+            python batch/ne_master_sync.py
+          fi
