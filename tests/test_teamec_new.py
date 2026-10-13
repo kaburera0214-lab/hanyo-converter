@@ -555,3 +555,15 @@ def test_notion_long_text_is_split_and_joined_back():
     assert N._rt("") == [{"type": "text", "text": {"content": ""}}] and N._read_rt(None) == ""
     with pytest.raises(ValueError, match="超えています"):
         N._rt("x" * (N.RT_CHUNK * N.RT_MAX_ITEMS + 1))
+
+
+def test_mf_items_have_no_detail_like_the_old_invoices():
+    from lib.invoice import mf_export
+    from lib.invoice.teamec import ui
+    calc = R.totals(R.merge_lines(R.daily_lines(2026, 9, ["2026-09-01"]) + R.result_lines(SAMPLE_RESULT, VER)))
+    items = ui._mf_items(calc)
+    assert all(set(it) == {"品名", "単価", "数量", "金額"} for it in items)
+    rows = mf_export.build_rows({"取引先名称": "x"}, items)
+    detail, unit = mf_export.MF_COLUMNS.index("詳細"), mf_export.MF_COLUMNS.index("単位")
+    assert all(r[detail] == "" and r[unit] == "" for r in rows[1:])
+    assert mf_export.calc_totals(items) == (calc["subtotal"], calc["tax"], calc["total"])

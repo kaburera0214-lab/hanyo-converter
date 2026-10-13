@@ -568,13 +568,16 @@ def render(year, month, client, db_ids=None, notion_ready=False):
 
 
 def _mf_items(calc):
-    """試算の明細を MF 取込用の品目にする（単価・数量は整数か小数のまま。金額は明細の値）。"""
+    """試算の明細を MF 取込用の品目にする。従来の請求と同じ作り＝品名・単価・数量・金額だけ。
+
+    詳細・単位は入れない（請求書の品目の下に長い説明が印字されてしまうため。2026-10-13 本人指示）。
+    細かい明細は内訳明細（Excel）に出す。
+    """
     out = []
     for it in calc["items"]:
         q = it["数量"]
         out.append({"品名": it["品名"], "単価": int(it["単価"]) if it["単価"] == int(it["単価"]) else float(it["単価"]),
-                    "数量": int(q) if q == int(q) else float(q), "単位": it.get("単位", ""),
-                    "詳細": R._plain(it.get("詳細", ""))[:200], "金額": int(it["金額"])})
+                    "数量": int(q) if q == int(q) else float(q), "金額": int(it["金額"])})
     return out
 
 
