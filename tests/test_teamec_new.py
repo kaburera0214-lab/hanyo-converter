@@ -406,7 +406,10 @@ def test_return_freight_keeps_confirmed_and_provisional_apart():
     rows = R.return_freight_rows(RESULT_WITH_LEDGER)
     assert [(r["ヤマト請求額"], r["パピー記入欄"], r["計上する送料"]) for r in rows] == [
         (4782, "4782", 4782), (None, "1900", 1900), (None, "", 0)]
-    assert [r["送料の状態"] for r in rows] == ["確定", "仮", "元払い"] and rows[1]["運送会社"] == "日本郵便"
+    assert [r["送料確認"] for r in rows] == [True, False, True] and rows[1]["運送会社"] == "日本郵便"
+    with pytest.raises(ValueError, match="仮のまま"):   # 仮の送料が残っていたら金額を出さない
+        R.return_freight(rows)
+    rows[1]["送料確認"] = True              # 請求を確かめてチェック → 確定
     assert R.return_freight(rows)[0] == 6682
     rows[1]["計上する送料"] = 1727          # 請求を見て人が直す
     assert R.return_freight(rows)[0] == 6509
@@ -536,5 +539,19 @@ def test_breakdown_sheets_put_name_then_amount_then_reason():
     assert [r["金額"] for r in by["出荷稼働日"]] == [2 * 1200 + 700 + 1150, 1200 + 700 + 1150]
     assert by["汎用作業費"][0]["金額"] == 2100 and by["保管費"][0]["金額"] == 3000
     assert sum(r["金額"] for r in by["返品の着払い送料"]) == 6682
+    issues = [{"区分": "着払い送料の確認", "重さ": "要確認"}, {"区分": "送り状なし", "重さ": "要確認"}, {"区分": "参考：x", "重さ": "参考"}]
+    assert [i["区分"] for i in R.open_issues({"要確認": issues})] == ["送り状なし"]   # 表の中で確かめるものは重ねて聞かない
+
     text = json.dumps([d for _, d, _ in sheets], ensure_ascii=False)
     assert "【シート】" not in text and "（仮）" not in text and "パピー記入欄" not in text
+
+
+def test_notion_long_text_is_split_and_joined_back():
+    from lib.invoice import notion_store as N
+    text = "あ" * 2725                      # 2026-10-13 に発行履歴の保存で実際に超えた長さ
+    payload = N._rt(text)
+    assert len(payload) == 2 and all(len(x["text"]["content"]) <= 2000 for x in payload)
+    assert N._read_rt({"rich_text": [{"plain_text": x["text"]["content"]} for x in payload]}) == text
+    assert N._rt("") == [{"type": "text", "text": {"content": ""}}] and N._read_rt(None) == ""
+    with pytest.raises(ValueError, match="超えています"):
+        N._rt("x" * (N.RT_CHUNK * N.RT_MAX_ITEMS + 1))

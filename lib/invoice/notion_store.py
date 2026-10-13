@@ -157,9 +157,17 @@ def _client():
     return Client(auth=_get_key())
 
 
+RT_CHUNK = 1800     # Notion は rich_text の1要素が2,000字まで（2026-10-13 発行履歴の保存で超過して失敗）
+RT_MAX_ITEMS = 100  # 1プロパティに入る要素の数
+
+
 def _rt(value):
-    """rich_text用のペイロードを作る。"""
-    return [{"type": "text", "text": {"content": str(value) if value is not None else ""}}]
+    """rich_text用のペイロードを作る。長い文字列は分けて入れる（読む側 _read_rt がつなぐ）。"""
+    text = str(value) if value is not None else ""
+    chunks = [text[i:i + RT_CHUNK] for i in range(0, len(text), RT_CHUNK)] or [""]
+    if len(chunks) > RT_MAX_ITEMS:
+        raise ValueError(f"Notionに保存できる長さ（{RT_CHUNK * RT_MAX_ITEMS:,}字）を超えています（{len(text):,}字）")
+    return [{"type": "text", "text": {"content": c}} for c in chunks]
 
 
 def _title(value):
@@ -168,7 +176,7 @@ def _title(value):
 
 def _read_rt(prop):
     items = prop.get("rich_text", []) if prop else []
-    return items[0]["plain_text"] if items else ""
+    return "".join(i.get("plain_text", "") for i in items)
 
 
 def _read_title(prop):

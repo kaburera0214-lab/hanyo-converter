@@ -117,12 +117,12 @@ def _table(rows, cols=None, first=()):
 SHEET_COLUMNS = {
     "FBA": {"計上": 60, "受注番号": 130, "金額": 90, "発送日": 110, "注文ID": 110},
     "随時連絡": {"計上": 60, "発生内容": 150, "金額": 90, "発生日": 110, "受注番号": 210, "ステータス": 130, "送り状番号": 150},
-    "返品": {"計上": 55, "送り状番号": 200, "返品処理料": 90, "計上する送料": 105, "送料の状態": 85, "ヤマト請求額": 90,
+    "返品": {"計上": 55, "送り状番号": 200, "返品処理料": 90, "計上する送料": 105, "送料確認": 85, "ヤマト請求額": 90,
              "パピー記入欄": 85, "運送会社": 85, "送料負担": 70, "到着日": 95},
     "配送変更": {"計上": 60, "注文ID": 110, "金額": 90, "日付": 110, "変更前": 150, "変更後": 150, "伝票番号欄": 120},
     "新商品": {"計上": 60, "表示用コード": 130, "金額": 110, "商品名": 220, "棚番": 110, "確認日": 110, "根拠": 200},
 }
-CHECK_COLUMNS = ("計上",)
+CHECK_COLUMNS = ("計上", "送料確認")
 MONEY_COLUMNS = ("金額", "返品処理料", "計上する送料", "ヤマト請求額")
 ATTENTION = "background-color: #fff3b0; color: #1a1a1a"   # 入力・確認が要る行の色
 
@@ -347,11 +347,14 @@ def render(year, month, client, db_ids=None, notion_ready=False):
 
             st.markdown(f"##### 返品交換 ｜ [シートを開く]({links.get('返品交換', '')})")
             if sheets_init["返品"]:
-                st.caption("送料の状態が「確定」＝送り状番号がヤマトの請求にあった金額（税別）。「仮」（色のついた行）＝ヤマトの請求に無く、"
-                           "シートのパピー記入欄の金額を仮に入れています。運送会社の列の会社（佐川・日本郵便）の請求を見て、"
-                           "「計上する送料」を直してください。")
-                sheets_now["返品"] = _confirm_table(prefix + "sh_returns", "返品", sheets_init["返品"], edit=("計上する送料",),
-                                                    attention=lambda r: r["送料の状態"] == "仮")
+                st.caption("「送料確認」にチェックがある行は、送料が確定しています（送り状番号がヤマトの請求にあった金額・税別）。"
+                           "色のついた行は仮の金額です（ヤマトの請求に無く、シートのパピー記入欄の金額を入れています）。"
+                           "運送会社の列の会社（佐川・日本郵便）の請求を見て「計上する送料」を直し、"
+                           "**「送料確認」にチェックを入れると確定になります。**")
+                done_now = {i: bool(r.get("送料確認")) for i, r in enumerate(sheets_now["返品"])}
+                shown_ret = [{**r, "送料確認": done_now.get(i, r["送料確認"])} for i, r in enumerate(sheets_init["返品"])]
+                sheets_now["返品"] = _confirm_table(prefix + "sh_returns", "返品", shown_ret, edit=("計上する送料", "送料確認"),
+                                                    attention=lambda r: not r["送料確認"])
                 if st.checkbox("注文番号・運送会社の根拠も見る", key=prefix + "ret_more"):
                     _table(sheets_now["返品"], ["送り状番号", "注文番号", "運送会社の根拠"])
             cod_extra = st.number_input("返品交換シートに無い着払い送料（税抜合計・円）", min_value=0, value=cod_extra, step=1,
@@ -611,8 +614,9 @@ def _issue_section(calc, result, source, client, year, month, prefix, db_ids, no
         return
 
     blockers = []
-    must = [i for i in result.get("要確認", []) if i.get("重さ") != "参考"]
-    if must and not st.checkbox(f"照合結果の要確認 {len(must)}件を確認した", key=prefix + "ack_review"):
+    must = R.open_issues(result)   # 確認表の中で確かめるもの（返品の送料など）は、ここで重ねて聞かない
+    if must and not st.checkbox(f"照合結果の要確認 {len(must)}件（{'・'.join(sorted({i['区分'] for i in must}))}）を確認した",
+                                key=prefix + "ack_review"):
         blockers.append("照合結果の要確認が未確認です")
     prev = []
     if notion_ready:

@@ -411,10 +411,12 @@ def sheet_tables(result, ver=None) -> dict:
     for r in led.get("返品", []):
         cod = "着払" in str(r.get("送料負担方法", ""))
         confirmed, noted = r.get("着払い送料"), _yen_or_none(r.get("パピー記入欄"))
-        state = "元払い" if not cod else "確定" if confirmed is not None else "仮"
+        # 送料確認＝この送料で確定してよいか。ヤマト請求で確かめられたもの・元払いは最初から確定。
+        # それ以外（仮）は、人が運送会社の請求を見て金額を直し、チェックを入れて確定にする（2026-10-13 本人指示）
         returns.append({"送り状番号": r["送り状番号"], "返品処理料": yen_("返品処理"),
                         "計上する送料": (confirmed if confirmed is not None else noted) if cod else 0, "計上": True,
-                        "送料の状態": state, "ヤマト請求額": confirmed, "パピー記入欄": r.get("パピー記入欄", ""),
+                        "送料確認": (not cod) or confirmed is not None,
+                        "ヤマト請求額": confirmed, "パピー記入欄": r.get("パピー記入欄", ""),
                         "運送会社": r.get("運送会社", ""), "送料負担": r.get("送料負担方法", ""), "到着日": r["日付"],
                         "注文番号": r.get("注文番号", ""), "運送会社の根拠": r.get("運送会社の根拠", "")})
     changes = [{"注文ID": r.get("注文ID") or r["伝票番号"], "金額": yen_("配送種別・個口数の変更"), "計上": True,
@@ -499,6 +501,10 @@ def return_freight(rows) -> tuple[int, str]:
                                  "運送会社の請求を確認して「計上する送料」に入れてください（請求しないなら0）")
             continue
         n = int(amount(value, "返品の着払い送料", integer=True))
+        if "着払" in str(r.get("送料負担", "")) and not (r.get("送料確認") is True or r.get("送料確認") == 1):
+            raise ValueError(f"返品（送り状 {r.get('送り状番号') or 'なし'}）：着払い送料が仮のままです。"
+                             f"{r.get('運送会社') or '運送会社'}の請求で金額を確かめ、「計上する送料」を直して"
+                             "「送料確認」にチェックを入れてください")
         if n:
             total += n
             parts.append(f"{r.get('到着日', '')}着 {n:,}円（{r.get('運送会社', '')}）")
@@ -730,3 +736,13 @@ def _plain(text) -> str:
 def new_item_prices(ver=None) -> list[int]:
     """新商品 初期設定で選べる単価（通常・5SKU以上・10SKU以上）。"""
     return [int(price("新商品 初期設定", i, ver)) for i in range(3)]
+
+
+# 画面の確認表の中で人が確かめる要確認（区分）。これらは「要確認を確認した」のチェックを別に求めない
+IN_TABLE_ISSUES = ("着払い送料の確認", "着払い送料が不明", "着払い送料の相違")
+
+
+def open_issues(result) -> list[dict]:
+    """確認表では片付かない要確認（発行の前に、確認したことのチェックが要るもの）。"""
+    return [i for i in (result or {}).get("要確認", [])
+            if i.get("重さ") != "参考" and i.get("区分") not in IN_TABLE_ISSUES]
