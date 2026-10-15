@@ -32,6 +32,11 @@ on:
         description: "開始日が空のとき、直近この日数に更新のあった伝票を取る"
         required: false
         default: "4"
+      prefix:
+        description: "保存名の頭。分析用の過去分は ne_row_history（GapBoardの取り込みに混ぜない）"
+        type: choice
+        options: [ne_order_rows, ne_row_history]
+        default: ne_order_rows
 
 concurrency:
   group: ne-keepalive
@@ -63,6 +68,7 @@ jobs:
           IN_FROM: ${{ inputs.from }}
           IN_TO: ${{ inputs.to }}
           IN_DAYS: ${{ inputs.days }}
+          IN_PREFIX: ${{ inputs.prefix }}
         run: |
           # 入力は環境変数で受ける（式をコマンドに直接埋め込まない）
           ARGS=""
@@ -74,4 +80,4 @@ jobs:
           else
             ARGS="--days ${IN_DAYS:-4}"
           fi
-          python batch/ne_order_rows.py $ARGS
+          python batch/ne_order_rows.py $ARGS --prefix "${IN_PREFIX:-ne_order_rows}"

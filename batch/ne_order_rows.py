@@ -27,6 +27,8 @@
     python batch/ne_order_rows.py --probe                          # 項目名の確認だけ（API 1回）
     python batch/ne_order_rows.py --from 2025-05-01 --to 2026-10-07  # 受注日の範囲で全部
     python batch/ne_order_rows.py --days 4                         # 直近4日に更新のあった伝票
+    python batch/ne_order_rows.py --from 2017-04-01 --to 2024-11-12 --prefix ne_row_history
+                                                       # 分析用の過去分（GapBoardの取り込みに混ぜない名前で保存）
 """
 import argparse
 import csv
@@ -50,6 +52,9 @@ ROW_EP = "api_v1_receiveorder_row/search"
 CALL_BUDGET = 60         # このバッチ1回で使ってよい呼び出しの上限
 PAGE_LIMIT = 10000       # 1回で取る件数（NE searchの上限）
 DRIVE_PREFIX = "ne_order_rows"
+# 分析用に過去分をまとめて取るときの保存名。GapBoard は ne_order_rows_* を毎朝全部取り込むので、
+# 別の名前にして混ぜない（2026-10-15 粗利率の推移の分析で 2017年からの明細が要った）
+PREFIX_ALLOWED = ("ne_order_rows", "ne_row_history")
 
 JST = datetime.timezone(datetime.timedelta(hours=9))
 
@@ -231,7 +236,7 @@ def export(args):
         print("[ne_order_rows] 更新のあった伝票はありませんでした（保存なし）。", flush=True)
         return 0
 
-    name = drive_master.upload_versioned(to_csv(rows), DRIVE_PREFIX, master_store.folder_id())
+    name = drive_master.upload_versioned(to_csv(rows), args.prefix, master_store.folder_id())
     orders = len({r.get("receive_order_row_receive_order_id") for r in rows})
     print("[ne_order_rows] OK saved={} 明細{}行・伝票{}件・呼び出し{}回".format(
         name, len(rows), orders, calls), flush=True)
@@ -248,6 +253,8 @@ def main():
                         help="受注日の終了（YYYY-MM-DD）。省略時は今日")
     parser.add_argument("--days", type=int, default=4,
                         help="--from が無いとき、直近この日数に更新のあった伝票を取る")
+    parser.add_argument("--prefix", default=DRIVE_PREFIX, choices=PREFIX_ALLOWED,
+                        help="ドライブに保存するファイル名の頭。分析用の過去分は ne_row_history")
     args = parser.parse_args()
 
     try:
