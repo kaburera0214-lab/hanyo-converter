@@ -10,6 +10,8 @@ NE商品マスタをAPIで全件取得し、Driveのマスタ（master_auto_*）
   在庫の項目が使えるかは全件取得の前に1件だけ引いて確かめ、**通った項目だけ**を足す。
   取れなかった項目は列ごと出さない（0 で埋めない。「在庫0」と「取れなかった」を取り違えないため）。
   在庫は取得した時点の値。ファイル名の日付より新しい動きは入っていない。
+- **区分の列**（商品区分/取扱区分/仕入先コード）も足す（2026-10-16〜）。在庫の項目と同じ1回で確かめ、通った項目だけ。
+- **セット商品マスタ**も別ファイル（setgoods_auto_*）で保存する（2026-10-16〜）。
 - 出力ヘッダは正規の日本語名にそろえるため、master_store がそのまま読める。
 - 手動アップ（master_*）とAPI自動（master_auto_*）はファイル名で区別できる。
 
@@ -44,6 +46,32 @@ STOCK_FIELD_MAP = {
 STOCK_ORDER = list(STOCK_FIELD_MAP.values())
 STOCK_KEY_COLUMN = "在庫数"     # これが無ければ「在庫を取れなかった」とみなす
 
+# 区分の項目 → 列名（2026-10-16〜）。必須ではない。並びは在庫の列の後ろ。
+# 楽天の納期・出荷リードタイムの分類（在庫商品／週1・隔週の受注発注／直送）を決めるのに使う。
+# 商品区分＝goods_type（通常・受注発注・予約など）、取扱区分＝merchandise（取扱中・取扱中止など）。
+# 受注明細の received_time_goods_type / merchandise と同じ名前の付け方。
+# 在庫の項目と一緒に1回で確かめるので、API の呼び出しは増えない。
+KUBUN_FIELD_MAP = {
+    "goods_type_id": "商品区分ID",
+    "goods_type_name": "商品区分",
+    "goods_merchandise_id": "取扱区分ID",
+    "goods_merchandise_name": "取扱区分",
+    "goods_supplier_id": "仕入先コード",
+}
+KUBUN_ORDER = list(KUBUN_FIELD_MAP.values())
+OPTIONAL_FIELD_MAP = {**STOCK_FIELD_MAP, **KUBUN_FIELD_MAP}
+
+# NEセット商品マスタ（2026-10-16〜）。楽天のセットSKUは商品マスタに無く、セット商品マスタのコードになる。
+# 1行＝セットの構成品1つ（同じセット商品コードが構成品の数だけ並ぶ）。
+SETGOODS_FIELD_MAP = {
+    "set_goods_id": "セット商品コード",
+    "set_goods_name": "セット商品名",
+    "set_goods_detail_goods_id": "構成商品コード",
+    "set_goods_detail_quantity": "構成数量",
+    "set_goods_representation_id": "代表商品コード",
+}
+SETGOODS_ORDER = list(SETGOODS_FIELD_MAP.values())
+
 # APIは呼び出し回数で課金されるため、1回で多く取得して呼び出し回数を最小化する
 # （10万件: 1万件/回なら約11回、1000件/回だと約101回）。
 PAGE_LIMIT = 10000
@@ -75,13 +103,14 @@ def _try(fields):
 
 
 def check_stock_fields():
-    """在庫の項目のうち、この環境で使えるものを返す。(使える, 使えない)。
+    """在庫と区分の項目のうち、この環境で使えるものを返す。(使える, 使えない)。
 
     まず全部まとめて1回。弾かれたら、エラー文に名前が出た項目を外して投げ直し、
     名前が分からなければ1つずつ確かめる。呼び出しは多くても「項目数+2」回。
+    （名前は在庫の項目だけだった頃のまま。区分の項目も同じ1回で確かめる）
     """
-    alive, dead = list(STOCK_FIELD_MAP), []
-    for _ in range(len(STOCK_FIELD_MAP)):
+    alive, dead = list(OPTIONAL_FIELD_MAP), []
+    for _ in range(len(OPTIONAL_FIELD_MAP)):
         if not alive:
             return alive, dead
         ok, error = _try(["goods_id"] + alive)
@@ -97,7 +126,7 @@ def check_stock_fields():
         return alive, dead
 
     alive, dead = [], []
-    for f in STOCK_FIELD_MAP:
+    for f in OPTIONAL_FIELD_MAP:
         ok, _error = _try(["goods_id", f])
         (alive if ok else dead).append(f)
     return alive, dead
@@ -121,9 +150,9 @@ def fetch_master(on_progress=None):
     返り値: (df, jan_ok)。jan_okがFalseならJAN列が空（JANスキャンに影響）。
     ※NE searchの count はそのページの件数を返すため終了判定には使わず、
       count APIの総件数(total)で offset>=total まで回す（呼び出し回数も最小化）。"""
-    stock_fields, _unavailable = check_stock_fields()
+    optional_fields, _unavailable = check_stock_fields()
     field_map = dict(FIELD_MAP)
-    field_map.update({f: STOCK_FIELD_MAP[f] for f in stock_fields})
+    field_map.update({f: OPTIONAL_FIELD_MAP[f] for f in optional_fields})
     fields = ",".join(field_map.keys())
     total = total_count()
     rows, offset = [], 0
@@ -141,11 +170,16 @@ def fetch_master(on_progress=None):
 
     df = pd.DataFrame(rows)
     df = df.rename(columns={k: v for k, v in field_map.items() if k in df.columns})
-    keep = [c for c in CANONICAL_ORDER + STOCK_ORDER if c in df.columns]
+    keep = [c for c in CANONICAL_ORDER + STOCK_ORDER + KUBUN_ORDER if c in df.columns]
     df = df[keep] if keep else df
     jan_ok = ("JANコード" in df.columns
               and df["JANコード"].astype(str).str.strip().replace("nan", "").ne("").any())
     return df, jan_ok
+
+
+def missing_kubun_columns(df):
+    """このマスタに入っていない区分の列名。空なら全部そろっている。"""
+    return [c for c in KUBUN_ORDER if c not in df.columns]
 
 
 def save_master_auto(df, folder_id):
@@ -153,3 +187,30 @@ def save_master_auto(df, folder_id):
     from lib.invoice import drive_master
     data = df.to_csv(index=False, lineterminator="\r\n").encode("utf-8-sig")
     return drive_master.upload_versioned(data, "master_auto", folder_id)
+
+
+def fetch_setgoods():
+    """NEセット商品マスタを全件取得し、1行＝構成品1つの DataFrame を返す。
+
+    セット商品の検索は商品マスタと違い総件数の API を使わず、1ページが上限に満たなかったら終わりにする。
+    1件も取れなかったときは空の DataFrame（列だけ）を返す。読み手は「0件」を取得失敗と区別すること
+    （このバッチは0件を失敗として扱う）。
+    """
+    fields = ",".join(SETGOODS_FIELD_MAP)
+    rows, offset = [], 0
+    for _ in range(MAX_PAGES):
+        data = client.call("api_v1_master_setgoods/search",
+                           {"fields": fields, "limit": str(PAGE_LIMIT), "offset": str(offset)}).get("data") or []
+        rows.extend(data)
+        offset += len(data)
+        if len(data) < PAGE_LIMIT:
+            break
+    df = pd.DataFrame(rows, columns=list(SETGOODS_FIELD_MAP))
+    return df.rename(columns=SETGOODS_FIELD_MAP)[SETGOODS_ORDER]
+
+
+def save_setgoods_auto(df, folder_id):
+    """セット商品マスタを setgoods_auto_YYYYMMDD_NNN.csv としてDriveへ保存し、ファイル名を返す。"""
+    from lib.invoice import drive_master
+    data = df.to_csv(index=False, lineterminator="\r\n").encode("utf-8-sig")
+    return drive_master.upload_versioned(data, "setgoods_auto", folder_id)
