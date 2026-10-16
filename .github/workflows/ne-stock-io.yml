@@ -1,0 +1,76 @@
+name: ne-stock-io
+
+# ネクストエンジンの在庫入出庫履歴のうち「入庫」を取り出して、
+# Google ドライブへ ne_stock_in_YYYYMMDD_NNN.csv として保存する。
+# 中国から仕入れた商品（さくら代行の発送）を、入荷した時期の入庫で NE の商品コードに紐づけるため。
+# 突き合わせは import-cost（ローカル）が毎朝ドライブから取って行う。
+#
+# このリポジトリは公開。入庫の中身をログに出さない・artifact に上げない。
+# 出力先は Google ドライブ（非公開）だけ。ログに出るのは件数とファイル名だけ。
+#
+# concurrency group は auth-keepalive.yml と同じ "ne-keepalive"。
+# NEはトークンが再発行されると旧トークンが即失効するため、延命バッチと同時に走らせない。
+
+on:
+  schedule:
+    - cron: "0 21 * * *"    # 毎日 21:00 UTC = 翌06:00 JST（import-cost の取得 07:20 の前）
+  workflow_dispatch:
+    inputs:
+      probe:
+        description: "項目名の確認だけして終わる（値は出さない）"
+        type: boolean
+        default: false
+      from:
+        description: "入出庫日の開始 (YYYY-MM-DD)。入れると範囲で全部取る（過去分の取り込み用）"
+        required: false
+        default: ""
+      to:
+        description: "入出庫日の終了 (YYYY-MM-DD)。空なら今日"
+        required: false
+        default: ""
+      days:
+        description: "開始日が空のとき、直近この日数に作られた入庫を取る"
+        required: false
+        default: "7"
+
+concurrency:
+  group: ne-keepalive
+  cancel-in-progress: false
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install pandas requests google-api-python-client google-auth
+
+      - name: NE stock in
+        env:
+          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          NE_CLIENT_ID: ${{ secrets.NE_CLIENT_ID }}
+          NE_CLIENT_SECRET: ${{ secrets.NE_CLIENT_SECRET }}
+          CHATWORK_API_TOKEN: ${{ secrets.CHATWORK_API_TOKEN }}
+          IN_PROBE: ${{ inputs.probe }}
+          IN_FROM: ${{ inputs.from }}
+          IN_TO: ${{ inputs.to }}
+          IN_DAYS: ${{ inputs.days }}
+        run: |
+          # 入力は環境変数で受ける（式をコマンドに直接埋め込まない）
+          ARGS=""
+          if [ "$IN_PROBE" = "true" ]; then
+            ARGS="--probe"
+          elif [ -n "$IN_FROM" ]; then
+            ARGS="--from $IN_FROM"
+            if [ -n "$IN_TO" ]; then ARGS="$ARGS --to $IN_TO"; fi
+          else
+            ARGS="--days ${IN_DAYS:-7}"
+          fi
+          python batch/ne_stock_io.py $ARGS
