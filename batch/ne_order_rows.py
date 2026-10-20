@@ -106,6 +106,17 @@ BASE_CANDIDATES = [
 ]
 
 
+# 取り出しにはまだ入れず、--probe で「あるか」だけ確かめる項目（2026-10-20 ヤマト運賃チェック用）。
+# 発送伝票番号(送り状番号)がNE受注のどの項目に入るかを確かめる。見つかったら BASE_CANDIDATES へ移す。
+# 値は出さない（項目名と値の有無だけ）。
+PROBE_ONLY = [
+    "receive_order_delivery_cut_form_id",        # 発送伝票番号（送り状番号）の本命
+    "receive_order_delivery_id",                 # 発送方法ID
+    "receive_order_delivery_name",               # 発送方法名
+    "receive_order_delivery_cut_form_note",      # 発送伝票備考
+]
+
+
 def _try(fields):
     """この項目の組で1件引けるか。(ok, 取れた行 or エラー文)。"""
     try:
@@ -121,7 +132,7 @@ def probe():
     まず候補を全部まとめて投げる（1回）。弾かれたら、エラー文に名前が出ている項目を
     外して投げ直す。名前が分からないときは1項目ずつ確かめる。呼び出しは CALL_BUDGET まで。
     """
-    candidates = ROW_CANDIDATES + BASE_CANDIDATES
+    candidates = ROW_CANDIDATES + BASE_CANDIDATES + PROBE_ONLY
     calls = 0
     alive, dead = list(candidates), []
 
