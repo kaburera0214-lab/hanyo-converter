@@ -103,14 +103,14 @@ BASE_CANDIDATES = [
     "receive_order_cancel_date",                 # キャンセル日
     "receive_order_gift_flag",                   # ギフト
     "receive_order_last_modified_date",          # 最終更新日
+    "receive_order_delivery_cut_form_id",        # 発送伝票番号（送り状番号）。2026-10-20 probeで実在・値ありを確認。ヤマト運賃チェックが使う
 ]
 
 
 # 取り出しにはまだ入れず、--probe で「あるか」だけ確かめる項目（2026-10-20 ヤマト運賃チェック用）。
-# 発送伝票番号(送り状番号)がNE受注のどの項目に入るかを確かめる。見つかったら BASE_CANDIDATES へ移す。
+# 送り状番号の本命(receive_order_delivery_cut_form_id)は確認済みで BASE_CANDIDATES へ移した。残りは未確認の候補。
 # 値は出さない（項目名と値の有無だけ）。
 PROBE_ONLY = [
-    "receive_order_delivery_cut_form_id",        # 発送伝票番号（送り状番号）の本命
     "receive_order_delivery_id",                 # 発送方法ID
     "receive_order_delivery_name",               # 発送方法名
     "receive_order_delivery_cut_form_note",      # 発送伝票備考
