@@ -1,0 +1,21 @@
+{
+  "mode": "dry_run",
+  "targets": 1,
+  "patched": 0,
+  "would_patch": 1,
+  "unchanged": 0,
+  "errors": 0,
+  "results": [
+    {
+      "manage_number": "edin0033",
+      "action": "would_patch",
+      "included": [
+        "breadcrumb"
+      ],
+      "dropped": [],
+      "error": null,
+      "bytes_before": 4940,
+      "bytes_after": 5142
+    }
+  ]
+}
