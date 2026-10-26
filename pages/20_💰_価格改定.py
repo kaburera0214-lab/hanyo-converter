@@ -34,9 +34,9 @@ st.caption("インプットCSV（JAN・新下代）→ 新販売価格を計算�
 
 from lib import master_store, pending_retry_ui
 from lib.invoice import csv_import
-from lib.ne_api import client as ne_client, goods as ne_goods, usage as ne_usage
+from lib.ne_api import client as ne_client, goods as ne_goods, setgoods as ne_setgoods, usage as ne_usage
 from lib.pricing import (apply, calc, export as ex, masters, pipeline, rakuten_price,
-                         yahoo_recovery)
+                         variant_check as vc, yahoo_recovery)
 from lib.receiving import yahoo_queue as yq
 from lib.yahoo_api import category_repair as yahoo_category, client as yahoo_client
 
@@ -369,7 +369,8 @@ def rakuten_price_controls(matched, key):
         info, errors, warnings = rakuten_price.fetch_for_codes(
             codes, sku_table,
             on_progress=lambda done, total: bar.progress(
-                done / max(total, 1), text=f"楽天から取得中… {done}/{total}商品"))
+                done / max(total, 1), text=f"楽天から取得中… {done}/{total}商品"),
+            pages=st.session_state.setdefault("pricing_rk_pages", {}))
         bar.empty()
         cache.update(rakuten_price.to_prices(info))
         # 取得を試みたコードを記録（取れなかった商品＝楽天未登録の可能性→対象から除外する判定に使う）
@@ -532,23 +533,119 @@ def _api_available():
             "yahoo": yahoo_client.api_enabled()}
 
 
+def _revised_singles(result_df):
+    """今回価格が決まる単品 {商品コード小文字: {商品管理番号, 旧価格, 新価格}}（楽天のSKUが分かるものだけ）。"""
+    out = {}
+    for _, r in result_df.iterrows():
+        code = str(r.get("商品コード", "")).strip().lower()
+        hit = sku_table.get(code)
+        new = calc.to_number(r.get("新販売価格"))
+        if not code or not hit or not new:
+            continue
+        out[code] = {"商品管理番号": hit[0], "SKU管理番号": hit[1],
+                     "旧価格": calc.to_number(r.get("現販売価格")), "新価格": new}
+    return out
+
+
+def _ne_sets_for(codes):
+    """取り残しSKUの連携SKU番号でNEのセット商品マスタを引く（同じ組み合わせは1回だけ）。
+    返り値: (sets, エラー文)。引けなくても止めない（提案が値上げ率からになるだけ）。"""
+    codes = sorted({c for c in codes if c})
+    if not codes:
+        return {}, ""
+    if not ne_client.is_configured():
+        return {}, "NEのAPIが未設定のため、セットの中身を引けませんでした"
+    cache = st.session_state.setdefault("pricing_vc_sets", {})
+    key = ",".join(codes)
+    if key not in cache:
+        try:
+            cache[key] = (ne_setgoods.search_sets(codes), "")
+        except Exception as e:  # noqa: BLE001
+            return {}, f"NEのセット商品マスタを引けませんでした（{e}）"
+    return cache[key]
+
+
+def variant_check_section(result_df, key_prefix):
+    """同じ楽天ページで、今回の改定の対象にならなかったSKUを判断してもらう。
+
+    返り値: {"apply": [...], "later": [...], "keep": [...], "problems": [...], "rows": [...]}
+    判断の中身と提案価格の出し方は lib/pricing/variant_check.py が正本。
+    """
+    empty = {"apply": [], "later": [], "keep": [], "problems": [], "rows": []}
+    revised = _revised_singles(result_df)
+    pages = st.session_state.get("pricing_rk_pages") or {}
+    targets = {(r["商品管理番号"], r["SKU管理番号"]) for r in revised.values()}
+    rows = vc.leftovers(pages, targets)
+    if not rows:
+        return empty
+
+    sets, err = _ne_sets_for(r["連携SKU番号"] for r in rows)
+    rows = vc.suggest(rows, sets, revised)
+
+    st.divider()
+    st.markdown(f"#### 🧩 同じ商品ページで改定されないSKU（{len(rows)}件）")
+    st.warning("今回の入力で価格が変わる商品と**同じ楽天ページ**に、入力に載っていないSKUがあります。"
+               "単品を組み込んだセット（例: トーマス本体＋客車アニー）だと、旧価格のまま残って"
+               "**単品より安い・赤字**になります（2026-10-26 #1295）。1行ずつ判断してください。")
+    st.caption(f"「{vc.LATER}」のままでも反映は止まりません。そのSKUは提案価格で"
+               "「⏳ 反映できていない処理」に控え、**翌日の点検で赤になります**。"
+               f"「{vc.KEEP}」は理由が必須です。提案価格は、NEのセット商品マスタで中身に今回の改定商品が"
+               "入っていれば「今の価格＋その値上げ幅」、分からなければ「同じページの値上げ率」で出しています。"
+               "※楽天だけの確認です（Yahoo・NEのセット価格は変えません）。")
+    if err:
+        st.warning(f"⚠️ {err}。提案価格は値上げ率から出しています。")
+
+    df = pd.DataFrame(rows)
+    df["判断"] = vc.LATER
+    df["指定価格"] = None
+    df["据え置きの理由"] = ""
+    show = ["判断", "商品管理番号", "選択肢", "連携SKU番号", "現販売価格", "提案価格",
+            "提案の根拠", "中身の改定", "指定価格", "据え置きの理由", "SKU管理番号"]
+    edited = st.data_editor(
+        df[show], key=key_prefix + "_vc_editor", use_container_width=True, hide_index=True,
+        disabled=[c for c in show if c not in ("判断", "指定価格", "据え置きの理由")],
+        column_config={
+            "判断": st.column_config.SelectboxColumn("判断", options=vc.DECISIONS, required=True),
+            "指定価格": st.column_config.NumberColumn("指定価格", step=1, min_value=1),
+            "現販売価格": st.column_config.NumberColumn(format="%d"),
+            "提案価格": st.column_config.NumberColumn(format="%d"),
+        })
+    decided = [{**row, **{k: edited.iloc[i][k] for k in ("判断", "指定価格", "据え置きの理由")}}
+               for i, row in enumerate(rows)]
+    apply_rows, later_rows, keep_rows, problems = vc.decide(decided)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("一緒に反映", f"{len(apply_rows)}件")
+    c2.metric("あとで決める（控えへ）", f"{len(later_rows)}件")
+    c3.metric("据え置き", f"{len(keep_rows)}件")
+    return {"apply": apply_rows, "later": later_rows, "keep": keep_rows,
+            "problems": problems, "rows": decided}
+
+
 def confirm_and_apply(result_df, key_prefix, tab_label,
-                      input_file=None, free_shipping=False):
+                      input_file=None, free_shipping=False, variant=None):
     """確定＝反映。ボタン1つで 楽天・Yahoo・NE をAPIで更新し、Driveにバックアップする。
 
     上の結果テーブルが確認画面そのものなので、反映先の選択や同意チェックは置かない。
     計算できた行は**全件**反映する（価格が変わらない行も送る）。課金対象のNE APIは
     元から全件送っているので、全件にしても増えるのは無料の楽天PATCHだけ。
     input_file=(名前, bytes) はバックアップに証跡として一緒に保存する。
+    variant は variant_check_section の結果。「一緒に反映」は楽天の同じ商品へのPATCHにまとめ、
+    「あとで決める」は反映のあとで控えに入れる。
     """
+    variant = variant or {"apply": [], "later": [], "keep": [], "problems": [], "rows": []}
     include_unchanged = True     # 全件更新（選ばせない）
     files, mall_n, ne_n = build_output_files(result_df, include_unchanged, free_shipping)
     if input_file:
         files = {**files, f"input_{input_file[0]}": input_file[1]}
+    if variant["rows"]:
+        files = {**files, "variant_check.csv": ex.detail_csv(pd.DataFrame(variant["rows"]))}
 
     avail = _api_available()
     systems = {name for name, ok in avail.items() if ok}
     tasks, notes = apply.build_tasks(result_df, sku_table, include_unchanged, systems)
+    if "rakuten" in systems and variant["apply"]:
+        tasks["rakuten_price"] = vc.merge_rakuten_tasks(
+            tasks.get("rakuten_price"), vc.to_rakuten_tasks(variant["apply"]))
     n = apply.task_counts(tasks)
 
     st.divider()
@@ -593,6 +690,7 @@ def confirm_and_apply(result_df, key_prefix, tab_label,
         blockers.append("楽天・Yahoo・NEのいずれもAPIが未設定です。反映できません。")
     if not any(n[k] for k in ("ne", "rakuten", "yahoo")):
         blockers.append("反映する対象が0件です。")
+    blockers.extend(f"同じページで改定されないSKU — {p}" for p in variant["problems"])
     for b in blockers:
         st.error("🛑 " + b)
 
@@ -600,7 +698,16 @@ def confirm_and_apply(result_df, key_prefix, tab_label,
     label = "✅ 確定して反映（本番データを更新）" if not done else "🔁 もう一度 確定して反映"
     if st.button(label, key=key_prefix + "_apply", type="primary", disabled=bool(blockers)):
         _run_api(tasks, key_prefix, tab_label, files)
+        _remember_variant_later(variant["later"], key_prefix, tab_label)
         st.rerun()
+    vc_state = st.session_state.get(key_prefix + "_vc_later")
+    if vc_state:
+        if vc_state.get("err"):
+            st.error("⚠️ " + vc_state["err"])
+        else:
+            st.info(f"🧩 同じページで改定されないSKUのうち「{vc.LATER}」の {vc_state['n']}件 を"
+                    "提案価格で「⏳ 反映できていない処理」に控えました。提案価格でよければ再実行、"
+                    "据え置くなら理由を書いて取り下げてください（残っていると翌日の点検で赤になります）。")
     if not done:
         st.caption("押すと、上の表の内容で**本番データ（楽天・Yahoo・ネクストエンジン）を直接更新**し、"
                    "そのままDriveにバックアップします。CSVのアップロード作業は不要です。")
@@ -649,6 +756,19 @@ def _run_api(tasks, key_prefix, tab_label, files, retry_id=None):
     bar.progress(1.0, text="Driveにバックアップ中…")
     _save_backup(key_prefix, tab_label, files, results=results)
     bar.empty()
+
+
+def _remember_variant_later(later_rows, key_prefix, tab_label):
+    """「あとで決める」の取り残しSKUを、提案価格の楽天タスクとして控えに入れる。
+    控えの再実行＝提案価格で反映、取り下げ（理由必須）＝据え置き。滞留は翌日の点検で赤になる。"""
+    st.session_state.pop(key_prefix + "_vc_later", None)
+    if not later_rows:
+        return
+    tasks = {"rakuten_price": vc.to_rakuten_tasks(later_rows)}
+    label = (f"{tab_label}：同じページで改定されなかったSKU（判断待ち。"
+             "再実行＝提案価格で反映／据え置くなら理由を書いて取り下げ）")
+    _id, err = pending_retry_ui.remember("pricing", tasks, label)
+    st.session_state[key_prefix + "_vc_later"] = {"n": len(later_rows), "err": err}
 
 
 def _save_backup(key_prefix, tab_label, files, results=None):
@@ -750,8 +870,9 @@ def result_section(rows, key_prefix, tab_label, input_file=None, free_shipping=F
     c2.metric("値下げ", f"{len(down)}件")
     c3.metric("変わらず", f"{len(keep)}件")
     c4.metric("計算不可・要確認", f"{len(df) - len(up) - len(down) - len(keep)}件")
+    variant = variant_check_section(df, key_prefix)
     confirm_and_apply(df, key_prefix, tab_label,
-                      input_file=input_file, free_shipping=free_shipping)
+                      input_file=input_file, free_shipping=free_shipping, variant=variant)
 
 
 # ══ タブ ════════════════════════════════════════════════════

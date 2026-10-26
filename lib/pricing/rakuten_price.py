@@ -200,10 +200,13 @@ class ManageNumberSearch:
         return found
 
 
-def fetch_for_codes(codes, sku_table, on_progress=None):
+def fetch_for_codes(codes, sku_table, on_progress=None, pages=None):
     """
     NE商品コード群の現在価格とSKU情報をまとめて取得する。
     sku_table: 保存済みSKU対応表 {code小文字: (商品管理番号, SKU管理番号, 連携番号)}（商品管理番号の当たり付けに使用）
+    pages: 渡すと、読んだ商品ページを {商品管理番号小文字: {"variants", "item_price"}} で詰めて返す。
+           同じページで改定の対象にならなかったSKUを探すのに使う（lib/pricing/variant_check）。
+           追加のAPI呼び出しはしない（価格を取るときに読んだものをそのまま渡す）
     返り値: (info={code小文字: {parent, sku, renkei, price}}, errors={対象: メッセージ}, warnings=[str])
 
     errorsは「楽天に無い」と「こちらが見つけられなかった」を書き分ける。価格改定は
@@ -317,6 +320,10 @@ def fetch_for_codes(codes, sku_table, on_progress=None):
     for key, d in info.items():
         if d.get("price") is None:
             errors[key] = "楽天に商品・SKUはありますが、販売価格を取得できませんでした"
+
+    if pages is not None:
+        for mn, (variants, item_price) in items_cache.items():
+            pages[masters.norm_key(mn).lower()] = {"variants": variants, "item_price": item_price}
 
     if on_progress:
         on_progress(total, total)
