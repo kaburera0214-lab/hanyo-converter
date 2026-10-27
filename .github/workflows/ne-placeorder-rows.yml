@@ -1,0 +1,53 @@
+name: ne-placeorder-rows
+
+# ネクストエンジンの発注明細（発注単価）を取り出して、Google ドライブへ
+# ne_placeorder_rows_YYYYMMDD_NNN.csv として保存する。手動実行のみ（定期実行なし）。
+# NEの商品マスタの原価が、実際の発注単価とずれている商品を探すため（2026-10-27）。
+#
+# このリポジトリは公開。発注データをログに出さない・artifact に上げない。
+# 出力先は Google ドライブ（非公開）だけ。ログに出るのは件数とファイル名だけ。
+#
+# concurrency group は auth-keepalive.yml と同じ "ne-keepalive"。
+# NEはトークンが再発行されると旧トークンが即失効するため、延命バッチと同時に走らせない。
+
+on:
+  workflow_dispatch:
+    inputs:
+      from:
+        description: "発注明細の作成日の開始 (YYYY-MM-DD)。空なら全期間"
+        required: false
+        default: ""
+
+concurrency:
+  group: ne-keepalive
+  cancel-in-progress: false
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install pandas requests google-api-python-client google-auth
+
+      - name: NE place order rows
+        env:
+          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          NE_CLIENT_ID: ${{ secrets.NE_CLIENT_ID }}
+          NE_CLIENT_SECRET: ${{ secrets.NE_CLIENT_SECRET }}
+          CHATWORK_API_TOKEN: ${{ secrets.CHATWORK_API_TOKEN }}
+          IN_FROM: ${{ inputs.from }}
+        run: |
+          # 入力は環境変数で受ける（式をコマンドに直接埋め込まない）
+          if [ -n "$IN_FROM" ]; then
+            python batch/ne_placeorder_rows.py --from "$IN_FROM"
+          else
+            python batch/ne_placeorder_rows.py
+          fi
