@@ -23,6 +23,12 @@
     python batch/ne_stock_io.py --probe                          # 項目の確認だけ（API 1回）
     python batch/ne_stock_io.py --from 2019-01-01 --to 2026-10-16  # 入出庫日の範囲で全部
     python batch/ne_stock_io.py --days 7                         # 直近7日に作られた入庫
+    python batch/ne_stock_io.py --both --from 2025-05-01         # 入庫・出庫の両方（ne_stock_io_all_*）
+
+【--both】
+  入庫だけでなく出庫も取る。商品ごとの月末在庫を組み立てるため（GMROIの平均在庫。2026-11-04 ユーザー指示
+  「在庫数はNEが正しい」。楽天カルテの在庫数は実在庫と合わない）。import-cost が読む ne_stock_in_* に
+  出庫を混ぜないよう、保存名を ne_stock_io_all_* に分ける。
 """
 import argparse
 import csv
@@ -45,6 +51,7 @@ EP = "api_v1_master_stockiohistory/search"
 CALL_BUDGET = 40
 PAGE_LIMIT = 10000
 DRIVE_PREFIX = "ne_stock_in"
+DRIVE_PREFIX_BOTH = "ne_stock_io_all"
 JST = datetime.timezone(datetime.timedelta(hours=9))
 
 # 公式ドキュメント（developer.next-engine.com/api/api_v1_master_stockiohistory/search）の項目名。
@@ -65,6 +72,7 @@ FIELDS = [
     "stock_io_history_creation_date",
 ]
 BASE_FILTER = {"stock_io_history_io_flag-eq": "0", "stock_io_history_deleted_flag-eq": "0"}
+BASE_FILTER_BOTH = {"stock_io_history_deleted_flag-eq": "0"}
 
 
 def probe():
@@ -80,14 +88,14 @@ def probe():
     return 0
 
 
-def fetch(filters):
+def fetch(filters, base=BASE_FILTER):
     rows, offset, calls = [], 0, 0
     while True:
         if calls >= CALL_BUDGET:
             raise RuntimeError("NE APIの呼び出しが上限（{}回）に達しました。{}件で中断します。"
                                "期間を分けて実行してください。".format(CALL_BUDGET, len(rows)))
         params = {"fields": ",".join(FIELDS), "limit": str(PAGE_LIMIT), "offset": str(offset)}
-        params.update(BASE_FILTER)
+        params.update(base)
         params.update(filters)
         data = client.call(EP, params).get("data") or []
         calls += 1
@@ -118,16 +126,20 @@ def export(args):
         filters = {"stock_io_history_creation_date-gte": since.strftime("%Y-%m-%d 00:00:00")}
         label, whole = "直近{}日に作られた入庫".format(args.days), False
 
-    print("[ne_stock_io] {} を取ります".format(label), flush=True)
-    rows, calls = fetch(filters)
+    base, prefix, kind = BASE_FILTER, DRIVE_PREFIX, "入庫"
+    if args.both:
+        base, prefix, kind = BASE_FILTER_BOTH, DRIVE_PREFIX_BOTH, "入出庫"
+        label = label.replace("入庫", "入出庫")
+    print("[ne_stock_io] {} を取ります（{}）".format(label, kind), flush=True)
+    rows, calls = fetch(filters, base)
     if not rows:
         if whole:
             print("[ne_stock_io] 入庫が1件も返りませんでした。保存しません。", file=sys.stderr, flush=True)
             return 1
         print("[ne_stock_io] 新しい入庫はありませんでした（保存なし）。", flush=True)
         return 0
-    name = drive_master.upload_versioned(to_csv(rows), DRIVE_PREFIX, master_store.folder_id())
-    print("[ne_stock_io] OK saved={} 入庫{}行・呼び出し{}回".format(name, len(rows), calls), flush=True)
+    name = drive_master.upload_versioned(to_csv(rows), prefix, master_store.folder_id())
+    print("[ne_stock_io] OK saved={} {}{}行・呼び出し{}回".format(name, kind, len(rows), calls), flush=True)
     return 0
 
 
@@ -137,6 +149,7 @@ def main():
     parser.add_argument("--from", dest="date_from", default="")
     parser.add_argument("--to", dest="date_to", default="")
     parser.add_argument("--days", type=int, default=7)
+    parser.add_argument("--both", action="store_true", help="入庫・出庫の両方を ne_stock_io_all_* に保存")
     args = parser.parse_args()
     try:
         return probe() if args.probe else export(args)

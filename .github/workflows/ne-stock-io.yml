@@ -32,6 +32,10 @@ on:
         description: "開始日が空のとき、直近この日数に作られた入庫を取る"
         required: false
         default: "7"
+      both:
+        description: "入庫・出庫の両方を取る（ne_stock_io_all_* に保存。月末在庫の組み立て用）"
+        type: boolean
+        default: false
 
 concurrency:
   group: ne-keepalive
@@ -62,6 +66,7 @@ jobs:
           IN_FROM: ${{ inputs.from }}
           IN_TO: ${{ inputs.to }}
           IN_DAYS: ${{ inputs.days }}
+          IN_BOTH: ${{ inputs.both }}
         run: |
           # 入力は環境変数で受ける（式をコマンドに直接埋め込まない）
           ARGS=""
@@ -73,4 +78,5 @@ jobs:
           else
             ARGS="--days ${IN_DAYS:-7}"
           fi
+          if [ "$IN_BOTH" = "true" ]; then ARGS="$ARGS --both"; fi
           python batch/ne_stock_io.py $ARGS
