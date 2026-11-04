@@ -260,19 +260,22 @@ with st.expander("🔐 Yahoo API接続（管理者用）", expanded=_reauth_yaho
 
 with st.expander("🔐 楽天RMS接続（管理者用・ライセンスキーの更新手順）", expanded=False):
     if rakuten_price.is_configured():
-        st.success("設定済み（Secrets: RMS_SERVICE_SECRET / RMS_LICENSE_KEY）。")
+        st.success("設定済み（Secrets: RMS_SERVICE_SECRET / ライセンスキー）。")
     else:
         st.error("未設定です（Secrets: RMS_SERVICE_SECRET / RMS_LICENSE_KEY）。")
-    st.caption("楽天RMSは**ライセンスキー方式**（NE/YahooのようなOAuth再認可ではありません）ので、"
-               "この画面からの再接続はできません。`HTTP 401`（ライセンスキー期限切れ）が出たら、"
-               "以下の手順でキーを更新してください。")
+    # どこからキーを読んでいるか。共通の置き場から読めていなければ、古いキーで動いている可能性がある
+    _ks = rakuten_price.rms_api.key_source()
+    (st.caption if _ks.get("source") == "shared" else st.warning)(f"ライセンスキー: {_ks.get('detail')}")
+    st.caption("楽天RMSは**ライセンスキー方式**（NE/YahooのようなOAuth再認可ではありません）で、"
+               "キーは約3か月で切れます。`HTTP 401`（期限切れ）が出たら、以下の手順で更新してください。")
     st.markdown(
-        "**更新手順（RMS 401が出たとき）**\n"
-        "1. RMS「店舗設定 → 2 WEB APIサービス（R-Login/API利用）」で"
-        "**licenseKeyを発行（更新）**する。\n"
-        "2. Streamlit Cloud の **Secrets `RMS_LICENSE_KEY`** を新しい値に差し替える。\n"
-        "3. **Reboot** → 実行結果の「🔁 失敗した処理だけ再実行」を押す。\n\n"
-        "**頻度**: ライセンスキーの有効期限ごと（RMS仕様で定期的に失効）。"
+        "**更新手順（RMS 401が出たとき・2026-11-04〜）**\n"
+        "1. RMS「店舗設定 → 6 WEB APIサービス → 2-1 アプリ一覧」の「店舗様」の**詳細**でキーを表示してコピーする。\n"
+        "2. 管理者のPCの業務デスク「RMSキー」画面（http://127.0.0.1:8770/rms-key）に貼る。"
+        "楽天で通ることを確かめてから共通の置き場に保存され、この画面と商品ページ自動更新は"
+        "**10分以内に自動で新しいキーを読みます**（Secrets の差し替え・Reboot は不要）。\n"
+        "3. 実行結果の「🔁 失敗した処理だけ再実行」を押す。\n\n"
+        "期限の14日前と、RMSで新しいキーが発行されたときは、業務デスクにタスクが出ます。"
         "`RMS_SERVICE_SECRET` は通常変わりません。")
     st.link_button("📊 ライセンスキー管理シートを開く", RMS_KEY_SHEET_URL,
                    use_container_width=True)
@@ -1295,8 +1298,8 @@ if res:
         if any("RMS" in str(r.get("メッセージ", "")) for r in results
                if r.get("状態") == "失敗"):
             st.warning("楽天RMSのライセンスキー期限切れの可能性があります。"
-                       "下のシートで最新キーを確認し、Secrets `RMS_LICENSE_KEY` を更新して"
-                       "Rebootしてください（詳細は上の🔐楽天RMS接続パネル）。")
+                       "管理者のPCの業務デスク「RMSキー」画面に新しいキーを貼ってください。"
+                       "10分以内にこの画面も新しいキーを読みます（詳細は上の🔐楽天RMS接続パネル）。")
             st.link_button("📊 楽天ライセンスキー管理シートを開く", RMS_KEY_SHEET_URL)
 
     failed = st.session_state.get("recv_failed") or {}

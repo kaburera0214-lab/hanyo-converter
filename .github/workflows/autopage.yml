@@ -32,12 +32,16 @@ jobs:
         with:
           python-version: "3.11"
 
-      - run: pip install requests
+      - run: pip install requests cryptography
 
       - name: Run autopage batch
         env:
           RMS_SERVICE_SECRET: ${{ secrets.RMS_SERVICE_SECRET }}
           RMS_LICENSE_KEY: ${{ secrets.RMS_LICENSE_KEY }}
+          # ライセンスキーは共通の置き場から最新を読む（lib/event/rms_api.py）。上は置き場から読めないときの控え
+          SHARED_SECRETS_URL: ${{ secrets.SHARED_SECRETS_URL }}
+          SHARED_SECRETS_ANON_KEY: ${{ secrets.SHARED_SECRETS_ANON_KEY }}
+          SHARED_SECRETS_KEY: ${{ secrets.SHARED_SECRETS_KEY }}
           RAKUTEN_APP_ID: ${{ secrets.RAKUTEN_APP_ID }}
           GOLD_SHOP_URL: ${{ secrets.GOLD_SHOP_URL }}
         run: |

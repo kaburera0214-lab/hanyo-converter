@@ -13,3 +13,4 @@ zengin_code
 PyMuPDF
 jinja2>=3.1
 jpholiday
+cryptography>=42.0.0
