@@ -2,18 +2,20 @@
   "mode": "dry_run",
   "targets": 1,
   "patched": 0,
-  "would_patch": 0,
+  "would_patch": 1,
   "unchanged": 0,
-  "errors": 1,
+  "errors": 0,
   "results": [
     {
       "manage_number": "edin0033",
-      "action": "none",
-      "included": [],
+      "action": "would_patch",
+      "included": [
+        "breadcrumb"
+      ],
       "dropped": [],
-      "error": "商品取得失敗: RMS APIの認証に失敗しました(HTTP 401)。ライセンスキーの有効期限切れの可能性があります。RMS「WEB APIサービス」でキーを更新し、Secretsを差し替えてください。",
-      "bytes_before": 0,
-      "bytes_after": 0
+      "error": null,
+      "bytes_before": 4940,
+      "bytes_after": 5138
     }
   ]
 }
