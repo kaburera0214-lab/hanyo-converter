@@ -79,9 +79,9 @@ from lib.yahoo_api import client as yahoo_client
 product_folder = master_store.folder_id()
 params = dict(calc.DEFAULT_PARAMS)  # 計算パラメータは既定値固定（現場では変更しない）
 
-# 楽天RMSライセンスキーの管理台帳（スプレッドシート）。401時にここで更新を促す。
-RMS_KEY_SHEET_URL = ("https://docs.google.com/spreadsheets/d/"
-                     "1fbOwYFoRHZhMs8dI3PfZYZJJnz53Un-EE06QI2oRxbI/edit?gid=674402052#gid=674402052")
+# 楽天RMSライセンスキーの管理台帳（スプレッドシート）へのリンクは置かない（2026-11-04）。
+# このリポジトリは公開で、台帳は「リンクを知っている全員が編集可」だったため、誰でもキーを読めた。
+# 台帳は共有を制限した。キーの更新は管理者のPCの業務デスク（RMSキー）で行う。
 
 FORM_ROWS = 10  # 入力フォームの初期行数（行の追加も可能）
 _FORM_COLUMNS = ["JANコード", "商品コード", "商品名", "現サイズ", "現ロケーション",
@@ -277,8 +277,6 @@ with st.expander("🔐 楽天RMS接続（管理者用・ライセンスキーの
         "3. 実行結果の「🔁 失敗した処理だけ再実行」を押す。\n\n"
         "期限の14日前と、RMSで新しいキーが発行されたときは、業務デスクにタスクが出ます。"
         "`RMS_SERVICE_SECRET` は通常変わりません。")
-    st.link_button("📊 ライセンスキー管理シートを開く", RMS_KEY_SHEET_URL,
-                   use_container_width=True)
 
 _dv_route = mall_routes.get("Yahoo", "delivery_group")
 _yd = yq.load_delivery(product_folder)
@@ -1300,7 +1298,6 @@ if res:
             st.warning("楽天RMSのライセンスキー期限切れの可能性があります。"
                        "管理者のPCの業務デスク「RMSキー」画面に新しいキーを貼ってください。"
                        "10分以内にこの画面も新しいキーを読みます（詳細は上の🔐楽天RMS接続パネル）。")
-            st.link_button("📊 楽天ライセンスキー管理シートを開く", RMS_KEY_SHEET_URL)
 
     failed = st.session_state.get("recv_failed") or {}
     if any(failed.values()):
