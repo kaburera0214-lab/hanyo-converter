@@ -592,3 +592,33 @@ def test_refetched_result_keeps_human_edits_on_the_same_rows():
     led_new = R.ledger_rows(RESULT_WITH_LEDGER)
     merged = R.carry_ledger(led_new, led_old)
     assert merged[0] == led_old[0] and "16" not in [r["依頼No"] for r in merged[1:]] and len(merged) > 1
+
+
+def test_irregular_work_save_never_sends_nan_and_names_the_bad_row():
+    import json as _json
+    from lib.invoice import notion_store as N
+
+    sent = []
+
+    class Pages:
+        def create(self, **kw):
+            sent.append(_json.dumps(kw, ensure_ascii=False, allow_nan=False))   # NaN が混ざると失敗する
+
+        def update(self, **kw):
+            sent.append(_json.dumps(kw, ensure_ascii=False, allow_nan=False))
+
+    class Client:
+        pages = Pages()
+
+    nan = float("nan")
+    rows = [{"id": nan, "日付": "2026/10/05", "時間数": 1.5, "人数": 2, "作業項目": "ラベル貼り", "作業詳細": nan, "備考": None},
+            {"id": nan, "日付": nan, "時間数": nan, "人数": nan, "作業項目": nan, "作業詳細": nan, "備考": nan}]   # 空の行
+    import unittest.mock as m
+    with m.patch.object(N, "_client", lambda: Client()):
+        res = N.save_irregular_work({"請求_イレギュラー作業": "db"}, "X", rows, [], "2026-10")
+        assert res["created"] == 1 and len(sent) == 1 and '"number": 3.0' in sent[0]
+        sent.clear()
+        bad = [dict(rows[0], 人数=nan)]
+        with pytest.raises(ValueError, match="2026/10/05 ラベル貼り」の人数"):
+            N.save_irregular_work({"請求_イレギュラー作業": "db"}, "X", bad, [], "2026-10")
+        assert sent == []   # 1行でも不備があれば、どの行も保存しない

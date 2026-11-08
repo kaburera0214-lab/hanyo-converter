@@ -275,10 +275,10 @@ if len(by_month) >= 1:
                       for k, v in by_month.items()]),
         use_container_width=True, hide_index=True)
 
-# 直前の保存結果メッセージ
+# 直前の保存結果メッセージ（失敗は赤で出す。緑で出すと保存できたように見える）
 _save_flash = st.session_state.pop("irr_save_flash", None)
 if _save_flash:
-    st.success(_save_flash)
+    (st.error if _save_flash.startswith("保存に失敗") else st.success)(_save_flash)
 
 
 def _do_save(recs):

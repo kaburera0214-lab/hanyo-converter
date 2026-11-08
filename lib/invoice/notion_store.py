@@ -791,12 +791,33 @@ def _ym_from_date(date_str, fallback):
     return fallback
 
 
+def _irregular_num(value):
+    """表の数値欄を数にする。空欄（None・空文字・NaN）は None。
+
+    表で行を足したときの空欄は NaN になり、そのまま送ると Notion が受け付けない（JSONに NaN は無い）。
+    """
+    import math
+    if value is None or str(value).strip() in ("", "nan", "None"):
+        return None
+    n = float(value)
+    return None if math.isnan(n) else n
+
+
+def _irregular_text(value):
+    return "" if value is None or str(value).strip() in ("nan", "None") else str(value).strip()
+
+
 def _irregular_props(client_name, r, fallback_ym):
-    """イレギュラー作業1行のNotionプロパティを組み立てる。"""
-    date = str(r.get("日付", "")).strip()
-    item = str(r.get("作業項目", "")).strip()
-    hours = float(r.get("時間数") or 0)
-    people = float(r.get("人数") or 0)
+    """イレギュラー作業1行のNotionプロパティを組み立てる。時間数・人数が空なら、どの行かを書いて止める。"""
+    date = _irregular_text(r.get("日付", ""))
+    item = _irregular_text(r.get("作業項目", ""))
+    hours = _irregular_num(r.get("時間数"))
+    people = _irregular_num(r.get("人数"))
+    label = f"{date or '日付なし'} {item or '作業項目なし'}"
+    if hours is None:
+        raise ValueError(f"「{label}」の時間数が空です。入力してから保存してください")
+    if people is None or people <= 0:
+        raise ValueError(f"「{label}」の人数が空か0です。入力してから保存してください")
     return {
         "レコード名": {"title": _title(f"{client_name} {date} {item}")},
         "クライアント": {"rich_text": _rt(client_name)},
@@ -805,8 +826,8 @@ def _irregular_props(client_name, r, fallback_ym):
         "人数": {"number": people},
         "合計時間": {"number": hours * people},
         "作業項目": {"rich_text": _rt(item)},
-        "作業詳細": {"rich_text": _rt(r.get("作業詳細", ""))},
-        "備考": {"rich_text": _rt(r.get("備考", ""))},
+        "作業詳細": {"rich_text": _rt(_irregular_text(r.get("作業詳細", "")))},
+        "備考": {"rich_text": _rt(_irregular_text(r.get("備考", "")))},
     }
 
 
@@ -835,13 +856,16 @@ def save_irregular_work(db_ids, client_name, edited_rows, loaded_ids, fallback_y
     kept_ids = set()
     created = updated = deleted = 0
 
+    # 先に全行を組み立てて確かめる（途中まで保存して止まると、保存できた行とできない行が混ざるため）
+    built = []
     for r in edited_rows:
-        date = str(r.get("日付", "")).strip()
-        item = str(r.get("作業項目", "")).strip()
-        hours = float(r.get("時間数") or 0)
-        if not date and not item and hours == 0:
+        date = _irregular_text(r.get("日付", ""))
+        item = _irregular_text(r.get("作業項目", ""))
+        hours = _irregular_num(r.get("時間数"))
+        if not date and not item and not hours:
             continue
-        props = _irregular_props(client_name, r, fallback_ym)
+        built.append((r, _irregular_props(client_name, r, fallback_ym)))
+    for r, props in built:
         rid = r.get("id")
         rid = str(rid).strip() if rid is not None else ""
         if rid and rid.lower() != "nan":
