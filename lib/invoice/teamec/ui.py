@@ -64,6 +64,71 @@ def _load(label, loader):
         return None
 
 
+def _result_folder():
+    """teamec-billing-fetch が作る「TeamEC実績」フォルダのID（無ければ None）。"""
+    from lib.invoice import drive_master
+    # teamec-billing-fetch が同じOAuthクライアントで作るフォルダ（マイドライブ直下）を名前で探す。
+    # drive.file では請求書バックアップフォルダの配下に置けないため、親フォルダでは絞らない（2026-10-03）
+    q = f"name = '{RESULT_FOLDER}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+    found = drive_master._service().files().list(q=q, fields="files(id, createdTime)", orderBy="createdTime",
+                                                pageSize=10).execute().get("files", [])
+    return found[0]["id"] if found else None
+
+
+def _refetch_state(target_ym):
+    """取り直しの依頼の状態：(最新の依頼の日時, 結果 or None)。依頼が無ければ (None, None)。"""
+    from lib.invoice import drive_master
+    folder = _result_folder()
+    if not folder:
+        return None, None
+    reqs = sorted(f["name"] for f in drive_master.list_files(folder, f"再取得依頼_{target_ym}_"))
+    if not reqs:
+        return None, None
+    stamp = reqs[-1][len(f"再取得依頼_{target_ym}_"):-len(".json")]
+    res = drive_master.list_files(folder, f"再取得結果_{target_ym}_{stamp}")
+    result = json.loads(drive_master.download_bytes(res[0]["id"]).decode("utf-8")) if res else None
+    return stamp, result
+
+
+def _refetch_box(target_ym):
+    """「最新に取り直す」。ページからは Eシス等を直接読めないので、Drive に依頼を置き、
+    このPCの teamec-billing-fetch（tools/refetch_watch.py・10分ごと）が取り直して照合結果を保存する。"""
+    from lib.invoice import drive_master
+    st.caption("保管カウント・イレギュラー作業（Notion）は、ページを開くたびに最新を読んでいます。"
+               "Eシス・B2・ヤマト・共有シート（随時連絡・返品交換・配送変更・依頼台帳）・Chatwork は、"
+               "取得した時点の内容です。月をまたいで追記された分を入れるときは「最新に取り直す」を押してください。")
+    if os.environ.get("TEAMEC_RESULTS_DIR"):
+        st.caption("（ローカル確認中のため、取り直しは使えません）")
+        return
+    try:
+        stamp, done = _refetch_state(target_ym)
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"取り直しの状態を読めませんでした：{exc}")
+        return
+    waiting = stamp is not None and done is None
+    c1, c2 = st.columns([1, 3])
+    if c1.button("🔄 最新に取り直す", key=f"teamec_refetch_{target_ym}", disabled=waiting):
+        folder = _result_folder()
+        now = datetime.now()
+        body = json.dumps({"対象月": target_ym, "依頼日時": now.astimezone().isoformat(timespec="seconds")},
+                          ensure_ascii=False).encode("utf-8")
+        drive_master.upload_bytes(body, f"再取得依頼_{target_ym}_{now:%Y%m%d_%H%M%S}.json", folder, "application/json")
+        st.rerun()
+    if waiting:
+        at = datetime.strptime(stamp, "%Y%m%d_%H%M%S")
+        c2.info(f"取り直し中（{at:%m/%d %H:%M} に依頼）。このPCの取得ツールが10分以内に始め、5〜10分かかります"
+                "（PCが起きている必要があります）。終わると自動で読み込み直します。")
+        try:
+            from streamlit_autorefresh import st_autorefresh
+            st_autorefresh(interval=60_000, key=f"teamec_refetch_wait_{target_ym}")
+        except Exception:  # noqa: BLE001
+            c2.caption("自動で読み込み直せないため、しばらくしてからページを開き直してください。")
+    elif done is not None:
+        at = datetime.strptime(stamp, "%Y%m%d_%H%M%S")
+        (c2.caption if done.get("ok") else c2.error)(
+            f"前回の取り直し（{at:%m/%d %H:%M} 依頼）：{'完了' if done.get('ok') else '失敗'}　{done.get('内容', '')}")
+
+
 def _drive_result(target_ym):
     """Driveの「TeamEC実績」から対象月の最新の照合結果を読む。無ければ (None, 理由)。"""
     local = os.environ.get("TEAMEC_RESULTS_DIR")  # ローカル確認用（teamec-billing-fetch/data/results）
@@ -73,15 +138,10 @@ def _drive_result(target_ym):
             return None, f"{local}\\{target_ym} に照合結果がありません"
         return json.loads(files[-1].read_text(encoding="utf-8")), f"ローカル {files[-1].name}"
     from lib.invoice import drive_master
-    # teamec-billing-fetch が同じOAuthクライアントで作るフォルダ（マイドライブ直下）を名前で探す。
-    # drive.file では請求書バックアップフォルダの配下に置けないため、親フォルダでは絞らない（2026-10-03）
-    q = f"name = '{RESULT_FOLDER}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
-    found = drive_master._service().files().list(q=q, fields="files(id, createdTime)", orderBy="createdTime",
-                                                pageSize=10).execute().get("files", [])
-    if not found:
+    folder = _result_folder()
+    if not folder:
         return None, f"Driveに「{RESULT_FOLDER}」フォルダが見つかりません"
-    sub = found[0]
-    files = [f for f in drive_master.list_files(sub["id"], f"TeamEC実績_{target_ym}_") if f["name"].endswith(".json")]
+    files = [f for f in drive_master.list_files(folder, f"TeamEC実績_{target_ym}_") if f["name"].endswith(".json")]
     if not files:
         return None, f"Driveの「{RESULT_FOLDER}」に {target_ym} の照合結果がありません"
     latest = sorted(files, key=lambda f: f["name"])[-1]
@@ -189,6 +249,7 @@ def render(year, month, client, db_ids=None, notion_ready=False):
     except Exception as exc:
         source = f"Driveを読めませんでした：{exc}"
     st.markdown("#### 1. 出荷実績（Eシス・B2・ヤマトの照合結果）")
+    _refetch_box(target_ym)
     if result is None:
         st.warning(f"照合結果を読み込めていません（{source}）。金額は出しません。")
         uploaded = st.file_uploader("照合結果ファイル（*_照合結果.json）を手で読み込む", type=["json"], key=f"teamec_result_upload_{year}_{month}")
@@ -209,6 +270,13 @@ def render(year, month, client, db_ids=None, notion_ready=False):
         cols[3].metric("要確認", f"{len(must)}件")
         st.caption(f"読込元：{source}／作成 {result.get('作成日時', '')}／注文{result.get('注文数', 0):,}件・"
                    f"{result.get('商品数', 0):,}個・{result.get('個口数', 0):,}個口")
+        cancels = result.get("出荷後キャンセル")
+        if cancels:
+            st.caption(f"出荷後にキャンセルされた注文 {len(cancels)}件を、出荷として数えています"
+                       "（Eシスではキャンセルだが、B2に送り状があり、ヤマトの運賃にも載っている＝出荷済み）。")
+            _table(cancels, ["注文ID", "発送日（ヤマト受付）", "伝票番号", "商品", "注文番号", "受注日"])
+        elif cancels is None:
+            st.caption("この照合結果は、出荷後キャンセルの取り込みに対応する前のものです（「最新に取り直す」で対応します）。")
         if must:
             st.error("確定前に確認が必要な項目があります。")
             _table(must, ["区分", "内容", "注文ID", "注文番号", "伝票番号", "表示用コード", "JANコード"])
@@ -226,11 +294,20 @@ def render(year, month, client, db_ids=None, notion_ready=False):
     if st.session_state.get("_teamec_active") != draft_key:
         st.session_state["_teamec_active"] = draft_key
         st.session_state["_teamec_generation"] = st.session_state.get("_teamec_generation", 0) + 1
+        last_keys = st.session_state.setdefault("_teamec_last_key", {})
         if drafts.get(draft_key):
             carried = drafts[draft_key]
-        else:  # 初めて開く照合結果：シート由来の行を入れ直し、手で入れた行だけ引き継ぐ
-            carried = {k: v for k, v in drafts.get(f"{target_ym}|none", {}).items() if k not in ("calendar", "ledger", "sheets")}
+        else:  # 初めて開く照合結果（取り直した後など）：前の照合結果で人が直した値を、同じ行に引き継ぐ
+            old = drafts.get(last_keys.get(target_ym) or f"{target_ym}|none", {})
+            carried = {k: v for k, v in old.items() if k not in ("calendar", "ledger", "sheets")}
+            if result is not None and old.get("sheets"):
+                carried["sheets"] = R.carry_sheets(R.sheet_tables(result, ver), old["sheets"])
+            if result is not None and old.get("ledger") is not None:
+                carried["ledger"] = R.carry_ledger(R.ledger_rows(result), old["ledger"])
+            if result is not None and old.get("calendar") and not str(last_keys.get(target_ym, "")).endswith("|none"):
+                carried["calendar"] = old["calendar"]
             carried["_fresh"] = True
+        last_keys[target_ym] = draft_key
         st.session_state["_teamec_form_base"] = copy.deepcopy(carried)
     base = st.session_state["_teamec_form_base"]   # 編集欄の初期値（切り替えるまで固定。変えると入力が消える）
     prev = drafts.get(draft_key, base)               # たたんだ段は直前の入力値を使う
@@ -420,10 +497,27 @@ def render(year, month, client, db_ids=None, notion_ready=False):
         st.markdown(f"##### 依頼台帳 ｜ [シートを開く]({links.get('依頼台帳', '')})" if not ledger_missing
                     else "##### 依頼台帳")
         if not ledger_missing:
-            st.markdown(f"**{target_ym} の依頼：{len(requests)}件**（出荷日。無ければ依頼日がこの月のもの）")
+            n_chat = len([q for q in requests if q.get("区分") == "チャットのみ"])
+            st.markdown(f"**{target_ym} の依頼：台帳 {len(requests) - n_chat}件＋チャットのみの候補 {n_chat}件**"
+                        "（台帳は出荷日。無ければ依頼日がこの月のもの）")
+            chat = (result or {}).get("チャット依頼候補")
+            if chat is None:
+                st.caption("この照合結果は、Chatworkだけで来た依頼の拾い上げに対応する前のものです（「最新に取り直す」で対応します）。")
+            else:
+                st.caption("色のついた行は、Chatworkで Team-EC 様から来たメッセージのうち、依頼・作業の言葉を含むもの（台帳に無い依頼の候補）です。"
+                           "言葉の一致で拾っているので、依頼でないものも混じります。請求するものは、下のたたき台でその行の品目を選んでください。")
+                if chat.get("欠け"):
+                    st.warning(chat["欠け"])
             rule = "border-top:1px solid rgba(128,128,128,.45);padding:.45rem .2rem"
             body = ""
             for q in requests:
+                if q.get("区分") == "チャットのみ":
+                    note = f"Chatworkのみ（台帳に無い）・{q['発言者']}" + (
+                        f"・台帳の同じ日の依頼：{q['台帳の同じ日の依頼']}" if q.get("台帳の同じ日の依頼") else "")
+                    link = f'　<a href="{html.escape(q["メッセージ"])}" target="_blank">メッセージを開く</a>' if q.get("メッセージ") else ""
+                    body += (f'<div style="{rule};background:rgba(255,200,0,.10)"><b>{html.escape(str(q["依頼No"]))}</b>　'
+                             f'{html.escape(str(q["内容"]))}<br><span style="opacity:.75">{html.escape(note)}</span>{link}</div>')
+                    continue
                 note = "／".join(x for x in (q.get("対応状況"), q.get("作業費（台帳）"), q.get("パピー記入")) if x)
                 body += (f'<div style="{rule}"><b>No.{html.escape(str(q["依頼No"]))}（{html.escape(str(q["日付"]))}）</b>　'
                          f'{html.escape(str(q["内容"]))}'

@@ -567,3 +567,31 @@ def test_mf_items_have_no_detail_like_the_old_invoices():
     detail, unit = mf_export.MF_COLUMNS.index("詳細"), mf_export.MF_COLUMNS.index("単位")
     assert all(r[detail] == "" and r[unit] == "" for r in rows[1:])
     assert mf_export.calc_totals(items) == (calc["subtotal"], calc["tax"], calc["total"])
+
+
+def test_chat_only_requests_join_the_request_list_without_billing():
+    chat = {"候補": [{"日時": "2026-09-08 12:02", "発言者": "田中", "内容": "本日出荷分2弾3件移動いたしました",
+                      "台帳の同じ日の依頼": "", "メッセージ": "https://example.com/m"}], "欠け": "", "ルーム": "x"}
+    result = dict(RESULT_WITH_LEDGER, チャット依頼候補=chat)
+    req = R.ledger_requests(result)
+    assert req[-1]["区分"] == "チャットのみ" and req[-1]["依頼No"] == "チャット9/8 12:02"
+    rows = R.ledger_rows(result)
+    assert rows[-1]["依頼No"] == "チャット9/8 12:02" and rows[-1]["品目"] is None   # 品目が空＝請求しない（人が決める）
+    assert R.ledger_lines([rows[-1]], 2026, 9) == []
+    rows[-1].update(品目="汎用作業料", 数量=0.25)
+    assert R.ledger_lines([rows[-1]], 2026, 9)[0]["金額"] == 525
+
+
+def test_refetched_result_keeps_human_edits_on_the_same_rows():
+    old = R.sheet_tables(RESULT_WITH_LEDGER, VER)
+    old["返品"][1].update(計上する送料=1727, 送料確認=True)
+    old["配送変更"][0]["計上"] = False
+    new = R.sheet_tables(RESULT_WITH_LEDGER, VER)
+    new["返品"].append(dict(new["返品"][0], 送り状番号="999", 到着日="2026-09-29"))   # 取り直しで増えた返品
+    kept = R.carry_sheets(new, old)
+    assert (kept["返品"][1]["計上する送料"], kept["返品"][1]["送料確認"]) == (1727, True)
+    assert kept["配送変更"][0]["計上"] is False and kept["返品"][-1]["送り状番号"] == "999"
+    led_old = [{"依頼No": "16", "品目": "汎用作業料", "数量": 0.5}]
+    led_new = R.ledger_rows(RESULT_WITH_LEDGER)
+    merged = R.carry_ledger(led_new, led_old)
+    assert merged[0] == led_old[0] and "16" not in [r["依頼No"] for r in merged[1:]] and len(merged) > 1
