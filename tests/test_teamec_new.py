@@ -569,17 +569,14 @@ def test_mf_items_have_no_detail_like_the_old_invoices():
     assert mf_export.calc_totals(items) == (calc["subtotal"], calc["tax"], calc["total"])
 
 
-def test_chat_only_requests_join_the_request_list_without_billing():
+def test_chat_only_requests_stay_out_of_the_ledger_and_billing():
     chat = {"候補": [{"日時": "2026-09-08 12:02", "発言者": "担当者", "内容": "本日出荷分2弾3件移動いたしました",
                       "台帳の同じ日の依頼": "", "メッセージ": "https://example.com/m"}], "欠け": "", "ルーム": "x"}
     result = dict(RESULT_WITH_LEDGER, チャット依頼候補=chat)
-    req = R.ledger_requests(result)
-    assert req[-1]["区分"] == "チャットのみ" and req[-1]["依頼No"] == "チャット9/8 12:02"
-    rows = R.ledger_rows(result)
-    assert rows[-1]["依頼No"] == "チャット9/8 12:02" and rows[-1]["品目"] is None   # 品目が空＝請求しない（人が決める）
-    assert R.ledger_lines([rows[-1]], 2026, 9) == []
-    rows[-1].update(品目="汎用作業料", 数量=0.25)
-    assert R.ledger_lines([rows[-1]], 2026, 9)[0]["金額"] == 525
+    # 本来は台帳に書いてもらうもの：請求のたたき台・依頼の一覧には混ぜず、確認用に別で返す
+    assert R.ledger_requests(result) == R.ledger_requests(RESULT_WITH_LEDGER)
+    assert R.ledger_rows(result) == R.ledger_rows(RESULT_WITH_LEDGER)
+    assert R.chat_candidates(result)["候補"][0]["発言者"] == "担当者" and R.chat_candidates(SAMPLE_RESULT) is None
 
 
 def test_refetched_result_keeps_human_edits_on_the_same_rows():

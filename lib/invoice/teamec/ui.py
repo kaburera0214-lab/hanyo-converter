@@ -129,6 +129,45 @@ def _refetch_box(target_ym):
             f"前回の取り直し（{at:%m/%d %H:%M} 依頼）：{'完了' if done.get('ok') else '失敗'}　{done.get('内容', '')}")
 
 
+def _chat_ack_key(result, target_ym):
+    """チャットの候補を「確認した」チェックの置き場所。候補が変われば（取り直して増えたなど）確認し直す。"""
+    import hashlib
+    cands = (R.chat_candidates(result) or {}).get("候補", [])
+    sig = hashlib.sha1("|".join(c.get("メッセージ", c["日時"]) for c in cands).encode("utf-8")).hexdigest()[:10]
+    return f"teamec_chat_ack_{target_ym}_{sig}"
+
+
+def _chat_box(result, target_ym):
+    """要確認と同じ並びに出す：Chatwork だけで来た依頼の候補（依頼台帳への記入漏れの確認用）。"""
+    chat = R.chat_candidates(result)
+    if chat is None:
+        st.caption("この照合結果は、Chatworkだけで来た依頼の確認に対応する前のものです（「最新に取り直す」で対応します）。")
+        return
+    cands = chat.get("候補", [])
+    if chat.get("欠け"):
+        st.warning(chat["欠け"])
+    if not cands:
+        st.caption(f"Chatworkだけで来た依頼の候補：0件（{target_ym}）")
+        return
+    key = _chat_ack_key(result, target_ym)
+    acked = bool(st.session_state.get(key))
+    with st.expander(f"{'✅' if acked else '⚠'} Chatworkだけで来た依頼の候補 {len(cands)}件（依頼台帳への記入漏れの確認）",
+                     expanded=not acked):
+        st.caption("Team-EC 様からのメッセージのうち、依頼・作業の言葉を含むものです（言葉の一致で拾うので、依頼でないものも混じります）。"
+                   "本来は依頼台帳に書いてもらうものです。台帳に無い依頼があれば、台帳への記入を依頼するか、"
+                   "「4. 依頼ごとの作業」に足してください。")
+        rule = "border-top:1px solid rgba(128,128,128,.45);padding:.45rem .2rem"
+        body = ""
+        for c in cands:
+            note = c["発言者"] + (f"・台帳の同じ日の依頼：{c['台帳の同じ日の依頼']}" if c.get("台帳の同じ日の依頼") else "")
+            link = f'　<a href="{html.escape(c["メッセージ"])}" target="_blank">メッセージを開く</a>' if c.get("メッセージ") else ""
+            body += (f'<div style="{rule}"><b>{html.escape(c["日時"][5:])}</b>　{html.escape(c["内容"])}'
+                     f'<br><span style="opacity:.75">{html.escape(note)}</span>{link}</div>')
+        st.markdown(f'<div style="border-bottom:1px solid rgba(128,128,128,.45);margin-bottom:.6rem">{body}</div>',
+                    unsafe_allow_html=True)
+        st.checkbox("確認した（台帳への記入漏れが無いこと・漏れは対応したこと）", key=key)
+
+
 def _drive_result(target_ym):
     """Driveの「TeamEC実績」から対象月の最新の照合結果を読む。無ければ (None, 理由)。"""
     local = os.environ.get("TEAMEC_RESULTS_DIR")  # ローカル確認用（teamec-billing-fetch/data/results）
@@ -280,6 +319,7 @@ def render(year, month, client, db_ids=None, notion_ready=False):
         if must:
             st.error("確定前に確認が必要な項目があります。")
             _table(must, ["区分", "内容", "注文ID", "注文番号", "伝票番号", "表示用コード", "JANコード"])
+        _chat_box(result, target_ym)
         with st.expander("内訳（商品サイズ別PCS・資材・学習した項目1）"):
             st.write("出荷作業料（商品サイズ別PCS）", result["出荷作業料_サイズ別"])
             _table(result["資材費_サイズ別"], ["サイズ", "金額", "個口数", "単価"])
@@ -497,27 +537,10 @@ def render(year, month, client, db_ids=None, notion_ready=False):
         st.markdown(f"##### 依頼台帳 ｜ [シートを開く]({links.get('依頼台帳', '')})" if not ledger_missing
                     else "##### 依頼台帳")
         if not ledger_missing:
-            n_chat = len([q for q in requests if q.get("区分") == "チャットのみ"])
-            st.markdown(f"**{target_ym} の依頼：台帳 {len(requests) - n_chat}件＋チャットのみの候補 {n_chat}件**"
-                        "（台帳は出荷日。無ければ依頼日がこの月のもの）")
-            chat = (result or {}).get("チャット依頼候補")
-            if chat is None:
-                st.caption("この照合結果は、Chatworkだけで来た依頼の拾い上げに対応する前のものです（「最新に取り直す」で対応します）。")
-            else:
-                st.caption("色のついた行は、Chatworkで Team-EC 様から来たメッセージのうち、依頼・作業の言葉を含むもの（台帳に無い依頼の候補）です。"
-                           "言葉の一致で拾っているので、依頼でないものも混じります。請求するものは、下のたたき台でその行の品目を選んでください。")
-                if chat.get("欠け"):
-                    st.warning(chat["欠け"])
+            st.markdown(f"**{target_ym} の依頼：{len(requests)}件**（出荷日。無ければ依頼日がこの月のもの）")
             rule = "border-top:1px solid rgba(128,128,128,.45);padding:.45rem .2rem"
             body = ""
             for q in requests:
-                if q.get("区分") == "チャットのみ":
-                    note = f"Chatworkのみ（台帳に無い）・{q['発言者']}" + (
-                        f"・台帳の同じ日の依頼：{q['台帳の同じ日の依頼']}" if q.get("台帳の同じ日の依頼") else "")
-                    link = f'　<a href="{html.escape(q["メッセージ"])}" target="_blank">メッセージを開く</a>' if q.get("メッセージ") else ""
-                    body += (f'<div style="{rule};background:rgba(255,200,0,.10)"><b>{html.escape(str(q["依頼No"]))}</b>　'
-                             f'{html.escape(str(q["内容"]))}<br><span style="opacity:.75">{html.escape(note)}</span>{link}</div>')
-                    continue
                 note = "／".join(x for x in (q.get("対応状況"), q.get("作業費（台帳）"), q.get("パピー記入")) if x)
                 body += (f'<div style="{rule}"><b>No.{html.escape(str(q["依頼No"]))}（{html.escape(str(q["日付"]))}）</b>　'
                          f'{html.escape(str(q["内容"]))}'
@@ -711,6 +734,8 @@ def _issue_section(calc, result, source, client, year, month, prefix, db_ids, no
         return
 
     blockers = []
+    if (R.chat_candidates(result) or {}).get("候補") and not st.session_state.get(_chat_ack_key(result, target_ym)):
+        blockers.append("Chatworkだけで来た依頼の候補を確認していません（「1. 出荷実績」の確認欄）")
     must = R.open_issues(result)   # 確認表の中で確かめるもの（返品の送料など）は、ここで重ねて聞かない
     if must and not st.checkbox(f"照合結果の要確認 {len(must)}件（{'・'.join(sorted({i['区分'] for i in must}))}）を確認した",
                                 key=prefix + "ack_review"):

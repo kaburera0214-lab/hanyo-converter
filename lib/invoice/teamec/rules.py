@@ -511,22 +511,18 @@ def return_freight(rows) -> tuple[int, str]:
     return total, "、".join(parts)
 
 
-def chat_no(c) -> str:
-    """チャットの依頼候補の番号（依頼台帳の依頼Noと並べて使う）。例：チャット10/09 09:19"""
-    day, time = c["日時"][:10], c["日時"][11:16]
-    return f"チャット{int(day[5:7])}/{int(day[8:10])} {time}"
-
-
 def ledger_requests(result) -> list[dict]:
-    """その月の依頼（見るだけの一覧）。依頼台帳の依頼に、Chatwork だけで来た依頼の候補を続けて並べる。"""
-    rows = [{"依頼No": r["依頼No"], "日付": r["日付"], "区分": r.get("区分", ""), "内容": r["内容"],
+    """依頼台帳のその月の依頼（見るだけの一覧）。"""
+    return [{"依頼No": r["依頼No"], "日付": r["日付"], "区分": r.get("区分", ""), "内容": r["内容"],
              "対応状況": r["対応状況"], "作業費（台帳）": r["作業費"], "パピー記入": r.get("パピー記入", "")}
             for r in ((result or {}).get("台帳") or {}).get("依頼台帳", [])]
-    for c in ((result or {}).get("チャット依頼候補") or {}).get("候補", []):
-        rows.append({"依頼No": chat_no(c), "日付": c["日時"][:10], "区分": "チャットのみ", "内容": c["内容"],
-                     "対応状況": "", "作業費（台帳）": "", "パピー記入": "",
-                     "発言者": c["発言者"], "台帳の同じ日の依頼": c.get("台帳の同じ日の依頼", ""), "メッセージ": c.get("メッセージ", "")})
-    return rows
+
+
+def chat_candidates(result):
+    """Chatwork だけで来た依頼の候補。本来は依頼台帳に書いてもらうものなので、請求には混ぜず、
+    台帳への記入漏れを確かめるための警告として出す（2026-11-08 本人指示）。照合結果が未対応なら None。"""
+    chat = (result or {}).get("チャット依頼候補")
+    return None if chat is None else chat
 
 
 def ledger_rows(result) -> list[dict]:
@@ -553,9 +549,6 @@ def ledger_rows(result) -> list[dict]:
             fixed = LEDGER_ITEMS[item][2]
             rows.append({**info, "品目": item, "数量": 1 if fixed and fixed != "汎用作業料" else None, "単価": None,
                          "メモ": "候補：" + "・".join(whys)})
-    for c in ((result or {}).get("チャット依頼候補") or {}).get("候補", []):
-        rows.append({"依頼No": chat_no(c), "日付": c["日時"][:10], "内容": c["内容"], "品目": None, "数量": None, "単価": None,
-                     "メモ": "チャットのみ（台帳に無い）。請求するなら品目を選ぶ"})
     return rows
 
 
