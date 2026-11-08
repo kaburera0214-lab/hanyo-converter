@@ -563,7 +563,8 @@ def render(year, month, client, db_ids=None, notion_ready=False):
                             unsafe_allow_html=True)
         st.caption("下が請求のたたき台です。品目は文面からの候補なので、確認して、変更・行の追加・削除をしてください"
                    "（1つの依頼に複数の品目があれば行を足す）。汎用作業料は人時（0.25刻み・単価2,100円固定）、"
-                   "実費（チャーター・資材など）は数量と単価（税抜）を入れます。**請求しない依頼は品目を空にする（または行を削除）。** "
+                   "実費（チャーター・資材など）は数量と単価（税抜）を入れます。料金表に無いものは「その他（汎用）」で、"
+                   "単価はマイナスも入れられます（配送事故の商品代を Team-EC 様へ返す、など。内容はメモに書く）。**請求しない依頼は品目を空にする（または行を削除）。** "
                    "台帳で「通常内」「対応なし」の依頼は最初から品目を空にしています。")
         st.caption("同じ作業を「イレギュラー作業」ページ（次の段の汎用作業）にも入力済みなら二重になります。その場合はこちらの品目を空にしてください。")
         ledger_df = pd.DataFrame(_editor_base(prefix + "ledger", ledger_now), columns=ledger_cols)
@@ -577,8 +578,9 @@ def render(year, month, client, db_ids=None, notion_ready=False):
                 "依頼No": st.column_config.TextColumn("依頼No", required=True, width=80),
                 "品目": st.column_config.SelectboxColumn("品目", options=list(R.LEDGER_ITEMS), width=280),
                 "数量": st.column_config.NumberColumn("数量", min_value=0.0, step=0.25, help="汎用作業料は人時", width=80),
-                "単価": st.column_config.NumberColumn("単価", min_value=0, step=1, width=100,
-                                                      help="実費のときだけ（税抜・円）。ほかは料金表の単価"),
+                "単価": st.column_config.NumberColumn("単価", step=1, width=100,
+                                                      help="実費・その他（汎用）のときだけ（税抜・円）。ほかは料金表の単価。"
+                                                           "その他（汎用）はマイナス可（返金など）"),
                 "メモ": st.column_config.TextColumn("メモ", width=360),
             })
         dates = {q["依頼No"]: q["日付"] for q in requests}

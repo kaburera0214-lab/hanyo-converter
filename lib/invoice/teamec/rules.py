@@ -351,7 +351,12 @@ AUTO_MARKS = ("【シート】", "【Eシス】")   # 自動で入れた行の�
 LEDGER_ITEMS = {"汎用作業料": ("第3層", "人時", "汎用作業料"),
                 "トラックチャーター（実費）": ("実費", "式", None),
                 "資材（実費）": ("実費", "式", None),
-                "その他（実費）": ("実費", "式", None)}
+                "その他（実費）": ("実費", "式", None),
+                # 料金表に無いものを何でも載せる汎用の品目。単価はマイナスも可（配送事故でヤマトから回収した
+                # 商品代を Team-EC 様へ返す、など。2026-11-08 本人指示）。管理費の対象外
+                "その他（汎用）": ("その他", "式", None)}
+OTHER_ITEM = "その他（汎用）"
+NEGATIVE_OK = (OTHER_ITEM,)   # 単価にマイナスを入れてよい品目
 LEDGER_ITEMS.update({n: (LAYER[n], event_unit(n), n) for n in (
     STOCK_RESTORE, "随時連絡対応（起票・調査）", "入庫差異の報告・照会", "配送種別・個口数の変更")})
 # 依頼の文面 → 品目の候補（当たったものを全部たたき台に出す。1つの依頼が複数行になってよい）。
@@ -578,10 +583,19 @@ def ledger_lines(rows, year, month):
             p_ = price(priced, ver=ver)
         else:
             if r.get("単価") in ("", None) or pd_isna(r.get("単価")):
-                raise ValueError(f"{label}「{name}」：実費の単価（税抜・円）を入れてください")
-            p_ = amount(r["単価"], label + "の単価")
+                raise ValueError(f"{label}「{name}」：単価（税抜・円）を入れてください")
+            if name in NEGATIVE_OK and str(r["単価"]).strip().startswith("-"):
+                p_ = -amount(str(r["単価"]).strip()[1:], label + "の単価")   # 返金など、請求から差し引く金額
+            else:
+                p_ = amount(r["単価"], label + "の単価")
+            if not p_:
+                raise ValueError(f"{label}「{name}」：単価が0です。請求しないなら品目を空にしてください")
         memo = str(r.get("メモ") or "")
-        item = line(name, p_, q, layer, unit, f"依頼台帳 No.{no}（{r.get('日付') or ''}）{'' if memo.startswith('候補：') else memo}"[:120])
+        detail = f"依頼台帳 No.{no}（{r.get('日付') or ''}）{'' if memo.startswith('候補：') else memo}"[:120]
+        if p_ < 0:
+            item = {**line(name, -p_, q, layer, unit, detail), "単価": p_, "金額": -yen(-p_ * q)}
+        else:
+            item = line(name, p_, q, layer, unit, detail)
         item["要約"] = f"依頼台帳No.{no}"
         result.append(item)
     return result

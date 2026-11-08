@@ -635,3 +635,22 @@ def test_editor_base_rebuilds_from_draft_when_reopened(monkeypatch):
     del state["k"]                                       # 「確認済み」でたたむ → 状態が捨てられる
     reopened = [{"作業": "a"}, {"作業": "入庫：ケース納品"}]
     assert ui._editor_base("k", reopened) == reopened    # 開き直したら、直前の入力（下書き）から作る
+
+
+def test_generic_other_item_allows_negative_price_outside_management_fee():
+    rows = [{"依頼No": "随時連絡10/06", "日付": "2026-10-06", "品目": R.OTHER_ITEM, "数量": 1, "単価": -1295,
+             "メモ": "配送事故の商品代（ヤマトから回収）をお返し"},
+            {"依頼No": "16", "日付": "2026-10-04", "品目": R.OTHER_ITEM, "数量": 2, "単価": 500, "メモ": "臨時作業"}]
+    lines = R.ledger_lines(rows, 2026, 10)
+    assert [(x["品名"], x["区分"], x["単価"], x["金額"]) for x in lines] == [
+        (R.OTHER_ITEM, "その他", -1295, -1295), (R.OTHER_ITEM, "その他", 500, 1000)]
+    base = R.line("出荷作業料", 10000, 1, "第1層", "式")
+    t = R.totals(R.merge_lines([base] + lines))
+    assert t["management_base"] == 10000 and t["subtotal"] == 10000 + 500 - 1295 + 1000   # 管理費は第1層だけ
+    from lib.invoice import mf_export
+    from lib.invoice.teamec import ui
+    assert mf_export.calc_totals(ui._mf_items(t))[0] == t["subtotal"]
+    with pytest.raises(ValueError, match="単価"):
+        R.ledger_lines([dict(rows[0], 単価=None)], 2026, 10)
+    with pytest.raises(ValueError, match="0以上"):   # マイナスは「その他（汎用）」だけ
+        R.ledger_lines([dict(rows[0], 品目="その他（実費）")], 2026, 10)
