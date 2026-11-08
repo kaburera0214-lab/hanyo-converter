@@ -570,7 +570,7 @@ def test_mf_items_have_no_detail_like_the_old_invoices():
 
 
 def test_chat_only_requests_join_the_request_list_without_billing():
-    chat = {"候補": [{"日時": "2026-09-08 12:02", "発言者": "田中", "内容": "本日出荷分2弾3件移動いたしました",
+    chat = {"候補": [{"日時": "2026-09-08 12:02", "発言者": "担当者", "内容": "本日出荷分2弾3件移動いたしました",
                       "台帳の同じ日の依頼": "", "メッセージ": "https://example.com/m"}], "欠け": "", "ルーム": "x"}
     result = dict(RESULT_WITH_LEDGER, チャット依頼候補=chat)
     req = R.ledger_requests(result)
