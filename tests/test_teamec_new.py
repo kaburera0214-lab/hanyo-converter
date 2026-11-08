@@ -622,3 +622,16 @@ def test_irregular_work_save_never_sends_nan_and_names_the_bad_row():
         with pytest.raises(ValueError, match="2026/10/05 ラベル貼り」の人数"):
             N.save_irregular_work({"請求_イレギュラー作業": "db"}, "X", bad, [], "2026-10")
         assert sent == []   # 1行でも不備があれば、どの行も保存しない
+
+
+def test_editor_base_rebuilds_from_draft_when_reopened(monkeypatch):
+    from lib.invoice.teamec import ui
+    state = {}
+    monkeypatch.setattr(ui.st, "session_state", state)
+    first = [{"作業": "a"}]
+    assert ui._editor_base("k", first) == first          # 初めて描く：いまの入力から
+    state["k"] = {"edited_rows": {}}                     # 表が出ている間（Streamlit が状態を持つ）
+    assert ui._editor_base("k", [{"作業": "a"}, {"作業": "b"}]) == first   # 出ている間は写しを使い続ける
+    del state["k"]                                       # 「確認済み」でたたむ → 状態が捨てられる
+    reopened = [{"作業": "a"}, {"作業": "入庫：ケース納品"}]
+    assert ui._editor_base("k", reopened) == reopened    # 開き直したら、直前の入力（下書き）から作る

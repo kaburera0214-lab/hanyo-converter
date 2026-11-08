@@ -226,6 +226,20 @@ MONEY_COLUMNS = ("金額", "返品処理料", "計上する送料", "ヤマト�
 ATTENTION = "background-color: #fff3b0; color: #1a1a1a"   # 入力・確認が要る行の色
 
 
+def _editor_base(key, current):
+    """行を足せる表（data_editor）の初期値。
+
+    表は「確認済み（たたむ）」で隠すと、Streamlit が入力の状態を捨てる。開き直したときに最初の初期値から
+    作り直すと、入力した行が消える（2026-11-08 本人報告）。そこで、表を描き始めるとき（初回・開き直し）に
+    その時点の入力（下書き）を写して初期値にし、表が出ている間はその写しを使い続ける
+    （出ている間に初期値を変えると、足した行が二重になるため）。
+    """
+    snap = key + "__base"
+    if key not in st.session_state or snap not in st.session_state:
+        st.session_state[snap] = copy.deepcopy(current)
+    return st.session_state[snap]
+
+
 def _confirm_table(key, name, rows, edit=(), attention=None, choices=None):
     """確認表。どの表も同じ形：計上（一番左）→ 名称 → 金額 → 理由。直せるのは「計上」と edit の列だけ。
 
@@ -371,12 +385,12 @@ def render(year, month, client, db_ids=None, notion_ready=False):
                 r["稼働"] = r["日付"] in default_days
     shown_rows = prev.get("calendar") or cal_rows
     active = [r["日付"] for r in shown_rows if r["稼働"]]
-    summary = f"{len(active)}日（出荷指示作成料 {sum(r['定額回数'] for r in cal_rows if r['稼働'])}回）"
+    summary = f"{len(active)}日（出荷指示作成料 {sum(r['定額回数'] for r in shown_rows if r['稼働'])}回）"
     if _section(prefix + "done_days", "2. 出荷稼働日", summary):
         st.caption(f"出荷指示作成料は1回{disp['price']:,}円。出荷した稼働日のみ、平日{disp['weekday']}回・"
                    f"土日祝{disp['holiday']}回で固定します。"
                    + ("Eシスで発送のあった日を選んでいます。" if default_days is not None else "照合結果が無いため平日を仮に選んでいます。"))
-        cal = st.data_editor(pd.DataFrame(cal_rows), hide_index=True, disabled=["日付", "曜日", "祝日", "定額回数"],
+        cal = st.data_editor(pd.DataFrame(shown_rows), hide_index=True, disabled=["日付", "曜日", "祝日", "定額回数"],
                              column_order=["稼働", "日付", "曜日", "祝日", "定額回数"],
                              column_config={"稼働": st.column_config.CheckboxColumn("出荷稼働")},
                              key=prefix + "calendar", width=430)
@@ -450,7 +464,7 @@ def render(year, month, client, db_ids=None, notion_ready=False):
 
         st.markdown("##### FBA対応費 ｜ Eシス（受注番号 FBA00xx）")
         if sheets_init["FBA"]:
-            sheets_now["FBA"] = _confirm_table(prefix + "sh_fba", "FBA", sheets_init["FBA"])
+            sheets_now["FBA"] = _confirm_table(prefix + "sh_fba", "FBA", sheets_now["FBA"])
         elif result is None:
             st.caption("照合結果を読み込むと表示されます。")
         st.caption(f"小計：{sum(x['金額'] for x in _sheet_lines('FBA')):,}円（{len(sheets_init['FBA'])}件）")
@@ -458,7 +472,7 @@ def render(year, month, client, db_ids=None, notion_ready=False):
         if not ledger_missing:
             st.markdown(f"##### 随時連絡 ｜ [シートを開く]({links.get('随時連絡', '')})")
             if sheets_init["随時連絡"]:
-                sheets_now["随時連絡"] = _confirm_table(prefix + "sh_contacts", "随時連絡", sheets_init["随時連絡"])
+                sheets_now["随時連絡"] = _confirm_table(prefix + "sh_contacts", "随時連絡", sheets_now["随時連絡"])
             st.caption(f"小計：{sum(x['金額'] for x in _sheet_lines('随時連絡')):,}円"
                        f"（発生日が {target_ym} の行 {len(sheets_init['随時連絡'])}件）")
 
@@ -468,9 +482,7 @@ def render(year, month, client, db_ids=None, notion_ready=False):
                            "色のついた行は仮の金額です（ヤマトの請求に無く、シートのパピー記入欄の金額を入れています）。"
                            "運送会社の列の会社（佐川・日本郵便）の請求を見て「計上する送料」を直し、"
                            "**「送料確認」にチェックを入れると確定になります。**")
-                done_now = {i: bool(r.get("送料確認")) for i, r in enumerate(sheets_now["返品"])}
-                shown_ret = [{**r, "送料確認": done_now.get(i, r["送料確認"])} for i, r in enumerate(sheets_init["返品"])]
-                sheets_now["返品"] = _confirm_table(prefix + "sh_returns", "返品", shown_ret, edit=("計上する送料", "送料確認"),
+                sheets_now["返品"] = _confirm_table(prefix + "sh_returns", "返品", sheets_now["返品"], edit=("計上する送料", "送料確認"),
                                                     attention=lambda r: not r["送料確認"])
                 if st.checkbox("注文番号・運送会社の根拠も見る", key=prefix + "ret_more"):
                     _table(sheets_now["返品"], ["送り状番号", "注文番号", "運送会社の根拠"])
@@ -486,7 +498,7 @@ def render(year, month, client, db_ids=None, notion_ready=False):
 
             st.markdown(f"##### 配送変更依頼 ｜ [シートを開く]({links.get('配送変更依頼', '')})")
             if sheets_init["配送変更"]:
-                sheets_now["配送変更"] = _confirm_table(prefix + "sh_changes", "配送変更", sheets_init["配送変更"])
+                sheets_now["配送変更"] = _confirm_table(prefix + "sh_changes", "配送変更", sheets_now["配送変更"])
             st.caption(f"小計：{sum(x['金額'] for x in _sheet_lines('配送変更')):,}円"
                        f"（伝票番号がEシスの注文IDに当たる行 {len(sheets_init['配送変更'])}件）")
 
@@ -497,7 +509,7 @@ def render(year, month, client, db_ids=None, notion_ready=False):
                 st.caption(f"金額は商品ごとに選びます。通常は{prices[0]:,}円。14日前までに事前通知があり、"
                            f"5SKU以上なら{prices[1]:,}円、10SKU以上なら{prices[2]:,}円を選びます"
                            f"（{prices[1]:,}円を選んだ商品が5SKU以上、{prices[2]:,}円を選んだ商品が10SKU以上あること）。")
-                sheets_now["新商品"] = _confirm_table(prefix + "sh_new", "新商品", sheets_init["新商品"], edit=("金額",),
+                sheets_now["新商品"] = _confirm_table(prefix + "sh_new", "新商品", sheets_now["新商品"], edit=("金額",),
                                                       choices={"金額": prices})
             try:
                 lines_new = _sheet_lines("新商品")
@@ -513,7 +525,8 @@ def render(year, month, client, db_ids=None, notion_ready=False):
         st.markdown("##### そのほかの作業 ｜ 手で足すもの（車両受入・追加便など）")
         st.caption("作業は単価つきで選びます。事前通知（14日前まで）や時間帯外の到着で単価が変わる作業は、選択肢を分けています。"
                    "ピース入庫はEシス入庫履歴から自動計上するため、ここには入れないでください。")
-        events_df = pd.DataFrame(initial_events, columns=columns) if initial_events else pd.DataFrame(
+        events_base = _editor_base(prefix + "events", manual_rows)
+        events_df = pd.DataFrame(events_base, columns=columns) if events_base else pd.DataFrame(
             {c: pd.Series(dtype="float64" if c == "数量" else "str") for c in columns})
         events_df["数量"] = pd.to_numeric(events_df["数量"].replace("", None))
         events = st.data_editor(
@@ -553,7 +566,7 @@ def render(year, month, client, db_ids=None, notion_ready=False):
                    "実費（チャーター・資材など）は数量と単価（税抜）を入れます。**請求しない依頼は品目を空にする（または行を削除）。** "
                    "台帳で「通常内」「対応なし」の依頼は最初から品目を空にしています。")
         st.caption("同じ作業を「イレギュラー作業」ページ（次の段の汎用作業）にも入力済みなら二重になります。その場合はこちらの品目を空にしてください。")
-        ledger_df = pd.DataFrame(ledger_init, columns=ledger_cols)
+        ledger_df = pd.DataFrame(_editor_base(prefix + "ledger", ledger_now), columns=ledger_cols)
         for col in ("依頼No", "品目", "メモ"):
             ledger_df[col] = ledger_df[col].astype("object").where(ledger_df[col].notna(), None)
         ledger_df["数量"] = pd.to_numeric(ledger_df["数量"])
