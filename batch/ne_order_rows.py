@@ -114,6 +114,20 @@ PROBE_ONLY = [
     "receive_order_delivery_id",                 # 発送方法ID
     "receive_order_delivery_name",               # 発送方法名
     "receive_order_delivery_cut_form_note",      # 発送伝票備考
+    # 2026-11-09 出荷確定を誰がしたか（人ごとの出荷作業時間の算出用）。値＝担当者名は出さない
+    "receive_order_pic_id",                      # 担当者ID
+    "receive_order_pic_name",                    # 担当者名
+    "receive_order_creator_id",                  # 作成者ID
+    "receive_order_creator_name",                # 作成者名
+    "receive_order_last_modified_by_id",         # 最終更新者ID
+    "receive_order_last_modified_by_name",       # 最終更新者名
+    "receive_order_last_modified_null_safe_date",  # 最終更新日（NULLなし）
+    "receive_order_statement_delivery_printing_date",          # 納品書印刷日
+    "receive_order_statement_delivery_instruct_printing_date",  # 納品書印刷指示日
+    "receive_order_send_by_id",                  # 出荷確定者ID（あるか未確認）
+    "receive_order_send_by_name",                # 出荷確定者名（あるか未確認）
+    "receive_order_row_last_modified_by_id",     # 明細の最終更新者ID
+    "receive_order_row_last_modified_by_name",   # 明細の最終更新者名
 ]
 
 
