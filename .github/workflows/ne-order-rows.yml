@@ -20,6 +20,10 @@ on:
         description: "項目名の確認だけして終わる（値は出さない）"
         type: boolean
         default: false
+      shipper:
+        description: "出荷確定の人別集計（from〜to の出荷確定日）をドライブへ出す"
+        type: boolean
+        default: false
       from:
         description: "受注日の開始 (YYYY-MM-DD)。入れると範囲で全部取る（過去分の取り込み用）"
         required: false
@@ -65,6 +69,7 @@ jobs:
           NE_CLIENT_SECRET: ${{ secrets.NE_CLIENT_SECRET }}
           CHATWORK_API_TOKEN: ${{ secrets.CHATWORK_API_TOKEN }}
           IN_PROBE: ${{ inputs.probe }}
+          IN_SHIPPER: ${{ inputs.shipper }}
           IN_FROM: ${{ inputs.from }}
           IN_TO: ${{ inputs.to }}
           IN_DAYS: ${{ inputs.days }}
@@ -72,6 +77,10 @@ jobs:
         run: |
           # 入力は環境変数で受ける（式をコマンドに直接埋め込まない）
           ARGS=""
+          if [ "$IN_SHIPPER" = "true" ]; then
+            python batch/ne_shipper_stats.py --from "$IN_FROM" ${IN_TO:+--to "$IN_TO"}
+            exit $?
+          fi
           if [ "$IN_PROBE" = "true" ]; then
             ARGS="--probe"
           elif [ -n "$IN_FROM" ]; then
