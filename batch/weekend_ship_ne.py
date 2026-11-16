@@ -381,6 +381,16 @@ def serve(until_hhmm, force=False):
                 IDLE_EXIT_MINUTES), flush=True)
             _write_json("ws_ne_alive.json", {"at": _now().isoformat(timespec="seconds"), "idle_exit": True,
                                              "handled": handled})
+            # PC 側が止まっていると、PC からは知らせられない。ここ（クラウド）から管理者へ知らせる
+            try:
+                from lib.notify import chatwork
+                chatwork.create_task(
+                    "[info][title]🔴 土日祝出荷：PCから指示が来ません[/title]"
+                    "今日は出荷日ですが、{}分間 weekend-shipping（倉庫のPC）から指示がありません。"
+                    "PCの電源・スリープ・Wi-Fiを確かめてください。伝票は出ていません。[/info]".format(IDLE_EXIT_MINUTES),
+                    limit_days=1, audience=chatwork.ADMIN)
+            except Exception:  # noqa: BLE001
+                pass
             return 1    # 赤にして気づけるようにする
         usage.flush()
         time.sleep(POLL_SECONDS)
