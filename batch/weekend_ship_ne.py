@@ -353,7 +353,7 @@ def serve(until_hhmm, force=False):
 
 def probe():
     """使う項目が実在するかと、発送方法・受注状態の一覧を Drive に書く。ログには件数だけ。"""
-    budget = Budget(30)
+    budget = Budget(40)
     report = {"at": _now().isoformat(timespec="seconds"), "fields": {}, "lists": {}}
     alive = list(BASE_FIELDS)
     for _ in range(10):
@@ -383,6 +383,41 @@ def probe():
                 c[v] = c.get(v, 0) + 1
             dist[key] = c
     report["status20_sample"] = {"count": len(data), "distribution": dist}
+    # 印刷待ち・印刷済みの全件の内訳（受注月・店舗・発送方法・確認チェック・出荷予定日の有無）。
+    # 古い伝票が残っていると、受注状態だけで対象を決めたときに一緒に出荷してしまうため
+    keys = ["receive_order_id", "receive_order_date", "receive_order_shop_id", "receive_order_delivery_name",
+            "receive_order_confirm_check_id", "receive_order_send_plan_date", "receive_order_last_modified_date",
+            "receive_order_statement_delivery_instruct_printing_date"]
+    for sid in ("20", "40"):
+        try:
+            rows = search_all(budget, BASE_EP, keys, {"receive_order_order_status_id-eq": sid,
+                                                      "receive_order_cancel_type_id-eq": "0"})
+        except Exception as exc:  # noqa: BLE001
+            report["status_" + sid] = "取得できません: " + str(exc)[:200]
+            continue
+        agg = {"total": len(rows)}
+        for label, fn in (("order_month", lambda r: (r.get("receive_order_date") or "")[:7]),
+                          ("modified_month", lambda r: (r.get("receive_order_last_modified_date") or "")[:7]),
+                          ("shop", lambda r: r.get("receive_order_shop_id")),
+                          ("delivery", lambda r: r.get("receive_order_delivery_name")),
+                          ("confirm", lambda r: r.get("receive_order_confirm_check_id")),
+                          ("send_plan", lambda r: (r.get("receive_order_send_plan_date") or "")[:10]),
+                          ("instruct_print", lambda r: (r.get("receive_order_statement_delivery_instruct_printing_date") or "")[:10])):
+            c = {}
+            for r in rows:
+                v = str(fn(r))
+                c[v] = c.get(v, 0) + 1
+            agg[label] = dict(sorted(c.items(), key=lambda kv: -kv[1])[:40])
+        # 直近14日に受注したものだけの内訳
+        recent = [r for r in rows if (r.get("receive_order_date") or "") >= (_now() - datetime.timedelta(days=14)).strftime("%Y-%m-%d")]
+        agg["recent14_total"] = len(recent)
+        c = {}
+        for r in recent:
+            k = "{}|{}|confirm={}".format(r.get("receive_order_shop_id"), r.get("receive_order_delivery_name"),
+                                          r.get("receive_order_confirm_check_id"))
+            c[k] = c.get(k, 0) + 1
+        agg["recent14"] = c
+        report["status_" + sid] = agg
     for name, ep in (("delivery", "api_v1_system_delivery/info"),
                      ("order_status", "api_v1_system_orderstatus/info"),
                      ("shop", "api_v1_master_shop/search")):
