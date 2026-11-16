@@ -171,7 +171,13 @@ def job_snapshot(job, budget):
     for sid in status_ids:
         filters = {"receive_order_order_status_id-eq": sid,
                    "receive_order_cancel_type_id-eq": "0"}
+        if job.get("order_date_gte"):
+            filters["receive_order_date-gte"] = job["order_date_gte"]
+        if job.get("order_date_lte"):
+            filters["receive_order_date-lte"] = job["order_date_lte"]
         orders += search_all(budget, BASE_EP, BASE_FIELDS, filters)
+    if not job.get("with_rows", True):
+        return {"ok": True, "orders": orders, "rows": [], "status_ids": status_ids}
     ids = [o["receive_order_id"] for o in orders]
     rows = []
     for i in range(0, len(ids), 200):
@@ -182,14 +188,21 @@ def job_snapshot(job, budget):
     return {"ok": True, "orders": orders, "rows": rows, "status_ids": status_ids}
 
 
-def _fresh(budget, order_id):
-    got = budget.call(BASE_EP, {"fields": "receive_order_id,receive_order_last_modified_date,"
-                                          "receive_order_order_status_id,receive_order_worker_text,"
-                                          "receive_order_gruoping_tag,receive_order_delivery_cut_form_id",
-                                "receive_order_id-eq": str(order_id)}).get("data") or []
-    if not got:
-        raise RuntimeError("伝票が見つかりません")
-    return got[0]
+FRESH_FIELDS = ("receive_order_id,receive_order_last_modified_date,receive_order_order_status_id,"
+                "receive_order_worker_text,receive_order_gruoping_tag,receive_order_delivery_cut_form_id,"
+                "receive_order_cancel_type_id")
+
+
+def _fresh_many(budget, order_ids):
+    """伝票の今の状態をまとめて取る（200件ずつ1回）。伝票ごとに読み直すと回数が倍になるため。"""
+    ids = [str(i) for i in order_ids]
+    out = {}
+    for i in range(0, len(ids), 200):
+        chunk = ids[i:i + 200]
+        for row in search_all(budget, BASE_EP, FRESH_FIELDS.split(","),
+                              {"receive_order_id-in": ",".join(chunk)}):
+            out[str(row["receive_order_id"])] = row
+    return out
 
 
 def job_apply(job, budget):
@@ -197,12 +210,16 @@ def job_apply(job, budget):
     作業用欄は上書きせず、先頭に足す（大前提1）。最終更新日がPCの読んだ時点と違えば、
     人がNEで触った後なので更新せずに返す（取り違えて上書きしない）。"""
     dry = bool(job.get("dry_run"))
+    ops = job.get("ops", [])
+    now = _fresh_many(budget, [op["order_id"] for op in ops]) if ops else {}
     results = []
-    for op in job.get("ops", []):
+    for op in ops:
         oid = str(op["order_id"])
         res = {"order_id": oid}
         try:
-            cur = _fresh(budget, oid)
+            cur = now.get(oid)
+            if not cur:
+                raise RuntimeError("伝票が見つかりません")
             if op.get("last_modified") and cur["receive_order_last_modified_date"] != op["last_modified"]:
                 res.update(ok=False, error="changed", detail="PCが読んだ後にNEで更新されています")
                 results.append(res)
@@ -234,42 +251,64 @@ def job_ship(job, budget):
     """送り状番号を入れてから出荷確定する。ops: [{order_id, tracking}]
     既に出荷確定済み（受注状態50）のものは番号だけ確かめて飛ばす（二重に確定しない）。"""
     dry = bool(job.get("dry_run"))
-    results = []
-    for op in job.get("ops", []):
-        oid, tracking = str(op["order_id"]), str(op["tracking"]).strip()
-        res = {"order_id": oid}
-        try:
-            cur = _fresh(budget, oid)
-            status = str(cur.get("receive_order_order_status_id"))
-            have = (cur.get("receive_order_delivery_cut_form_id") or "").strip()
-            if status == "50":
-                res.update(ok=(have == tracking), skipped="already_shipped",
-                           detail="" if have == tracking else "出荷確定済みだが送り状番号が違います")
-                results.append(res)
-                continue
-            if status not in ("20", "40"):
-                res.update(ok=False, error="status", detail="受注状態{}は出荷確定できません".format(status))
-                results.append(res)
-                continue
-            if dry:
-                res.update(ok=True, dry_run=True)
-                results.append(res)
-                continue
-            if have != tracking:
+    ops = {str(op["order_id"]): str(op["tracking"]).strip() for op in job.get("ops", [])}
+    res = {oid: {"order_id": oid} for oid in ops}
+    if not ops:
+        return {"ok": True, "results": [], "dry_run": dry}
+
+    # 1) 今の状態をまとめて読み、番号が違うものだけ番号を入れる
+    cur = _fresh_many(budget, ops)
+    todo = []
+    for oid, tracking in ops.items():
+        c = cur.get(oid)
+        if not c:
+            res[oid].update(ok=False, error="missing", detail="伝票が見つかりません")
+            continue
+        status = str(c.get("receive_order_order_status_id"))
+        have = (c.get("receive_order_delivery_cut_form_id") or "").strip()
+        if status == "50":
+            res[oid].update(ok=(have == tracking), skipped="already_shipped",
+                            detail="" if have == tracking else "出荷確定済みだが送り状番号が違います")
+            continue
+        if status not in ("20", "40") or str(c.get("receive_order_cancel_type_id")) != "0":
+            res[oid].update(ok=False, error="status", detail="受注状態{}（キャンセル区分{}）は出荷確定できません".format(
+                status, c.get("receive_order_cancel_type_id")))
+            continue
+        if dry:
+            res[oid].update(ok=True, dry_run=True)
+            continue
+        if have != tracking:
+            try:
                 budget.call(UPDATE_EP, {"receive_order_id": oid,
-                                        "receive_order_last_modified_date": cur["receive_order_last_modified_date"],
+                                        "receive_order_last_modified_date": c["receive_order_last_modified_date"],
                                         "data": update_xml({"receive_order_delivery_cut_form_id": tracking})})
-                cur = _fresh(budget, oid)
-            budget.call(SHIPPED_EP, {"receive_order_id": oid,
-                                     "receive_order_last_modified_date": cur["receive_order_last_modified_date"]})
-            after = _fresh(budget, oid)
-            res.update(ok=str(after.get("receive_order_order_status_id")) == "50"
-                       and (after.get("receive_order_delivery_cut_form_id") or "").strip() == tracking)
-            if not res["ok"]:
-                res["detail"] = "出荷確定後の確認で状態か番号が合いません"
-        except Exception as exc:  # noqa: BLE001
-            res.update(ok=False, error=type(exc).__name__, detail=str(exc)[:300])
-        results.append(res)
+            except Exception as exc:  # noqa: BLE001
+                res[oid].update(ok=False, error=type(exc).__name__, detail=str(exc)[:300])
+                continue
+        todo.append(oid)
+
+    # 2) 最終更新日が変わったので読み直して、出荷確定
+    if todo:
+        cur = _fresh_many(budget, todo)
+        for oid in todo:
+            try:
+                budget.call(SHIPPED_EP, {"receive_order_id": oid,
+                                         "receive_order_last_modified_date": cur[oid]["receive_order_last_modified_date"]})
+            except Exception as exc:  # noqa: BLE001
+                res[oid].update(ok=False, error=type(exc).__name__, detail=str(exc)[:300])
+
+        # 3) 本当に出荷確定済みで、番号が入っているかを確かめる（成功を推測で書かない）
+        after = _fresh_many(budget, todo)
+        for oid in todo:
+            if res[oid].get("error"):
+                continue
+            a = after.get(oid) or {}
+            ok = (str(a.get("receive_order_order_status_id")) == "50"
+                  and (a.get("receive_order_delivery_cut_form_id") or "").strip() == ops[oid])
+            res[oid]["ok"] = ok
+            if not ok:
+                res[oid]["detail"] = "出荷確定後の確認で状態か番号が合いません"
+    results = list(res.values())
     return {"ok": all(r.get("ok") for r in results), "results": results, "dry_run": dry}
 
 
