@@ -1,0 +1,424 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+土日祝出荷（weekend-shipping）の NE API 担当。
+
+【なぜ GitHub Actions で動くか】
+  NE のトークンは呼ぶたびに入れ替わり、置き場所が2つあると片方が古くなって止まる。
+  だから NE を呼ぶのはこのリポジトリの Actions だけにしている（延命・受注明細と同じ）。
+  土日祝の出荷を回す本体（AIworkspace\\weekend-shipping）はローカルPCで動くので、
+  PC → Drive に「指示ファイル」を置き、ここがそれを拾って NE を呼び、結果を Drive に返す。
+
+【このリポジトリは公開】
+  ログに受注の中身（伝票番号・氏名・住所・メール・送り状番号）を出さない。
+  出すのは件数・指示ファイルの名前・エラーの種類だけ。中身は Drive（非公開）にだけ置く。
+
+【NEの画面は触らない】
+  NE 利用規約 第24条1項(17)。ここで使うのは公式 API だけ。
+
+【NE API の無料枠】
+  月1000回まで無料。1つの指示で使ってよい回数を JOB_BUDGET で決め、超える指示は
+  途中で止めて「どこまでやったか」を結果に書く（黙って全部やったことにしない）。
+
+指示ファイル（PC が作る）: weekend_ship/ws_job_<id>.json
+  {"id": "...", "kind": "ping|snapshot|apply|ship", "dry_run": bool, ...}
+結果ファイル（ここが作る）: weekend_ship/ws_result_<id>.json
+待受の印:                    weekend_ship/ws_ne_alive.json （数分おきに更新）
+出荷する日の一覧（PC が置く）: weekend_ship/ws_calendar.json {"ship_dates": ["2026-11-21", ...]}
+
+実行:
+    python batch/weekend_ship_ne.py --probe            # 使う項目があるか・発送方法の一覧（API 3〜4回）
+    python batch/weekend_ship_ne.py --serve --until 11:30
+"""
+import argparse
+import datetime
+import json
+import os
+import sys
+import time
+import traceback
+from xml.sax.saxutils import escape
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+
+from batch import st_shim                              # noqa: E402
+st_shim.install()
+
+from lib import master_store                           # noqa: E402
+from lib.invoice import drive_master                   # noqa: E402
+from lib.ne_api import client, usage                   # noqa: E402
+
+JST = datetime.timezone(datetime.timedelta(hours=9))
+SUBFOLDER = "weekend_ship"
+BASE_EP = "api_v1_receiveorder_base/search"
+ROW_EP = "api_v1_receiveorder_row/search"
+UPDATE_EP = "api_v1_receiveorder_base/update"
+SHIPPED_EP = "api_v1_receiveorder_base/shipped"
+
+POLL_SECONDS = 20
+ALIVE_EVERY = 300          # 待受の印を更新する間隔（秒）
+IDLE_EXIT_MINUTES = 75     # 出荷日でも、この時間なにも指示が来なければ終わる（PCが止まっている）
+JOB_BUDGET = 400           # 1つの指示で使ってよい NE API 回数
+
+# snapshot で取る伝票の項目。氏名・住所は取らない（照合に要るのは購入者メールと店舗の注文番号だけ）
+BASE_FIELDS = [
+    "receive_order_id",
+    "receive_order_shop_id",
+    "receive_order_shop_cut_form_id",
+    "receive_order_date",
+    "receive_order_order_status_id",
+    "receive_order_order_status_name",
+    "receive_order_confirm_check_id",
+    "receive_order_cancel_type_id",
+    "receive_order_delivery_id",
+    "receive_order_delivery_name",
+    "receive_order_delivery_cut_form_id",
+    "receive_order_delivery_cut_form_note",
+    "receive_order_send_plan_date",
+    "receive_order_statement_delivery_instruct_printing_date",
+    "receive_order_gruoping_tag",
+    "receive_order_worker_text",
+    "receive_order_purchaser_mail_address",
+    "receive_order_hope_delivery_date",
+    "receive_order_last_modified_date",
+]
+ROW_FIELDS = [
+    "receive_order_row_receive_order_id",
+    "receive_order_row_no",
+    "receive_order_row_goods_id",
+    "receive_order_row_goods_name",
+    "receive_order_row_quantity",
+    "receive_order_row_cancel_flag",
+]
+# update で書いてよい項目（これ以外は受け付けない＝PC側の間違いで別の項目を壊さない）
+UPDATABLE = {
+    "receive_order_confirm_check_id",
+    "receive_order_delivery_id",
+    "receive_order_send_plan_date",
+    "receive_order_worker_text",
+    "receive_order_gruoping_tag",
+    "receive_order_delivery_cut_form_id",
+}
+
+
+class Budget:
+    def __init__(self, limit):
+        self.limit, self.used = limit, 0
+
+    def call(self, endpoint, params=None):
+        if self.used >= self.limit:
+            raise RuntimeError("この指示で使ってよいNE APIの回数（{}回）に達しました".format(self.limit))
+        self.used += 1
+        return client.call(endpoint, params)
+
+
+# ---------- Drive ----------
+
+def _folder():
+    return drive_master.get_or_create_folder(SUBFOLDER, master_store.folder_id())
+
+
+def _write_json(name, data):
+    body = json.dumps(data, ensure_ascii=False, indent=1).encode("utf-8")
+    drive_master.upload_or_replace(body, name, _folder(), mimetype="application/json")
+
+
+def _read_json(file_id):
+    return json.loads(drive_master.download_bytes(file_id).decode("utf-8"))
+
+
+def _now():
+    return datetime.datetime.now(JST)
+
+
+# ---------- 純関数（テスト対象） ----------
+
+def update_xml(fields):
+    """update API の data（XML）。許可した項目だけを書く。"""
+    bad = sorted(set(fields) - UPDATABLE)
+    if bad:
+        raise ValueError("更新を許していない項目です: {}".format(", ".join(bad)))
+    parts = ["<{0}>{1}</{0}>".format(k, escape(str(v))) for k, v in fields.items()]
+    return ('<?xml version="1.0" encoding="utf-8"?><root><receiveorder_base>'
+            + "".join(parts) + "</receiveorder_base></root>")
+
+
+def search_all(budget, endpoint, fields, filters, page=10000):
+    rows, offset = [], 0
+    while True:
+        params = {"fields": ",".join(fields), "limit": str(page), "offset": str(offset)}
+        params.update(filters)
+        data = budget.call(endpoint, params).get("data") or []
+        rows.extend(data)
+        if len(data) < page:
+            return rows
+        offset += page
+
+
+# ---------- 指示の種類 ----------
+
+def job_ping(job, budget):
+    budget.call(client.KEEPALIVE_ENDPOINT)
+    return {"ok": True}
+
+
+def job_snapshot(job, budget):
+    """出荷に関わる伝票を取る。status_ids（既定 20=納品書印刷待ち）と、
+    受注日の上限 (order_date_lte) で絞る。明細も一緒に返す。"""
+    status_ids = [str(s) for s in job.get("status_ids", [20])]
+    orders = []
+    for sid in status_ids:
+        filters = {"receive_order_order_status_id-eq": sid,
+                   "receive_order_cancel_type_id-eq": "0"}
+        orders += search_all(budget, BASE_EP, BASE_FIELDS, filters)
+    ids = [o["receive_order_id"] for o in orders]
+    rows = []
+    for i in range(0, len(ids), 200):
+        chunk = ids[i:i + 200]
+        rows += search_all(budget, ROW_EP, ROW_FIELDS,
+                           {"receive_order_row_receive_order_id-in": ",".join(chunk),
+                            "receive_order_row_cancel_flag-eq": "0"})
+    return {"ok": True, "orders": orders, "rows": rows, "status_ids": status_ids}
+
+
+def _fresh(budget, order_id):
+    got = budget.call(BASE_EP, {"fields": "receive_order_id,receive_order_last_modified_date,"
+                                          "receive_order_order_status_id,receive_order_worker_text,"
+                                          "receive_order_gruoping_tag,receive_order_delivery_cut_form_id",
+                                "receive_order_id-eq": str(order_id)}).get("data") or []
+    if not got:
+        raise RuntimeError("伝票が見つかりません")
+    return got[0]
+
+
+def job_apply(job, budget):
+    """伝票ごとに項目を更新する。ops: [{order_id, last_modified, set:{...}, prepend_worker_text, add_tag}]
+    作業用欄は上書きせず、先頭に足す（大前提1）。最終更新日がPCの読んだ時点と違えば、
+    人がNEで触った後なので更新せずに返す（取り違えて上書きしない）。"""
+    dry = bool(job.get("dry_run"))
+    results = []
+    for op in job.get("ops", []):
+        oid = str(op["order_id"])
+        res = {"order_id": oid}
+        try:
+            cur = _fresh(budget, oid)
+            if op.get("last_modified") and cur["receive_order_last_modified_date"] != op["last_modified"]:
+                res.update(ok=False, error="changed", detail="PCが読んだ後にNEで更新されています")
+                results.append(res)
+                continue
+            fields = dict(op.get("set") or {})
+            if op.get("prepend_worker_text"):
+                old = cur.get("receive_order_worker_text") or ""
+                fields["receive_order_worker_text"] = op["prepend_worker_text"] + ("\n" + old if old else "")
+            if op.get("add_tag"):
+                old = cur.get("receive_order_gruoping_tag") or ""
+                tag = "[{}]".format(op["add_tag"])
+                if tag not in old:
+                    fields["receive_order_gruoping_tag"] = old + tag
+            xml = update_xml(fields)
+            if dry:
+                res.update(ok=True, dry_run=True, fields=sorted(fields))
+            else:
+                budget.call(UPDATE_EP, {"receive_order_id": oid,
+                                        "receive_order_last_modified_date": cur["receive_order_last_modified_date"],
+                                        "data": xml})
+                res.update(ok=True, fields=sorted(fields))
+        except Exception as exc:  # noqa: BLE001
+            res.update(ok=False, error=type(exc).__name__, detail=str(exc)[:300])
+        results.append(res)
+    return {"ok": all(r.get("ok") for r in results), "results": results, "dry_run": dry}
+
+
+def job_ship(job, budget):
+    """送り状番号を入れてから出荷確定する。ops: [{order_id, tracking}]
+    既に出荷確定済み（受注状態50）のものは番号だけ確かめて飛ばす（二重に確定しない）。"""
+    dry = bool(job.get("dry_run"))
+    results = []
+    for op in job.get("ops", []):
+        oid, tracking = str(op["order_id"]), str(op["tracking"]).strip()
+        res = {"order_id": oid}
+        try:
+            cur = _fresh(budget, oid)
+            status = str(cur.get("receive_order_order_status_id"))
+            have = (cur.get("receive_order_delivery_cut_form_id") or "").strip()
+            if status == "50":
+                res.update(ok=(have == tracking), skipped="already_shipped",
+                           detail="" if have == tracking else "出荷確定済みだが送り状番号が違います")
+                results.append(res)
+                continue
+            if status not in ("20", "40"):
+                res.update(ok=False, error="status", detail="受注状態{}は出荷確定できません".format(status))
+                results.append(res)
+                continue
+            if dry:
+                res.update(ok=True, dry_run=True)
+                results.append(res)
+                continue
+            if have != tracking:
+                budget.call(UPDATE_EP, {"receive_order_id": oid,
+                                        "receive_order_last_modified_date": cur["receive_order_last_modified_date"],
+                                        "data": update_xml({"receive_order_delivery_cut_form_id": tracking})})
+                cur = _fresh(budget, oid)
+            budget.call(SHIPPED_EP, {"receive_order_id": oid,
+                                     "receive_order_last_modified_date": cur["receive_order_last_modified_date"]})
+            after = _fresh(budget, oid)
+            res.update(ok=str(after.get("receive_order_order_status_id")) == "50"
+                       and (after.get("receive_order_delivery_cut_form_id") or "").strip() == tracking)
+            if not res["ok"]:
+                res["detail"] = "出荷確定後の確認で状態か番号が合いません"
+        except Exception as exc:  # noqa: BLE001
+            res.update(ok=False, error=type(exc).__name__, detail=str(exc)[:300])
+        results.append(res)
+    return {"ok": all(r.get("ok") for r in results), "results": results, "dry_run": dry}
+
+
+JOBS = {"ping": job_ping, "snapshot": job_snapshot, "apply": job_apply, "ship": job_ship}
+
+
+def run_job(meta):
+    job = _read_json(meta["id"])
+    jid = str(job.get("id") or meta["name"][len("ws_job_"):-len(".json")])
+    kind = job.get("kind")
+    budget = Budget(int(job.get("budget") or JOB_BUDGET))
+    started = _now().isoformat(timespec="seconds")
+    try:
+        if kind not in JOBS:
+            raise ValueError("知らない指示です: {}".format(kind))
+        out = JOBS[kind](job, budget)
+    except Exception as exc:  # noqa: BLE001
+        out = {"ok": False, "error": type(exc).__name__, "detail": str(exc)[:300],
+               "trace": traceback.format_exc()[-1500:]}
+    out.update(id=jid, kind=kind, started_at=started, finished_at=_now().isoformat(timespec="seconds"),
+               ne_calls=budget.used)
+    _write_json("ws_result_{}.json".format(jid), out)
+    # 公開ログに出すのは件数と種類だけ
+    n = len(out.get("results") or out.get("orders") or [])
+    print("[weekend_ship] job={} kind={} ok={} items={} ne_calls={}".format(
+        jid, kind, out.get("ok"), n, budget.used), flush=True)
+
+
+def pending_jobs():
+    folder = _folder()
+    jobs = drive_master.list_files(folder, "ws_job_")
+    done = {f["name"][len("ws_result_"):] for f in drive_master.list_files(folder, "ws_result_")}
+    return sorted([j for j in jobs if j["name"][len("ws_job_"):] not in done], key=lambda f: f["name"])
+
+
+def is_ship_day(today):
+    f = drive_master.find_file("ws_calendar.json", _folder())
+    if not f:
+        return False
+    try:
+        return today in (_read_json(f["id"]).get("ship_dates") or [])
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def serve(until_hhmm, force=False):
+    today = _now().strftime("%Y-%m-%d")
+    if not force and not is_ship_day(today):
+        print("[weekend_ship] {} は出荷日の一覧にありません。待ち受けずに終わります。".format(today), flush=True)
+        return 0
+    hh, mm = (int(x) for x in until_hhmm.split(":"))
+    end = _now().replace(hour=hh, minute=mm, second=0, microsecond=0)
+    last_alive, last_job = 0.0, time.time()
+    handled = 0
+    print("[weekend_ship] 待ち受け開始（{}まで）".format(until_hhmm), flush=True)
+    while _now() < end:
+        if time.time() - last_alive > ALIVE_EVERY:
+            _write_json("ws_ne_alive.json", {"at": _now().isoformat(timespec="seconds"),
+                                             "until": end.isoformat(timespec="seconds"), "handled": handled})
+            last_alive = time.time()
+        try:
+            for meta in pending_jobs():
+                run_job(meta)
+                handled += 1
+                last_job = time.time()
+        except Exception as exc:  # noqa: BLE001
+            print("[weekend_ship] 待ち受け中のエラー: {}".format(type(exc).__name__), flush=True)
+        if time.time() - last_job > IDLE_EXIT_MINUTES * 60 and handled == 0:
+            print("[weekend_ship] {}分間指示が来ません。PCが止まっている可能性があります。".format(
+                IDLE_EXIT_MINUTES), flush=True)
+            _write_json("ws_ne_alive.json", {"at": _now().isoformat(timespec="seconds"), "idle_exit": True,
+                                             "handled": handled})
+            return 1    # 赤にして気づけるようにする
+        usage.flush()
+        time.sleep(POLL_SECONDS)
+    _write_json("ws_ne_alive.json", {"at": _now().isoformat(timespec="seconds"), "ended": True,
+                                     "handled": handled})
+    print("[weekend_ship] 待ち受け終了 handled={}".format(handled), flush=True)
+    return 0
+
+
+def probe():
+    """使う項目が実在するかと、発送方法・受注状態の一覧を Drive に書く。ログには件数だけ。"""
+    budget = Budget(30)
+    report = {"at": _now().isoformat(timespec="seconds"), "fields": {}, "lists": {}}
+    alive = list(BASE_FIELDS)
+    for _ in range(10):
+        try:
+            data = budget.call(BASE_EP, {"fields": ",".join(alive), "limit": "50",
+                                         "receive_order_order_status_id-eq": "20"}).get("data") or []
+            break
+        except Exception as exc:  # noqa: BLE001
+            named = [f for f in alive if f in str(exc)]
+            if not named:
+                report["error"] = str(exc)[:300]
+                data = []
+                break
+            for f in named:
+                alive.remove(f)
+                report["fields"][f] = "使えない"
+    for f in alive:
+        report["fields"][f] = "使える"
+    # 値の分布（個人情報でない項目だけ）
+    dist = {}
+    for key in ("receive_order_delivery_id", "receive_order_delivery_name", "receive_order_gruoping_tag",
+                "receive_order_confirm_check_id", "receive_order_shop_id"):
+        if key in alive:
+            c = {}
+            for row in data:
+                v = str(row.get(key))
+                c[v] = c.get(v, 0) + 1
+            dist[key] = c
+    report["status20_sample"] = {"count": len(data), "distribution": dist}
+    for name, ep in (("delivery", "api_v1_system_delivery/info"),
+                     ("order_status", "api_v1_system_orderstatus/info"),
+                     ("shop", "api_v1_master_shop/search")):
+        try:
+            params = {"fields": "shop_id,shop_name"} if name == "shop" else None
+            report["lists"][name] = budget.call(ep, params).get("data")
+        except Exception as exc:  # noqa: BLE001
+            report["lists"][name] = "取得できません: " + str(exc)[:200]
+    _write_json("ws_probe.json", report)
+    print("[weekend_ship] probe: 使える項目{}個 / 使えない{}個 / 印刷待ちの見本{}件 / NE API {}回".format(
+        sum(1 for v in report["fields"].values() if v == "使える"),
+        sum(1 for v in report["fields"].values() if v == "使えない"), len(data), budget.used), flush=True)
+    return 0
+
+
+def main():
+    ap = argparse.ArgumentParser(description="土日祝出荷の NE API 担当")
+    ap.add_argument("--probe", action="store_true")
+    ap.add_argument("--serve", action="store_true")
+    ap.add_argument("--until", default="11:30")
+    ap.add_argument("--force", action="store_true", help="出荷日の一覧に無くても待ち受ける（試験用）")
+    args = ap.parse_args()
+    try:
+        if args.probe:
+            return probe()
+        if args.serve:
+            return serve(args.until, args.force)
+        ap.print_help()
+        return 2
+    finally:
+        usage.flush()
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except Exception as exc:  # noqa: BLE001
+        print("[weekend_ship] FAILED: {}".format(type(exc).__name__), file=sys.stderr, flush=True)
+        sys.exit(1)
