@@ -9,7 +9,7 @@
        python tools/gold_upload_local.py index.html event/2609_ss/index.html
 
 認証情報は次の優先順で読む:
-    1. 環境変数 GOLD_FTP_USER / GOLD_FTP_PASS (任意で GOLD_FTP_HOST, GOLD_SHOP_URL)
+    1. 環境変数 GOLD_FTP_USER / GOLD_FTP_PASS (任意で GOLD_FTP_HOST, GOLD_FTP_PORT, GOLD_SHOP_URL)
     2. %USERPROFILE%\\.gold_ftp.json
        {"host": "ftp.rakuten.ne.jp", "user": "...", "pass": "...", "shop": "babygoodsfactory"}
 """
@@ -22,9 +22,14 @@ import sys
 import zipfile
 
 
+# 楽天GOLDのFTPは16910番。21番は接続直後に切られる（2026-11-16 確認。7月までは21番で通っていた）
+DEFAULT_PORT = 16910
+
+
 def load_conf():
     conf = {
         "host": os.environ.get("GOLD_FTP_HOST", ""),
+        "port": os.environ.get("GOLD_FTP_PORT", ""),
         "user": os.environ.get("GOLD_FTP_USER", ""),
         "pass": os.environ.get("GOLD_FTP_PASS", ""),
         "shop": os.environ.get("GOLD_SHOP_URL", ""),
@@ -37,6 +42,7 @@ def load_conf():
             for k in conf:
                 conf[k] = conf[k] or str(file_conf.get(k, ""))
     conf["host"] = conf["host"] or "ftp.rakuten.ne.jp"
+    conf["port"] = int(conf["port"] or DEFAULT_PORT)
     if not conf["user"] or not conf["pass"]:
         sys.exit("認証情報がありません。%USERPROFILE%\\.gold_ftp.json を作成してください。\n"
                  '内容例: {"host": "ftp.rakuten.ne.jp", "user": "FTPユーザー名", '
@@ -71,9 +77,9 @@ def main():
     conf = load_conf()
     shop = conf["shop"] or shop_hint
 
-    print(f"接続中: {conf['host']} ...")
+    print(f"接続中: {conf['host']}:{conf['port']} ...")
     ftp = ftplib.FTP()
-    ftp.connect(conf["host"], 21, timeout=20)
+    ftp.connect(conf["host"], conf["port"], timeout=20)
     ftp.login(conf["user"], conf["pass"])
     ftp.set_pasv(True)
     # ディレクトリを再帰作成

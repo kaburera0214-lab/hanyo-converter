@@ -2,7 +2,7 @@
 """
 楽天GOLDへのFTPアップロード。
 
-Secrets: GOLD_FTP_HOST(既定 ftp.rakuten.ne.jp) / GOLD_FTP_USER / GOLD_FTP_PASS /
+Secrets: GOLD_FTP_HOST(既定 ftp.rakuten.ne.jp) / GOLD_FTP_PORT(既定 16910) / GOLD_FTP_USER / GOLD_FTP_PASS /
          GOLD_SHOP_URL(公開URL組み立て用)
 GOLD FTPは平文FTPのためパッシブモードで接続する。Streamlit Cloudから外向きFTPが
 通らない環境では tools/gold_upload_local.py(ローカル実行)にフォールバックする。
@@ -12,6 +12,10 @@ import io
 import posixpath
 
 
+# 楽天GOLDのFTPは16910番。21番は接続直後に切られる（2026-11-16 確認。7月までは21番で通っていた）
+DEFAULT_PORT = 16910
+
+
 class GoldFTPError(RuntimeError):
     pass
 
@@ -19,11 +23,12 @@ class GoldFTPError(RuntimeError):
 def _conf():
     import streamlit as st
     host = str(st.secrets.get("GOLD_FTP_HOST", "ftp.rakuten.ne.jp")).strip()
+    port = int(st.secrets.get("GOLD_FTP_PORT", DEFAULT_PORT))
     user = str(st.secrets.get("GOLD_FTP_USER", "")).strip()
     pw = str(st.secrets.get("GOLD_FTP_PASS", "")).strip()
     if not user or not pw:
         raise GoldFTPError("Secrets に GOLD_FTP_USER / GOLD_FTP_PASS が未設定です。")
-    return host, user, pw
+    return host, port, user, pw
 
 
 def is_configured():
@@ -58,10 +63,10 @@ def build_upload_package(remote_path, html_text):
 
 
 def _connect():
-    host, user, pw = _conf()
+    host, port, user, pw = _conf()
     try:
         ftp = ftplib.FTP()
-        ftp.connect(host, 21, timeout=20)
+        ftp.connect(host, port, timeout=20)
         ftp.login(user, pw)
         ftp.set_pasv(True)
         return ftp
