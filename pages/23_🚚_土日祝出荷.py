@@ -8,8 +8,9 @@ NEから保存したファイルを受け取って、倉庫のPCへ渡すだけ�
 
 - 倉庫のPC → このページ（今の手順）: 共通の置き場（Supabase の関数 shared_secret_get）の
   weekend_ship_state_YYYYMMDD。PCが暗号化して追記する。手順名・件数・文言だけで、氏名・住所は無い
-- このページ → 倉庫のPC（ボタン・ファイル）: Googleドライブの weekend_ship フォルダ
-  （ボタン = ws_cmd_*.json、ファイル = files/YYYYMMDD/）。PCは読むだけ
+- このページ → 倉庫のPC（ボタン）: Googleドライブの weekend_ship/ws_cmd_*.json。PCは読むだけ
+- NEで保存したファイルは、倉庫PCのChromeの保存先（パソコン版ドライブで同期する「土日祝出荷_NEの保存先」）
+  から倉庫のPCが自動で拾う。このページにファイルを入れる必要は無い（2026-11-18 ユーザー指示：ドラッグさせない）
 - 手順と文言の正本は weekend-shipping の src/flow.py（このページに手順を書かない）
 """
 import datetime
@@ -31,6 +32,10 @@ from lib.invoice import drive_master               # noqa: E402
 
 JST = datetime.timezone(datetime.timedelta(hours=9))
 SUBFOLDER = "weekend_ship"
+# 試験の日に保存してもらう見本（中身は空。名前だけ本番のNEのファイルに合わせる）
+TEST_PDF = (b"%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
+            b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n")
+TEST_CSV = "お客様管理番号,送り状種類\n".encode("cp932")
 
 
 def _today():
@@ -107,26 +112,33 @@ with box:
         st.write(s.get("text", ""))
         if s.get("link"):
             st.link_button("NEを開く", s["link"])
+        steps = s.get("steps") or []
+        all_checked = True
+        if steps and s.get("button"):
+            # 手順を1つずつチェックしてからでないと押せない（読まずに押すのを防ぐ）
+            for i, t in enumerate(steps, 1):
+                if not st.checkbox("{}. {}".format(i, t), key="chk_{}_{}".format(s["step"], i)):
+                    all_checked = False
+        elif steps:
+            st.markdown("\n".join("{}. {}".format(i, t) for i, t in enumerate(steps, 1)))
+        if s.get("test_downloads"):
+            # 試験の日：本番と同じ道（Chromeの保存 → パソコン版ドライブで同期 → 倉庫のPC）を通すための見本
+            c1, c2 = st.columns(2)
+            c1.download_button("試験用の納品書を保存", data=TEST_PDF, file_name="sod_試験.pdf",
+                               mime="application/pdf", use_container_width=True)
+            c2.download_button("試験用の配送データを保存", data=TEST_CSV, file_name="yamatoCSVB2v6_試験.csv",
+                               mime="text/csv", use_container_width=True)
         pressed_key = "pressed_" + s.get("step", "")
         if s.get("button"):
             if st.session_state.get(pressed_key):
                 st.info("確かめています…（数十秒かかることがあります）")
-            elif st.button(s["button"], type="primary", use_container_width=True, key="btn_" + s["step"]):
+            elif st.button(s["button"], type="primary", use_container_width=True, key="btn_" + s["step"],
+                           disabled=not all_checked):
                 send(day, "press", s["step"])
                 st.session_state[pressed_key] = True
                 st.rerun()
-        if s.get("upload"):
-            files = st.file_uploader("NEで保存したファイルをここに入れてください（納品書PDFと配送データCSV）",
-                                     type=["pdf", "csv"], accept_multiple_files=True, key="up_" + s["step"])
-            if files and st.button("このファイルを渡す", type="primary", use_container_width=True, key="send_files"):
-                _, day_folder = _folder_ids(day)
-                names = []
-                for f in files:
-                    mt = "application/pdf" if f.name.lower().endswith(".pdf") else "text/csv"
-                    drive_master.upload_bytes(f.getvalue(), f.name, day_folder, mimetype=mt)
-                    names.append(f.name)
-                send(day, "uploaded", s["step"], {"files": names})
-                st.success("渡しました: " + "、".join(names))
+            if not all_checked:
+                st.caption("上の手順に全部チェックを付けると押せます。")
     if s.get("message"):
         st.write("ℹ️ " + s["message"])
 
