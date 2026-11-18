@@ -315,7 +315,25 @@ def job_ship(job, budget):
     return {"ok": all(r.get("ok") for r in results), "results": results, "dry_run": dry}
 
 
-JOBS = {"ping": job_ping, "snapshot": job_snapshot, "apply": job_apply, "ship": job_ship}
+def job_holds(job, budget):
+    """土日に保留した伝票（受注分類タグ[土日保留]）で、まだ出荷されていないもの。滞留の見張り用。"""
+    fields = ["receive_order_id", "receive_order_shop_id", "receive_order_date", "receive_order_order_status_id",
+              "receive_order_worker_text", "receive_order_gruoping_tag", "receive_order_last_modified_date"]
+    rows = []
+    for sid in ("2", "20", "40"):
+        rows += search_all(budget, BASE_EP, fields, {"receive_order_order_status_id-eq": sid,
+                                                     "receive_order_cancel_type_id-eq": "0",
+                                                     "receive_order_gruoping_tag-like": "%" + job.get("tag", "土日保留") + "%"})
+    return {"ok": True, "orders": rows}
+
+
+def job_exit(job, budget):
+    """PC が「今日はもう用が無い」と言ったら待ち受けを終える（延命バッチなどを待たせない）。"""
+    return {"ok": True, "exit": True}
+
+
+JOBS = {"ping": job_ping, "snapshot": job_snapshot, "apply": job_apply, "ship": job_ship,
+        "holds": job_holds, "exit": job_exit}
 
 
 def run_job(job):
@@ -337,6 +355,7 @@ def run_job(job):
     n = len(out.get("results") or out.get("orders") or [])
     print("[weekend_ship] job={} kind={} ok={} items={} ne_calls={}".format(
         jid, kind, out.get("ok"), n, budget.used), flush=True)
+    return bool(out.get("exit"))
 
 
 def _shared_get(name):
@@ -402,9 +421,14 @@ def serve(until_hhmm, force=False):
             last_alive = time.time()
         try:
             for job in pending_jobs():
-                run_job(job)
+                stop = run_job(job)
                 handled += 1
                 last_job = time.time()
+                if stop:
+                    _write_json("ws_ne_alive.json", {"at": _now().isoformat(timespec="seconds"), "ended": True,
+                                                     "handled": handled, "by": "exit"})
+                    print("[weekend_ship] PCの指示で待ち受けを終えます handled={}".format(handled), flush=True)
+                    return 0
         except Exception as exc:  # noqa: BLE001
             print("[weekend_ship] 待ち受け中のエラー: {}".format(type(exc).__name__), flush=True)
         if time.time() - last_job > IDLE_EXIT_MINUTES * 60 and handled == 0:
