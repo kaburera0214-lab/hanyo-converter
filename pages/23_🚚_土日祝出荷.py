@@ -117,6 +117,7 @@ with box:
             st.progress(float(s.get("percent") or 0))
         steps = s.get("steps") or []
         all_checked = True
+        links = s.get("step_links") or {}
         for i, item in enumerate(steps, 1):
             t = item["text"] if isinstance(item, dict) else str(item)
             label = "{}. {}".format(i, t)
@@ -126,8 +127,9 @@ with box:
                     all_checked = False
             else:
                 st.markdown(label)
-            if isinstance(item, dict) and item.get("link"):
-                st.link_button(item.get("link_label") or "開く", item["link"])
+            ln = links.get(str(i))
+            if ln and ln.get("url"):
+                st.link_button(ln.get("label") or "開く", ln["url"])
         if s.get("test_downloads"):
             # 試験の日：本番と同じ道（Chromeの保存 → パソコン版ドライブで同期 → 倉庫のPC）を通すための見本
             c1, c2 = st.columns(2)
