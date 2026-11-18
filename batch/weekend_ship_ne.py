@@ -20,15 +20,18 @@
   月1000回まで無料。1つの指示で使ってよい回数を JOB_BUDGET で決め、超える指示は
   途中で止めて「どこまでやったか」を結果に書く（黙って全部やったことにしない）。
 
-指示ファイル（PC が作る）: weekend_ship/ws_job_<id>.json
-  {"id": "...", "kind": "ping|snapshot|apply|ship", "dry_run": bool, ...}
-結果ファイル（ここが作る）: weekend_ship/ws_result_<id>.json
-待受の印:                    weekend_ship/ws_ne_alive.json （数分おきに更新）
-出荷する日の一覧（PC が置く）: weekend_ship/ws_calendar.json {"ship_dates": ["2026-11-21", ...]}
+PC → ここ（指示・出荷日の一覧）: 共通の置き場（Supabase shared_secrets）に Fernet で暗号化して追記
+  weekend_ship_job      {"id": "...", "kind": "ping|snapshot|apply|ship", "dry_run": bool, ...}（最新の1行だけ見る）
+  weekend_ship_calendar {"ship_dates": ["2026-11-21", ...]}
+ここ → PC（結果）: ドライブ weekend_ship/ws_result_<id>.json・待受の印 ws_ne_alive.json（数分おき）
+  ※ ドライブで往復しないのは、両方の Google 認可が drive.file で、相手のアプリが作ったファイルが見えないため
+
+起動: PC が枝 weekend-ship-trigger に合図を push する（weekend-ship-trigger.yml・数十秒で起動）。
+      時刻指定（7:40・12:00）は GitHub の混雑で数時間遅れることがある（2026-11-17 に 12:00 の回が 13:46）ので予備
 
 実行:
     python batch/weekend_ship_ne.py --probe            # 使う項目があるか・発送方法の一覧（API 3〜4回）
-    python batch/weekend_ship_ne.py --serve --until 11:30
+    python batch/weekend_ship_ne.py --serve --until auto   # auto = 5時間40分後（21時まで）
 """
 import argparse
 import datetime
@@ -56,7 +59,7 @@ ROW_EP = "api_v1_receiveorder_row/search"
 UPDATE_EP = "api_v1_receiveorder_base/update"
 SHIPPED_EP = "api_v1_receiveorder_base/shipped"
 
-POLL_SECONDS = 20
+POLL_SECONDS = 15          # 1回読むごとに shared_secret_reads に1行残る（出荷日に数百行）
 ALIVE_EVERY = 300          # 待受の印を更新する間隔（秒）
 IDLE_EXIT_MINUTES = 75     # 出荷日でも、この時間なにも指示が来なければ終わる（PCが止まっている）
 JOB_BUDGET = 400           # 1つの指示で使ってよい NE API 回数
@@ -315,9 +318,8 @@ def job_ship(job, budget):
 JOBS = {"ping": job_ping, "snapshot": job_snapshot, "apply": job_apply, "ship": job_ship}
 
 
-def run_job(meta):
-    job = _read_json(meta["id"])
-    jid = str(job.get("id") or meta["name"][len("ws_job_"):-len(".json")])
+def run_job(job):
+    jid = str(job["id"])
     kind = job.get("kind")
     budget = Budget(int(job.get("budget") or JOB_BUDGET))
     started = _now().isoformat(timespec="seconds")
@@ -337,20 +339,42 @@ def run_job(meta):
         jid, kind, out.get("ok"), n, budget.used), flush=True)
 
 
+def _shared_get(name):
+    """共通の置き場（GapBoard の Supabase・shared_secrets）から最新の1行を読んで復号する。
+    PC（weekend-shipping）が指示と出荷日の一覧をここへ暗号化して追記する。
+    ドライブを使わないのは、PCとこのリポジトリのGoogle認可がどちらも drive.file で、
+    相手のアプリが作ったファイルが見えないため（2026-11-17 に確認）。"""
+    import requests
+    from cryptography.fernet import Fernet
+    url = os.environ.get("SHARED_SECRETS_URL", "").rstrip("/")
+    anon = os.environ.get("SHARED_SECRETS_ANON_KEY", "")
+    key = os.environ.get("SHARED_SECRETS_KEY", "")
+    if not (url and anon and key):
+        raise RuntimeError("SHARED_SECRETS_* が未設定です")
+    r = requests.post(url + "/rest/v1/rpc/shared_secret_get", timeout=20,
+                      headers={"apikey": anon, "Authorization": "Bearer " + anon, "Content-Type": "application/json"},
+                      json={"p_name": name, "p_reader": "github-actions"})
+    r.raise_for_status()
+    rows = r.json() or []
+    if not rows:
+        return None
+    return json.loads(Fernet(key.encode()).decrypt(rows[0]["ciphertext"].encode()).decode("utf-8"))
+
+
 def pending_jobs():
-    folder = _folder()
-    jobs = drive_master.list_files(folder, "ws_job_")
-    done = {f["name"][len("ws_result_"):] for f in drive_master.list_files(folder, "ws_result_")}
-    return sorted([j for j in jobs if j["name"][len("ws_job_"):] not in done], key=lambda f: f["name"])
+    job = _shared_get("weekend_ship_job")
+    if not job:
+        return []
+    done = drive_master.find_file("ws_result_{}.json".format(job["id"]), _folder())
+    return [] if done else [job]
 
 
 def is_ship_day(today):
-    f = drive_master.find_file("ws_calendar.json", _folder())
-    if not f:
-        return False
     try:
-        return today in (_read_json(f["id"]).get("ship_dates") or [])
-    except Exception:  # noqa: BLE001
+        cal = _shared_get("weekend_ship_calendar") or {}
+        return today in (cal.get("ship_dates") or [])
+    except Exception as exc:  # noqa: BLE001
+        print("[weekend_ship] 出荷日の一覧を読めません: {}".format(type(exc).__name__), flush=True)
         return False
 
 
@@ -359,19 +383,26 @@ def serve(until_hhmm, force=False):
     if not force and not is_ship_day(today):
         print("[weekend_ship] {} は出荷日の一覧にありません。待ち受けずに終わります。".format(today), flush=True)
         return 0
-    hh, mm = (int(x) for x in until_hhmm.split(":"))
-    end = _now().replace(hour=hh, minute=mm, second=0, microsecond=0)
-    last_alive, last_job = 0.0, time.time()
+    if until_hhmm == "auto":   # ジョブの上限6時間の手前まで。21時を越えない
+        end = min(_now() + datetime.timedelta(hours=5, minutes=40),
+                  _now().replace(hour=21, minute=0, second=0, microsecond=0))
+    else:
+        hh, mm = (int(x) for x in until_hhmm.split(":"))
+        end = _now().replace(hour=hh, minute=mm, second=0, microsecond=0)
+    last_job = time.time()
     handled = 0
-    print("[weekend_ship] 待ち受け開始（{}まで）".format(until_hhmm), flush=True)
+    print("[weekend_ship] 待ち受け開始（{}まで）".format(end.strftime("%H:%M")), flush=True)
+    _write_json("ws_ne_alive.json", {"at": _now().isoformat(timespec="seconds"),
+                                     "until": end.isoformat(timespec="seconds"), "handled": 0})
+    last_alive = time.time()
     while _now() < end:
         if time.time() - last_alive > ALIVE_EVERY:
             _write_json("ws_ne_alive.json", {"at": _now().isoformat(timespec="seconds"),
                                              "until": end.isoformat(timespec="seconds"), "handled": handled})
             last_alive = time.time()
         try:
-            for meta in pending_jobs():
-                run_job(meta)
+            for job in pending_jobs():
+                run_job(job)
                 handled += 1
                 last_job = time.time()
         except Exception as exc:  # noqa: BLE001

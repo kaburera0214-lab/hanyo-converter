@@ -1,0 +1,44 @@
+name: weekend-ship-trigger
+
+# 土日祝出荷の NE 担当を「今すぐ」起動する入口。
+# 倉庫のPC（AIworkspace\weekend-shipping）が、枝 weekend-ship-trigger に合図（日時だけのコミット）を push すると起動する。
+# 時刻指定の起動（weekend-ship-ne.yml の cron）は GitHub の混雑で数時間遅れることがあるため（2026-11-17 確認）。
+# コードは main から取る（合図の枝には、このファイルと日時のファイルしか無い）。
+#
+# このリポジトリは公開。受注の中身はログにも artifact にも出さない（指示は暗号化して共通の置き場・結果はドライブ）。
+
+on:
+  push:
+    branches: [weekend-ship-trigger]
+
+concurrency:
+  group: ne-keepalive
+  cancel-in-progress: false
+
+jobs:
+  serve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install pandas requests google-api-python-client google-auth cryptography
+
+      - name: weekend ship NE (serve)
+        env:
+          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          NE_CLIENT_ID: ${{ secrets.NE_CLIENT_ID }}
+          NE_CLIENT_SECRET: ${{ secrets.NE_CLIENT_SECRET }}
+          CHATWORK_API_TOKEN: ${{ secrets.CHATWORK_API_TOKEN }}
+          SHARED_SECRETS_URL: ${{ secrets.SHARED_SECRETS_URL }}
+          SHARED_SECRETS_ANON_KEY: ${{ secrets.SHARED_SECRETS_ANON_KEY }}
+          SHARED_SECRETS_KEY: ${{ secrets.SHARED_SECRETS_KEY }}
+        run: python batch/weekend_ship_ne.py --serve --until auto --force

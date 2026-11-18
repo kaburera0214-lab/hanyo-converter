@@ -1,8 +1,9 @@
 name: weekend-ship-ne
 
-# 土日祝出荷（AIworkspace\weekend-shipping）の NE API 担当。
-# PC が Google ドライブ（weekend_ship フォルダ）に置いた指示ファイルを待ち受けて NE API を呼び、
-# 結果をドライブに返す。出荷日の一覧（ws_calendar.json）に今日が無ければすぐ終わる。
+# 土日祝出荷（AIworkspace\weekend-shipping）の NE API 担当（時刻指定の予備の起動）。
+# 本命の起動は weekend-ship-trigger.yml（PC が合図を push）。こちらは GitHub の混雑で数時間遅れることがある。
+# PC が共通の置き場（Supabase）に暗号化して置いた指示を待ち受けて NE API を呼び、結果をドライブに返す。
+# 出荷日の一覧（共通の置き場 weekend_ship_calendar）に今日が無ければすぐ終わる。
 #
 # このリポジトリは公開。受注の中身はログにも artifact にも出さない（ドライブだけ）。
 # concurrency group は auth-keepalive.yml と同じ "ne-keepalive"（NEのトークンを同時に回さない）。
@@ -46,10 +47,13 @@ jobs:
         with:
           python-version: "3.11"
 
-      - run: pip install pandas requests google-api-python-client google-auth
+      - run: pip install pandas requests google-api-python-client google-auth cryptography
 
       - name: weekend ship NE
         env:
+          SHARED_SECRETS_URL: ${{ secrets.SHARED_SECRETS_URL }}
+          SHARED_SECRETS_ANON_KEY: ${{ secrets.SHARED_SECRETS_ANON_KEY }}
+          SHARED_SECRETS_KEY: ${{ secrets.SHARED_SECRETS_KEY }}
           GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
