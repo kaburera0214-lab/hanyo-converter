@@ -97,8 +97,11 @@ if s.get("dry_run"):
     st.warning("試験（ドライラン）です。NEへの書き込み・送り状の発行・印刷・Chatworkの投稿はしません。")
 
 age = time.time() - float(s.get("published_ts") or 0)
-if age > 180 and s.get("status") not in ("done", "stopped"):
-    st.error("倉庫のPCから{:.0f}分間 状態が届いていません。PCの電源・Wi-Fiを確かめ、Chatworkで管理者に連絡してください。".format(age / 60))
+# PCは2分おきに状態を出す。5分届かなければ、出荷ツール（倉庫のPC）が止まっている
+stale = age > 300 and s.get("status") not in ("done", "stopped")
+if stale:
+    st.error("出荷ツール（倉庫のPC）が{:.0f}分間 動いていません。ボタンを押しても進みません。"
+             "Chatworkで管理者に連絡してください。".format(age / 60))
 
 stopped = s.get("status") == "stopped"
 box = st.container(border=True)
@@ -132,7 +135,10 @@ with box:
                                mime="application/pdf", use_container_width=True)
             c2.download_button("試験用の配送データを保存", data=TEST_CSV, file_name="yamatoCSVB2v6_試験.csv",
                                mime="text/csv", use_container_width=True)
-        pressed_key = "pressed_" + s.get("step", "")
+        # 「押した」は、この回（run_id）のこの手順ごとに覚える（やり直しの回で押せなくならないように）
+        pressed_key = "pressed_{}_{}".format(s.get("run_id", ""), s.get("step", ""))
+        if stale:
+            st.session_state.pop(pressed_key, None)
         if s.get("button"):
             if st.session_state.get(pressed_key):
                 st.info("確かめています…（数十秒かかることがあります）")
