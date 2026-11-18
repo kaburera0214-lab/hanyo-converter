@@ -110,7 +110,10 @@ with box:
         st.markdown("### 🛑 ここで止めて、Chatworkを見てください")
         st.write("管理者に連絡が届いています。このページのまま、ほかの操作はしないでください。")
     else:
-        st.caption("あなたの作業" if s.get("who") == "staff" else "ツールが作業中です（そのままお待ちください）")
+        if s.get("status") == "done":
+            st.caption("今日の作業は終わりました")
+        else:
+            st.caption("あなたの作業" if s.get("who") == "staff" else "ツールが作業中です（そのままお待ちください）")
         st.markdown("### " + s.get("title", ""))
         st.write(s.get("text", ""))
         if s.get("busy"):
@@ -152,7 +155,8 @@ with box:
             if not all_checked:
                 st.caption("上の手順に全部チェックを付けると押せます。")
     if s.get("message"):
-        st.write("ℹ️ " + s["message"])
+        # 締めの報告は複数行（保留の一覧など）。改行をそのまま見せる
+        st.info(s["message"].replace("\n", "  \n"))
 
 st.divider()
 for p in s.get("progress", []):
