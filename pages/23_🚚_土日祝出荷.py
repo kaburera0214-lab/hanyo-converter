@@ -110,17 +110,21 @@ with box:
         st.caption("あなたの作業" if s.get("who") == "staff" else "ツールが作業中です（そのままお待ちください）")
         st.markdown("### " + s.get("title", ""))
         st.write(s.get("text", ""))
-        if s.get("link"):
-            st.link_button("NEを開く", s["link"])
+        if s.get("busy"):
+            st.progress(float(s.get("percent") or 0))
         steps = s.get("steps") or []
         all_checked = True
-        if steps and s.get("button"):
-            # 手順を1つずつチェックしてからでないと押せない（読まずに押すのを防ぐ）
-            for i, t in enumerate(steps, 1):
-                if not st.checkbox("{}. {}".format(i, t), key="chk_{}_{}".format(s["step"], i)):
+        for i, item in enumerate(steps, 1):
+            t = item["text"] if isinstance(item, dict) else str(item)
+            label = "{}. {}".format(i, t)
+            if s.get("button"):
+                # 手順を1つずつチェックしてからでないと押せない（読まずに押すのを防ぐ）
+                if not st.checkbox(label, key="chk_{}_{}".format(s["step"], i)):
                     all_checked = False
-        elif steps:
-            st.markdown("\n".join("{}. {}".format(i, t) for i, t in enumerate(steps, 1)))
+            else:
+                st.markdown(label)
+            if isinstance(item, dict) and item.get("link"):
+                st.link_button(item.get("link_label") or "開く", item["link"])
         if s.get("test_downloads"):
             # 試験の日：本番と同じ道（Chromeの保存 → パソコン版ドライブで同期 → 倉庫のPC）を通すための見本
             c1, c2 = st.columns(2)
