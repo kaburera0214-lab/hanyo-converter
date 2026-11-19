@@ -567,7 +567,7 @@ def job_shipped_list(job, budget):
     fields = ["receive_order_id", "receive_order_shop_id", "receive_order_delivery_id", "receive_order_delivery_name",
               "receive_order_delivery_cut_form_id", "receive_order_send_date", "receive_order_order_status_id",
               "receive_order_cancel_type_id", "receive_order_last_modified_date"]
-    rows = search_all(budget, SEARCH_EP, fields, {"receive_order_order_status_id-eq": "50",
+    rows = search_all(budget, BASE_EP, fields, {"receive_order_order_status_id-eq": "50",
                                                   "receive_order_send_date-gte": day + " 00:00:00",
                                                   "receive_order_send_date-lte": day + " 23:59:59"})
     return {"ok": True, "day": day, "orders": rows}
