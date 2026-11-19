@@ -698,7 +698,77 @@ def job_dokon_peek(job, budget):
     return {"ok": True, "fields_ng": dead, "orders": out}
 
 
-JOBS = {"ping": job_ping, "snapshot": job_snapshot, "apply": job_apply, "ship": job_ship,
+UPLOAD_EP = "api_v1_receiveorder_base/upload"
+QUE_EP = "api_v1_system_que/search"
+
+
+def job_order_prep(job, budget):
+    """イレギュラーな受注を API で起票する前の下調べ（読むだけ）。
+    受注一括登録パターン・店舗・支払方法・発送方法の一覧と、goods_like に当たる商品を返す。"""
+    out = {"ok": True}
+    pats = budget.call("api_v1_receiveorder_uploadpattern/info").get("data") or []
+    out["patterns"] = [{k.replace("receive_order_upload_pattern_", ""): p.get(k) for k in
+                        ("receive_order_upload_pattern_id", "receive_order_upload_pattern_name",
+                         "receive_order_upload_pattern_format_id", "receive_order_upload_pattern_shop_id",
+                         "receive_order_upload_pattern_deleted_flag")} for p in pats]
+    out["shops"] = search_all(budget, "api_v1_master_shop/search",
+                              ["shop_id", "shop_name", "shop_deleted_flag"], {})
+    for key, ep in (("payments", "api_v1_system_paymentmethod/info"), ("deliveries", "api_v1_system_delivery/info")):
+        try:
+            out[key] = budget.call(ep).get("data") or []
+        except Exception as exc:  # noqa: BLE001
+            out[key] = {"error": str(exc)[:200]}
+    goods = []
+    for like in job.get("goods_like") or []:
+        for col in ("goods_name", "goods_id"):
+            goods += search_all(budget, "api_v1_master_goods/search",
+                                ["goods_id", "goods_name", "goods_selling_price", "goods_deleted_flag"],
+                                {col + "-like": like})
+    out["goods"] = list({g["goods_id"]: g for g in goods}.values())
+    return out
+
+
+def job_order_upload(job, budget):
+    """受注CSV（受注一括登録パターンの形式）を1回アップロードし、取込の結果を待って、
+    店舗伝票番号で起票された伝票を読み直して返す。同じ店舗伝票番号が既にあれば上げない（二重起票しない）。"""
+    cut = str(job.get("shop_cut_form_id") or "").strip()
+    fields = ["receive_order_id", "receive_order_shop_id", "receive_order_shop_cut_form_id",
+              "receive_order_order_status_name", "receive_order_worker_text", "receive_order_total_amount",
+              "receive_order_delivery_name", "receive_order_payment_method_name",
+              "receive_order_hope_delivery_date", "receive_order_hope_delivery_time_slot_name",
+              "receive_order_cancel_type_id"]
+
+    def find():
+        if not cut:
+            return []
+        _, rows, _ = _alive_fields(budget, fields, {"receive_order_shop_cut_form_id-eq": cut})
+        return rows
+
+    before = find()
+    if before:
+        return {"ok": False, "error": "exists", "detail": "同じ店舗伝票番号の伝票が既にあります", "orders": before}
+    if job.get("dry_run"):
+        return {"ok": True, "dry_run": True, "orders": []}
+    res = budget.call(UPLOAD_EP, {"receive_order_upload_pattern_id": str(job["pattern_id"]),
+                                  "data_type_1": "csv", "data_1": job["csv"], "wait_flag": "1"})
+    que = str(res.get("que_id"))
+    hist = []
+    for _ in range(40):          # 最大約10分
+        time.sleep(15)
+        rows = budget.call(QUE_EP, {"fields": "que_id,que_status_id,que_message",
+                                    "que_id-eq": que}).get("data") or []
+        st = rows[0] if rows else {}
+        hist.append(st)
+        if str(st.get("que_status_id")) in ("2", "-1"):
+            break
+    last = hist[-1] if hist else {}
+    orders = find()
+    return {"ok": str(last.get("que_status_id")) == "2" and bool(orders), "que_id": que,
+            "que": last, "orders": orders}
+
+
+JOBS = {"order_prep": job_order_prep, "order_upload": job_order_upload,
+        "ping": job_ping, "snapshot": job_snapshot, "apply": job_apply, "ship": job_ship,
         "holds": job_holds, "inspect": job_inspect, "fields": job_fields, "csvsrc": job_csvsrc, "history": job_history, "shipped_list": job_shipped_list, "confirm_peek": job_confirm_peek, "wait_reasons": job_wait_reasons, "confirm_stats": job_confirm_stats, "dokon_peek": job_dokon_peek, "exit": job_exit}
 
 
