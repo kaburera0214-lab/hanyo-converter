@@ -321,8 +321,10 @@ def job_ship(job, budget):
                 res[oid].update(ok=True, dry_run=True, number_only=True)
                 continue
             try:
+                # 出荷確定済みは receive_order_shipped_update_flag=1 が無いと 011010 で断られる（11/19 確認）
                 budget.call(UPDATE_EP, {"receive_order_id": oid,
                                         "receive_order_last_modified_date": c["receive_order_last_modified_date"],
+                                        "receive_order_shipped_update_flag": "1",
                                         "data": update_xml({"receive_order_delivery_cut_form_id": tracking})})
                 number_only.append(oid)
             except Exception as exc:  # noqa: BLE001
