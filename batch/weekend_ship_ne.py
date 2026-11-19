@@ -85,6 +85,15 @@ BASE_FIELDS = [
     "receive_order_purchaser_mail_address",
     "receive_order_hope_delivery_date",
     "receive_order_last_modified_date",
+    # 発送方法をまたいで付け替えるときに一緒に直す項目（コードは発送方法ごとに違う。2026-11-19 調査）
+    "receive_order_hope_delivery_time_slot_id",
+    "receive_order_delivery_method_id",
+    "receive_order_invoice_id",
+    "receive_order_temperature_id",
+    "receive_order_business_office_stop_id",
+    "receive_order_seal1_id", "receive_order_seal2_id", "receive_order_seal3_id", "receive_order_seal4_id",
+    "receive_order_payment_method_id",
+    "receive_order_payment_method_name",
 ]
 ROW_FIELDS = [
     "receive_order_row_receive_order_id",
@@ -106,6 +115,9 @@ UPDATABLE = {
     # 配送CSVの送り状種別が食い違う（2026-11-19 本番で発覚）。項目名は inspect で確かめて使う
     "receive_order_invoice_id",
     "receive_order_delivery_method_id",
+    # 発送方法をまたぐ付け替えで、元の便のコードを消す・ヤマトのコードに置き換える（2026-11-19 調査）
+    "receive_order_hope_delivery_time_slot_id",
+    "receive_order_seal1_id", "receive_order_seal2_id", "receive_order_seal3_id", "receive_order_seal4_id",
 }
 
 # 送り状に当たる項目の候補（NEのAPI項目名を inspect で確かめる。値はコードなので個人情報ではない）
