@@ -292,6 +292,9 @@ def job_ship(job, budget):
     既に出荷確定済み（受注状態50）のものは番号だけ確かめて飛ばす（二重に確定しない）。"""
     dry = bool(job.get("dry_run"))
     ops = {str(op["order_id"]): str(op["tracking"]).strip() for op in job.get("ops", [])}
+    # only_if_shipped：ツールの締めの対象外でB2から出たもの（2回目の発行など）。出荷確定済みなら番号だけ入れ、
+    # まだなら触らない（出荷していない伝票をツールが確定しない）
+    soft = {str(op["order_id"]) for op in job.get("ops", []) if op.get("only_if_shipped")}
     res = {oid: {"order_id": oid} for oid in ops}
     if not ops:
         return {"ok": True, "results": [], "dry_run": dry}
@@ -329,6 +332,9 @@ def job_ship(job, budget):
                 number_only.append(oid)
             except Exception as exc:  # noqa: BLE001
                 res[oid].update(ok=False, error=type(exc).__name__, detail="出荷確定済みの伝票に番号を入れられません：" + str(exc)[:250])
+            continue
+        if oid in soft:
+            res[oid].update(ok=True, skipped="not_shipped_yet", detail="まだ出荷確定していないので触りません")
             continue
         if status not in ("20", "40") or str(c.get("receive_order_cancel_type_id")) != "0":
             res[oid].update(ok=False, error="status", detail="受注状態{}（キャンセル区分{}）は出荷確定できません".format(
