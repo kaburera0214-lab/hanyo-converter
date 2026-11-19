@@ -388,13 +388,70 @@ def job_inspect(job, budget):
     return out
 
 
+# 発送方法に連動する項目（NE API 仕様 2026-11-19 確認：発送方法を変えても NE はこれらとの整合を確かめない）
+DELIVERY_LINKED = [
+    "receive_order_hope_delivery_time_slot_id", "receive_order_hope_delivery_time_slot_name",
+    "receive_order_delivery_method_id", "receive_order_delivery_method_name",
+    "receive_order_invoice_id", "receive_order_invoice_name",
+    "receive_order_temperature_id", "receive_order_temperature_name",
+    "receive_order_business_office_stop_id", "receive_order_business_office_stop_name",
+    "receive_order_seal1_id", "receive_order_seal1_name", "receive_order_seal2_id", "receive_order_seal2_name",
+    "receive_order_seal3_id", "receive_order_seal3_name", "receive_order_seal4_id", "receive_order_seal4_name",
+    "receive_order_unattended_delivery_location_id", "receive_order_unattended_delivery_location_name",
+    "receive_order_unattended_delivery_flg",
+    "receive_order_payment_method_id", "receive_order_payment_method_name",
+]
+# 値の中身ではなく「入っているか」だけ数える項目（日付・金額・自由記入）
+DELIVERY_PRESENCE = ["receive_order_hope_delivery_date", "receive_order_charge_amount",
+                     "receive_order_delivery_cut_form_note"]
+
+
+def job_fields(job, budget):
+    """発送方法ごとに、連動する項目にどんな値が入っているか（読むだけ）。値は区分コードと名称・件数だけを返す。"""
+    days = int(job.get("days") or 60)
+    since = (_now() - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
+    base = ["receive_order_id", "receive_order_delivery_id", "receive_order_delivery_name"]
+    alive, rows, dead = _alive_fields(budget, base + DELIVERY_LINKED + DELIVERY_PRESENCE,
+                                      {"receive_order_order_status_id-eq": "50", "receive_order_send_date-gte": since})
+    per = {}
+    for r in rows:
+        d = "{} {}".format(r.get("receive_order_delivery_id"), r.get("receive_order_delivery_name"))
+        g = per.setdefault(d, {"件数": 0})
+        g["件数"] += 1
+        for f in alive:
+            if f in base:
+                continue
+            v = r.get(f)
+            key = f.replace("receive_order_", "")
+            if f in DELIVERY_PRESENCE:
+                if v not in (None, "", "0", "0.0"):
+                    g.setdefault(key + "（入っている件数）", 0)
+                    g[key + "（入っている件数）"] += 1
+                continue
+            c = g.setdefault(key, {})
+            c[str(v)] = c.get(str(v), 0) + 1
+    out = {"ok": True, "since": since, "fields_ng": dead, "by_delivery": per}
+    try:
+        out["delivery_master"] = budget.call("api_v1_system_delivery/info").get("data")
+    except Exception as exc:  # noqa: BLE001
+        out["delivery_master_error"] = str(exc)[:200]
+    try:
+        out["forwarding_agent"] = search_all(
+            budget, "api_v1_receiveorder_forwardingagent/search",
+            ["forwarding_agent_id", "forwarding_agent_type", "forwarding_agent_type_id",
+             "forwarding_agent_type_name", "forwarding_agent_deleted_flag"], {})
+    except Exception as exc:  # noqa: BLE001
+        out["forwarding_agent_error"] = str(exc)[:200]
+    return out
+
+
 def job_exit(job, budget):
     """PC が「今日はもう用が無い」と言ったら待ち受けを終える（延命バッチなどを待たせない）。"""
     return {"ok": True, "exit": True}
 
 
 JOBS = {"ping": job_ping, "snapshot": job_snapshot, "apply": job_apply, "ship": job_ship,
-        "holds": job_holds, "inspect": job_inspect, "exit": job_exit}
+        "holds": job_holds, "inspect": job_inspect, "fields": job_fields, "exit": job_exit}
 
 
 def run_job(job):
