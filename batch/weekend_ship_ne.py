@@ -227,23 +227,34 @@ def job_apply(job, budget):
                 res.update(ok=False, error="changed", detail="PCが読んだ後にNEで更新されています")
                 results.append(res)
                 continue
-            fields = dict(op.get("set") or {})
-            if op.get("prepend_worker_text"):
-                old = cur.get("receive_order_worker_text") or ""
-                fields["receive_order_worker_text"] = op["prepend_worker_text"] + ("\n" + old if old else "")
-            if op.get("add_tag"):
-                old = cur.get("receive_order_gruoping_tag") or ""
-                tag = "[{}]".format(op["add_tag"])
-                if tag not in old:
-                    fields["receive_order_gruoping_tag"] = old + tag
-            xml = update_xml(fields)
-            if dry:
-                res.update(ok=True, dry_run=True, fields=sorted(fields))
-            else:
-                budget.call(UPDATE_EP, {"receive_order_id": oid,
-                                        "receive_order_last_modified_date": cur["receive_order_last_modified_date"],
-                                        "data": xml})
-                res.update(ok=True, fields=sorted(fields))
+            for attempt in range(3):
+                fields = dict(op.get("set") or {})
+                if op.get("prepend_worker_text"):
+                    old = cur.get("receive_order_worker_text") or ""
+                    # やり直しで同じ印を二重に書かない
+                    if op["prepend_worker_text"] not in old:
+                        fields["receive_order_worker_text"] = op["prepend_worker_text"] + ("\n" + old if old else "")
+                if op.get("add_tag"):
+                    old = cur.get("receive_order_gruoping_tag") or ""
+                    tag = "[{}]".format(op["add_tag"])
+                    if tag not in old:
+                        fields["receive_order_gruoping_tag"] = old + tag
+                xml = update_xml(fields)
+                if dry:
+                    res.update(ok=True, dry_run=True, fields=sorted(fields))
+                    break
+                try:
+                    budget.call(UPDATE_EP, {"receive_order_id": oid,
+                                            "receive_order_last_modified_date": cur["receive_order_last_modified_date"],
+                                            "data": xml})
+                    res.update(ok=True, fields=sorted(fields), attempts=attempt + 1)
+                    break
+                except Exception as exc:  # noqa: BLE001
+                    # 011006＝読んだ後にNEの中で更新された（受注自動処理の直後など）。読み直して最大3回
+                    if "011006" not in str(exc) or attempt == 2:
+                        raise
+                    time.sleep(5)
+                    cur = _fresh_many(budget, [oid]).get(oid) or cur
         except Exception as exc:  # noqa: BLE001
             res.update(ok=False, error=type(exc).__name__, detail=str(exc)[:300])
         results.append(res)
