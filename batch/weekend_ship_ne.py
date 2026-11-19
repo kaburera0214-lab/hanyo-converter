@@ -649,8 +649,25 @@ def job_wait_reasons(job, budget):
     return {"ok": True, "fields_ng": dead + rdead, "orders": rows, "rows": lines}
 
 
+def job_confirm_stats(job, budget):
+    """since 以降の受注の、確認内容ID・作業用欄・店舗・受注状態（読むだけ・氏名や住所は取らない）と、
+    確認内容の定義一覧（api_v1_receiveorder_confirm/search）。どの確認待ちが多いかを数えるため。"""
+    since = str(job.get("since") or "2026-10-01")
+    fields = ["receive_order_id", "receive_order_shop_id", "receive_order_date", "receive_order_order_status_id",
+              "receive_order_cancel_type_id", "receive_order_confirm_ids", "receive_order_confirm_check_id",
+              "receive_order_worker_text", "receive_order_gruoping_tag"]
+    _, rows, dead = _alive_fields(budget, fields, {"receive_order_date-gte": since})
+    master = []
+    try:
+        _, master, _ = _alive_fields_ep(budget, "api_v1_receiveorder_confirm/search",
+                                        ["confirm_id", "confirm_name", "confirm_valid_flag"], {})
+    except Exception as exc:  # noqa: BLE001
+        master = [{"_error": str(exc)[:200]}]
+    return {"ok": True, "since": since, "fields_ng": dead, "orders": rows, "confirm_master": master}
+
+
 JOBS = {"ping": job_ping, "snapshot": job_snapshot, "apply": job_apply, "ship": job_ship,
-        "holds": job_holds, "inspect": job_inspect, "fields": job_fields, "csvsrc": job_csvsrc, "history": job_history, "shipped_list": job_shipped_list, "confirm_peek": job_confirm_peek, "wait_reasons": job_wait_reasons, "exit": job_exit}
+        "holds": job_holds, "inspect": job_inspect, "fields": job_fields, "csvsrc": job_csvsrc, "history": job_history, "shipped_list": job_shipped_list, "confirm_peek": job_confirm_peek, "wait_reasons": job_wait_reasons, "confirm_stats": job_confirm_stats, "exit": job_exit}
 
 
 def run_job(job):
