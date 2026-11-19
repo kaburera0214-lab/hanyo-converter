@@ -560,8 +560,21 @@ def job_exit(job, budget):
     return {"ok": True, "exit": True}
 
 
+def job_shipped_list(job, budget):
+    """指定日に出荷確定した伝票（受注状態50・出荷確定日=その日）の番号まわりだけ（読むだけ・氏名や住所は取らない）。
+    「出荷したのに番号が入っていない」伝票を見つけるため。"""
+    day = str(job.get("day") or _now().strftime("%Y-%m-%d"))
+    fields = ["receive_order_id", "receive_order_shop_id", "receive_order_delivery_id", "receive_order_delivery_name",
+              "receive_order_delivery_cut_form_id", "receive_order_send_date", "receive_order_order_status_id",
+              "receive_order_cancel_type_id", "receive_order_last_modified_date"]
+    rows = search_all(budget, SEARCH_EP, fields, {"receive_order_order_status_id-eq": "50",
+                                                  "receive_order_send_date-gte": day + " 00:00:00",
+                                                  "receive_order_send_date-lte": day + " 23:59:59"})
+    return {"ok": True, "day": day, "orders": rows}
+
+
 JOBS = {"ping": job_ping, "snapshot": job_snapshot, "apply": job_apply, "ship": job_ship,
-        "holds": job_holds, "inspect": job_inspect, "fields": job_fields, "csvsrc": job_csvsrc, "history": job_history, "exit": job_exit}
+        "holds": job_holds, "inspect": job_inspect, "fields": job_fields, "csvsrc": job_csvsrc, "history": job_history, "shipped_list": job_shipped_list, "exit": job_exit}
 
 
 def run_job(job):
