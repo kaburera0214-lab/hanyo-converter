@@ -411,8 +411,14 @@ def job_fields(job, budget):
     days = int(job.get("days") or 60)
     since = (_now() - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
     base = ["receive_order_id", "receive_order_delivery_id", "receive_order_delivery_name"]
-    alive, rows, dead = _alive_fields(budget, base + DELIVERY_LINKED + DELIVERY_PRESENCE,
-                                      {"receive_order_order_status_id-eq": "50", "receive_order_send_date-gte": since})
+    ids = [str(x) for x in job.get("order_ids") or []]
+    flt = ({"receive_order_id-in": ",".join(ids)} if ids else
+           {"receive_order_order_status_id-eq": "50", "receive_order_send_date-gte": since})
+    alive, rows, dead = _alive_fields(budget, base + DELIVERY_LINKED + DELIVERY_PRESENCE + ["receive_order_last_modified_date"], flt)
+    if ids:   # 伝票ごとの値（区分コードと名称・日付の有無だけ。住所や氏名は取らない）
+        return {"ok": True, "fields_ng": dead, "orders": [
+            {k.replace("receive_order_", ""): (bool(r.get(k)) if k in DELIVERY_PRESENCE else r.get(k)) for k in alive}
+            for r in rows]}
     per = {}
     for r in rows:
         d = "{} {}".format(r.get("receive_order_delivery_id"), r.get("receive_order_delivery_name"))
