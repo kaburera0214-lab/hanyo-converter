@@ -596,8 +596,13 @@ def job_confirm_peek(job, budget):
     """確認待ちの伝票の、確認内容・金額・明細（読むだけ）。order_ids か、status（受注状態）で指定。
     確認内容のマスタ（ID→名前）も返す（取れなければ空）。"""
     ids = [str(x) for x in job.get("order_ids") or []]
-    flt = ({"receive_order_id-in": ",".join(ids)} if ids else
-           {"receive_order_order_status_id-in": str(job.get("status") or "2"), "receive_order_cancel_type_id-eq": "0"})
+    if ids:
+        flt = {"receive_order_id-in": ",".join(ids)}
+    elif job.get("worker_like"):   # 作業用欄の文字で（例 ロミジュリ）。since 以降の受注日
+        flt = {"receive_order_worker_text-like": "%{}%".format(job["worker_like"]),
+               "receive_order_date-gte": str(job.get("since") or "2026-08-01")}
+    else:
+        flt = {"receive_order_order_status_id-in": str(job.get("status") or "2"), "receive_order_cancel_type_id-eq": "0"}
     alive, rows, dead = _alive_fields(budget, CONFIRM_FIELDS, flt)
     oids = [str(r["receive_order_id"]) for r in rows][:500]
     lines = search_all(budget, ROW_EP, CONFIRM_ROW_FIELDS, {"receive_order_row_receive_order_id-in": ",".join(oids)}) if oids else []
