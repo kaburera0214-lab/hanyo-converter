@@ -622,8 +622,35 @@ def job_confirm_peek(job, budget):
     return {"ok": True, "fields_ng": dead, "orders": rows, "rows": lines, "goods": goods}
 
 
+# 起票済み（受注状態2）の伝票が、なぜ印刷待ちに進んでいないか（待つ理由）を見るための項目（読むだけ）
+WAIT_FIELDS = ["receive_order_id", "receive_order_shop_id", "receive_order_date", "receive_order_order_status_id",
+               "receive_order_confirm_check_id", "receive_order_confirm_ids", "receive_order_cancel_type_id",
+               "receive_order_deposit_type_id", "receive_order_deposit_type_name", "receive_order_deposit_date",
+               "receive_order_payment_method_id", "receive_order_payment_method_name",
+               "receive_order_statement_delivery_instruct_printing_date", "receive_order_send_plan_date",
+               "receive_order_gruoping_tag", "receive_order_worker_text", "receive_order_last_modified_date"]
+WAIT_ROW_FIELDS = ["receive_order_row_receive_order_id", "receive_order_row_no", "receive_order_row_goods_id",
+                   "receive_order_row_quantity", "receive_order_row_stock_allocation_quantity",
+                   "receive_order_row_stock_allocation_date", "receive_order_row_cancel_flag"]
+
+
+def job_wait_reasons(job, budget):
+    """起票済み（または order_ids の）伝票の、入金・引当・印刷指示日・確認の状態（読むだけ・氏名や住所は取らない）。"""
+    ids = [str(x) for x in job.get("order_ids") or []]
+    flt = ({"receive_order_id-in": ",".join(ids)} if ids else
+           {"receive_order_order_status_id-eq": "2", "receive_order_cancel_type_id-eq": "0"})
+    alive, rows, dead = _alive_fields(budget, WAIT_FIELDS, flt)
+    oids = [str(r["receive_order_id"]) for r in rows][:1000]
+    lines, rdead = [], []
+    for i in range(0, len(oids), 200):
+        _, part, rdead = _alive_fields_ep(budget, ROW_EP, WAIT_ROW_FIELDS,
+                                          {"receive_order_row_receive_order_id-in": ",".join(oids[i:i + 200])})
+        lines += part
+    return {"ok": True, "fields_ng": dead + rdead, "orders": rows, "rows": lines}
+
+
 JOBS = {"ping": job_ping, "snapshot": job_snapshot, "apply": job_apply, "ship": job_ship,
-        "holds": job_holds, "inspect": job_inspect, "fields": job_fields, "csvsrc": job_csvsrc, "history": job_history, "shipped_list": job_shipped_list, "confirm_peek": job_confirm_peek, "exit": job_exit}
+        "holds": job_holds, "inspect": job_inspect, "fields": job_fields, "csvsrc": job_csvsrc, "history": job_history, "shipped_list": job_shipped_list, "confirm_peek": job_confirm_peek, "wait_reasons": job_wait_reasons, "exit": job_exit}
 
 
 def run_job(job):
