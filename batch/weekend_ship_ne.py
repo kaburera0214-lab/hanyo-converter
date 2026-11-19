@@ -102,7 +102,19 @@ UPDATABLE = {
     "receive_order_worker_text",
     "receive_order_gruoping_tag",
     "receive_order_delivery_cut_form_id",
+    # 送り状（発払い／ネコポス など）。発送方法だけ変えると送り状が元の便のまま残り、
+    # 配送CSVの送り状種別が食い違う（2026-11-19 本番で発覚）。項目名は inspect で確かめて使う
+    "receive_order_invoice_id",
+    "receive_order_delivery_method_id",
 }
+
+# 送り状に当たる項目の候補（NEのAPI項目名を inspect で確かめる。値はコードなので個人情報ではない）
+INVOICE_CANDIDATES = [
+    "receive_order_invoice_id", "receive_order_invoice_name",
+    "receive_order_delivery_method_id", "receive_order_delivery_method_name",
+    "receive_order_business_office_stop_id", "receive_order_temperature_id",
+    "receive_order_seal1_id", "receive_order_delivery_time_id",
+]
 
 
 class Budget:
@@ -338,13 +350,51 @@ def job_holds(job, budget):
     return {"ok": True, "orders": rows}
 
 
+def _alive_fields(budget, fields, filters):
+    """使えない項目を外しながら検索する。返り値 (使えた項目, 行, 使えなかった項目)。"""
+    alive, dead = list(fields), []
+    for _ in range(len(fields) + 1):
+        try:
+            return alive, search_all(budget, BASE_EP, alive, filters), dead
+        except Exception as exc:  # noqa: BLE001
+            named = [f for f in alive if f in str(exc)]
+            if not named:
+                raise
+            for f in named:
+                alive.remove(f)
+                dead.append(f)
+    return alive, [], dead
+
+
+def job_inspect(job, budget):
+    """送り状など、発送方法に連動する項目の名前と値を確かめる（読むだけ）。
+    order_ids の伝票の値と、直近の出荷済み（受注状態50）での 発送方法×候補 の組み合わせを返す。"""
+    base = ["receive_order_id", "receive_order_delivery_id", "receive_order_delivery_name",
+            "receive_order_last_modified_date"]
+    out = {"ok": True}
+    ids = [str(x) for x in job.get("order_ids") or []]
+    alive, rows, dead = _alive_fields(budget, base + INVOICE_CANDIDATES,
+                                      {"receive_order_id-in": ",".join(ids)} if ids else {"receive_order_id-eq": "0"})
+    out.update(fields_ok=alive, fields_ng=dead, orders=rows)
+    since = (_now() - datetime.timedelta(days=14)).strftime("%Y-%m-%d")
+    _, shipped, _ = _alive_fields(budget, alive, {"receive_order_order_status_id-eq": "50",
+                                                  "receive_order_send_date-gte": since})
+    combo = {}
+    for r in shipped:
+        k = "|".join("{}={}".format(f.replace("receive_order_", ""), r.get(f)) for f in alive
+                     if f not in ("receive_order_id", "receive_order_last_modified_date"))
+        combo[k] = combo.get(k, 0) + 1
+    out["shipped_combos"] = dict(sorted(combo.items(), key=lambda kv: -kv[1])[:40])
+    return out
+
+
 def job_exit(job, budget):
     """PC が「今日はもう用が無い」と言ったら待ち受けを終える（延命バッチなどを待たせない）。"""
     return {"ok": True, "exit": True}
 
 
 JOBS = {"ping": job_ping, "snapshot": job_snapshot, "apply": job_apply, "ship": job_ship,
-        "holds": job_holds, "exit": job_exit}
+        "holds": job_holds, "inspect": job_inspect, "exit": job_exit}
 
 
 def run_job(job):
