@@ -400,10 +400,14 @@ def job_holds(job, budget):
 
 def _alive_fields(budget, fields, filters):
     """使えない項目を外しながら検索する。返り値 (使えた項目, 行, 使えなかった項目)。"""
+    return _alive_fields_ep(budget, BASE_EP, fields, filters)
+
+
+def _alive_fields_ep(budget, endpoint, fields, filters):
     alive, dead = list(fields), []
     for _ in range(len(fields) + 1):
         try:
-            return alive, search_all(budget, BASE_EP, alive, filters), dead
+            return alive, search_all(budget, endpoint, alive, filters), dead
         except Exception as exc:  # noqa: BLE001
             named = [f for f in alive if f in str(exc)]
             if not named:
@@ -580,7 +584,7 @@ def job_shipped_list(job, budget):
 
 
 # 確認待ちの判定に使う項目（読むだけ。氏名・住所・電話は取らない）
-CONFIRM_FIELDS = ["receive_order_id", "receive_order_shop_id", "receive_order_date", "receive_order_order_status_id",
+CONFIRM_FIELDS = ["receive_order_id", "receive_order_shop_id", "receive_order_shop_cut_form_id", "receive_order_date", "receive_order_order_status_id",
                   "receive_order_order_status_name", "receive_order_confirm_check_id", "receive_order_confirm_ids",
                   "receive_order_important_check_id", "receive_order_important_check_name",
                   "receive_order_goods_amount", "receive_order_delivery_fee_amount", "receive_order_total_amount",
@@ -606,13 +610,16 @@ def job_confirm_peek(job, budget):
     alive, rows, dead = _alive_fields(budget, CONFIRM_FIELDS, flt)
     oids = [str(r["receive_order_id"]) for r in rows][:500]
     lines = search_all(budget, ROW_EP, CONFIRM_ROW_FIELDS, {"receive_order_row_receive_order_id-in": ",".join(oids)}) if oids else []
-    master = {}
-    try:
-        m = budget.call("api_v1_system_confirm/info", {})
-        master = {str(x.get("confirm_id")): x.get("confirm_name") for x in m.get("data", [])}
-    except Exception as exc:  # noqa: BLE001
-        master = {"_error": str(exc)[:200]}
-    return {"ok": True, "fields_ng": dead, "orders": rows, "rows": lines, "confirm_master": master}
+    # 明細の商品の仕入先コード（同じ取引先の直送どうしの判定用。商品コードの先頭はぶれることがあるので使わない）
+    gids = sorted({x["receive_order_row_goods_id"] for x in lines if x.get("receive_order_row_goods_id")})
+    goods = []
+    for i in range(0, len(gids), 200):
+        part = gids[i:i + 200]
+        _, g, gdead = _alive_fields_ep(budget, "api_v1_master_goods/search",
+                                       ["goods_id", "goods_supplier_id", "goods_merchandise_name", "goods_type_id",
+                                        "goods_type_name"], {"goods_id-in": ",".join(part)})
+        goods.extend(g)
+    return {"ok": True, "fields_ng": dead, "orders": rows, "rows": lines, "goods": goods}
 
 
 JOBS = {"ping": job_ping, "snapshot": job_snapshot, "apply": job_apply, "ship": job_ship,
