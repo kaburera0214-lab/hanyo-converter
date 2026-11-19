@@ -1,6 +1,6 @@
 name: weekend-ship-ne
 
-# 土日祝出荷（AIworkspace\weekend-shipping）の NE API 担当（時刻指定の予備の起動）。
+# 土日祝出荷（AIworkspace\weekend-shipping）の NE API 担当。
 # 本命の起動は weekend-ship-trigger.yml（PC が合図を push）。こちらは GitHub の混雑で数時間遅れることがある。
 # PC が共通の置き場（Supabase）に暗号化して置いた指示を待ち受けて NE API を呼び、結果をドライブに返す。
 # 出荷日の一覧（共通の置き場 weekend_ship_calendar）に今日が無ければすぐ終わる。
@@ -9,9 +9,9 @@ name: weekend-ship-ne
 # concurrency group は auth-keepalive.yml と同じ "ne-keepalive"（NEのトークンを同時に回さない）。
 
 on:
-  schedule:
-    - cron: "40 22 * * *"   # 毎日 07:40 JST 朝の部（出荷日でなければ即終了）
-    - cron: "0 3 * * *"     # 毎日 12:00 JST 午後の部（出荷完了→番号反映）
+  # 時刻指定の起動（毎日 07:40・12:00）は外した（2026-11-19）。土日祝はいつも待ち受ける作りにしたため、
+  # 倉庫で「始める」が押されない日にも起動して、指示が来ないまま75分で「PCから指示が来ません」と誤報を出す。
+  # 起動は PC が最初の指示を出すときに合図を push する経路（weekend-ship-trigger.yml）だけにする。
   push:                     # 担当の中身を変えたら probe を1回（項目名・発送方法の一覧をドライブへ）
     branches: [main]
     paths:
