@@ -299,6 +299,7 @@ def job_ship(job, budget):
     # 1) 今の状態をまとめて読み、番号が違うものだけ番号を入れる
     cur = _fresh_many(budget, ops)
     todo = []
+    number_only = []
     for oid, tracking in ops.items():
         c = cur.get(oid)
         if not c:
@@ -307,8 +308,25 @@ def job_ship(job, budget):
         status = str(c.get("receive_order_order_status_id"))
         have = (c.get("receive_order_delivery_cut_form_id") or "").strip()
         if status == "50":
-            res[oid].update(ok=(have == tracking), skipped="already_shipped",
-                            detail="" if have == tracking else "出荷確定済みだが送り状番号が違います")
+            # 倉庫の出荷検品で、番号が入る前に出荷確定済み（50）になる（2026-11-19 の24件で確認。
+            # 番号はその後に入れる運用で、過去の伝票も50のあとに番号が入っている）。
+            # 番号が空なら番号だけ入れる（確定はし直さない）。別の番号が入っていれば上書きせず止める
+            if have == tracking:
+                res[oid].update(ok=True, skipped="already_shipped")
+                continue
+            if have:
+                res[oid].update(ok=False, error="different", detail="NEに別の送り状番号が入っています（上書きしません）")
+                continue
+            if dry:
+                res[oid].update(ok=True, dry_run=True, number_only=True)
+                continue
+            try:
+                budget.call(UPDATE_EP, {"receive_order_id": oid,
+                                        "receive_order_last_modified_date": c["receive_order_last_modified_date"],
+                                        "data": update_xml({"receive_order_delivery_cut_form_id": tracking})})
+                number_only.append(oid)
+            except Exception as exc:  # noqa: BLE001
+                res[oid].update(ok=False, error=type(exc).__name__, detail="出荷確定済みの伝票に番号を入れられません：" + str(exc)[:250])
             continue
         if status not in ("20", "40") or str(c.get("receive_order_cancel_type_id")) != "0":
             res[oid].update(ok=False, error="status", detail="受注状態{}（キャンセル区分{}）は出荷確定できません".format(
@@ -348,6 +366,14 @@ def job_ship(job, budget):
             res[oid]["ok"] = ok
             if not ok:
                 res[oid]["detail"] = "出荷確定後の確認で状態か番号が合いません"
+    if number_only:   # 番号だけ入れたものも、入ったかを読み直して確かめる
+        after = _fresh_many(budget, number_only)
+        for oid in number_only:
+            a = after.get(oid) or {}
+            ok = (a.get("receive_order_delivery_cut_form_id") or "").strip() == ops[oid]
+            res[oid].update(ok=ok, number_only=True)
+            if not ok:
+                res[oid]["detail"] = "番号を入れたあとの確認で番号が合いません"
     results = list(res.values())
     return {"ok": all(r.get("ok") for r in results), "results": results, "dry_run": dry}
 
