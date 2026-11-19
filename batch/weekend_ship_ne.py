@@ -666,8 +666,40 @@ def job_confirm_stats(job, budget):
     return {"ok": True, "since": since, "fields_ng": dead, "orders": rows, "confirm_master": master}
 
 
+def job_dokon_peek(job, budget):
+    """「同梱可能な受注が存在します」（確認内容CT）が付いた起票済みの伝票（読むだけ）。
+    同じお客様の組を見分けるため、届け先（氏名・郵便番号・住所・電話）と購入者は、ここでハッシュにしてから返す
+    （氏名・住所そのものはドライブの結果ファイルに出さない）。"""
+    import hashlib
+    fields = ["receive_order_id", "receive_order_shop_id", "receive_order_date", "receive_order_order_status_id",
+              "receive_order_cancel_type_id", "receive_order_confirm_ids", "receive_order_confirm_check_id",
+              "receive_order_deposit_type_id", "receive_order_payment_method_name", "receive_order_worker_text",
+              "receive_order_last_modified_date",
+              "receive_order_consignee_name", "receive_order_consignee_zip_code", "receive_order_consignee_address1",
+              "receive_order_consignee_address2", "receive_order_consignee_tel", "receive_order_purchaser_name"]
+    ids = [str(x) for x in job.get("order_ids") or []]
+    flt = ({"receive_order_id-in": ",".join(ids)} if ids else
+           {"receive_order_order_status_id-eq": "2", "receive_order_cancel_type_id-eq": "0",
+            "receive_order_confirm_ids-like": "%CT%"})
+    _, rows, dead = _alive_fields(budget, fields, flt)
+
+    def norm(v):
+        return "".join(str(v or "").split()).replace("-", "").replace("ー", "")
+
+    out = []
+    for r in rows:
+        key = "|".join(norm(r.get(k)) for k in ("receive_order_consignee_name", "receive_order_consignee_zip_code",
+                                                  "receive_order_consignee_address1", "receive_order_consignee_address2",
+                                                  "receive_order_consignee_tel"))
+        x = {k: v for k, v in r.items() if "consignee" not in k and "purchaser" not in k}
+        x["consignee_key"] = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+        x["purchaser_key"] = hashlib.sha256(norm(r.get("receive_order_purchaser_name")).encode("utf-8")).hexdigest()[:16]
+        out.append(x)
+    return {"ok": True, "fields_ng": dead, "orders": out}
+
+
 JOBS = {"ping": job_ping, "snapshot": job_snapshot, "apply": job_apply, "ship": job_ship,
-        "holds": job_holds, "inspect": job_inspect, "fields": job_fields, "csvsrc": job_csvsrc, "history": job_history, "shipped_list": job_shipped_list, "confirm_peek": job_confirm_peek, "wait_reasons": job_wait_reasons, "confirm_stats": job_confirm_stats, "exit": job_exit}
+        "holds": job_holds, "inspect": job_inspect, "fields": job_fields, "csvsrc": job_csvsrc, "history": job_history, "shipped_list": job_shipped_list, "confirm_peek": job_confirm_peek, "wait_reasons": job_wait_reasons, "confirm_stats": job_confirm_stats, "dokon_peek": job_dokon_peek, "exit": job_exit}
 
 
 def run_job(job):
