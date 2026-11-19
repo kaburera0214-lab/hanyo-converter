@@ -118,6 +118,8 @@ UPDATABLE = {
     # 発送方法をまたぐ付け替えで、元の便のコードを消す・ヤマトのコードに置き換える（2026-11-19 調査）
     "receive_order_hope_delivery_time_slot_id",
     "receive_order_seal1_id", "receive_order_seal2_id", "receive_order_seal3_id", "receive_order_seal4_id",
+    # 個口数（NEに専用の項目が無く、発送伝票備考欄に数字で入れる決まり。Trello「配送サイズ違いまとめ」）
+    "receive_order_delivery_cut_form_note",
 }
 
 # 送り状に当たる項目の候補（NEのAPI項目名を inspect で確かめる。値はコードなので個人情報ではない）
@@ -489,13 +491,45 @@ def job_csvsrc(job, budget):
     return {"ok": True, "fields_ng": dead, "orders": rows, "rows": lines}
 
 
+def job_history(job, budget):
+    """便種・個口の変更のチェック用：指定の商品を含む、過去の出荷済み伝票の 商品と数・発送方法・個口（読むだけ）。
+    個口は発送伝票備考欄（数字。空なら1個口）。氏名・住所は取らない。"""
+    goods = [str(g) for g in job.get("goods_ids") or []][:30]
+    if not goods:
+        return {"ok": False, "error": "goods_ids がありません"}
+    since = (_now() - datetime.timedelta(days=int(job.get("days") or 365))).strftime("%Y-%m-%d")
+    hit = search_all(budget, ROW_EP, ["receive_order_row_receive_order_id"],
+                     {"receive_order_row_goods_id-in": ",".join(goods), "receive_order_row_cancel_flag-eq": "0",
+                      "receive_order_row_last_modified_date-gte": since})
+    ids = sorted({str(r["receive_order_row_receive_order_id"]) for r in hit}, key=int, reverse=True)[:600]
+    orders, lines = [], []
+    for i in range(0, len(ids), 200):
+        chunk = ",".join(ids[i:i + 200])
+        orders += search_all(budget, BASE_EP, ["receive_order_id", "receive_order_delivery_id",
+                                               "receive_order_delivery_cut_form_note", "receive_order_send_date"],
+                             {"receive_order_id-in": chunk, "receive_order_order_status_id-eq": "50"})
+        lines += search_all(budget, ROW_EP, ["receive_order_row_receive_order_id", "receive_order_row_goods_id",
+                                             "receive_order_row_quantity"],
+                            {"receive_order_row_receive_order_id-in": chunk, "receive_order_row_cancel_flag-eq": "0"})
+    items = {}
+    for r in lines:
+        d = items.setdefault(str(r["receive_order_row_receive_order_id"]), {})
+        g = str(r["receive_order_row_goods_id"])
+        d[g] = d.get(g, 0) + int(float(r.get("receive_order_row_quantity") or 0))
+    past = [{"order_id": str(o["receive_order_id"]), "send_date": o.get("receive_order_send_date"),
+             "delivery_id": str(o.get("receive_order_delivery_id")),
+             "note": o.get("receive_order_delivery_cut_form_note") or "",
+             "items": items.get(str(o["receive_order_id"]), {})} for o in orders]
+    return {"ok": True, "since": since, "past": past}
+
+
 def job_exit(job, budget):
     """PC が「今日はもう用が無い」と言ったら待ち受けを終える（延命バッチなどを待たせない）。"""
     return {"ok": True, "exit": True}
 
 
 JOBS = {"ping": job_ping, "snapshot": job_snapshot, "apply": job_apply, "ship": job_ship,
-        "holds": job_holds, "inspect": job_inspect, "fields": job_fields, "csvsrc": job_csvsrc, "exit": job_exit}
+        "holds": job_holds, "inspect": job_inspect, "fields": job_fields, "csvsrc": job_csvsrc, "history": job_history, "exit": job_exit}
 
 
 def run_job(job):
