@@ -463,13 +463,39 @@ def job_fields(job, budget):
     return out
 
 
+# 送り状のCSVを NE API から組み立てるための項目（便種・個口の変更で、NE画面の配送情報出力の代わり）。
+# 氏名・住所を含むので、結果はドライブ（weekend_ship・本人のアカウント）にだけ置き、ログには出さない
+CSV_FIELDS = [
+    "receive_order_id", "receive_order_shop_id", "receive_order_delivery_id", "receive_order_invoice_id",
+    "receive_order_send_plan_date", "receive_order_hope_delivery_date", "receive_order_hope_delivery_time_slot_id",
+    "receive_order_temperature_id", "receive_order_delivery_cut_form_id", "receive_order_delivery_cut_form_note",
+    "receive_order_total_amount", "receive_order_payment_method_id", "receive_order_payment_method_name",
+    "receive_order_consignee_name", "receive_order_consignee_kana", "receive_order_consignee_tel",
+    "receive_order_consignee_zip_code", "receive_order_consignee_address1", "receive_order_consignee_address2",
+    "receive_order_purchaser_name", "receive_order_purchaser_tel", "receive_order_purchaser_zip_code",
+    "receive_order_purchaser_address1", "receive_order_purchaser_address2",
+    "receive_order_order_status_id", "receive_order_last_modified_date",
+]
+
+
+def job_csvsrc(job, budget):
+    """伝票番号を指定して、送り状CSVの元になる項目と明細を返す（読むだけ）。"""
+    ids = [str(x) for x in job.get("order_ids") or []]
+    if not ids:
+        return {"ok": False, "error": "order_ids がありません"}
+    alive, rows, dead = _alive_fields(budget, CSV_FIELDS, {"receive_order_id-in": ",".join(ids)})
+    lines = search_all(budget, ROW_EP, ROW_FIELDS, {"receive_order_row_receive_order_id-in": ",".join(ids),
+                                                    "receive_order_row_cancel_flag-eq": "0"})
+    return {"ok": True, "fields_ng": dead, "orders": rows, "rows": lines}
+
+
 def job_exit(job, budget):
     """PC が「今日はもう用が無い」と言ったら待ち受けを終える（延命バッチなどを待たせない）。"""
     return {"ok": True, "exit": True}
 
 
 JOBS = {"ping": job_ping, "snapshot": job_snapshot, "apply": job_apply, "ship": job_ship,
-        "holds": job_holds, "inspect": job_inspect, "fields": job_fields, "exit": job_exit}
+        "holds": job_holds, "inspect": job_inspect, "fields": job_fields, "csvsrc": job_csvsrc, "exit": job_exit}
 
 
 def run_job(job):
