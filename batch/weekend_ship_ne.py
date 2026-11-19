@@ -477,6 +477,10 @@ CSV_FIELDS = [
     "receive_order_purchaser_name", "receive_order_purchaser_tel", "receive_order_purchaser_zip_code",
     "receive_order_purchaser_address1", "receive_order_purchaser_address2",
     "receive_order_order_status_id", "receive_order_last_modified_date",
+    # 発送方法をまたぐ変更で一緒に直す項目（rules.cross_carrier_fields が見る）
+    "receive_order_delivery_method_id", "receive_order_business_office_stop_id",
+    "receive_order_seal1_id", "receive_order_seal2_id", "receive_order_seal3_id", "receive_order_seal4_id",
+    "receive_order_cancel_type_id", "receive_order_worker_text",
 ]
 
 
