@@ -579,8 +579,39 @@ def job_shipped_list(job, budget):
     return {"ok": True, "day": day, "orders": rows}
 
 
+# 確認待ちの判定に使う項目（読むだけ。氏名・住所・電話は取らない）
+CONFIRM_FIELDS = ["receive_order_id", "receive_order_shop_id", "receive_order_date", "receive_order_order_status_id",
+                  "receive_order_order_status_name", "receive_order_confirm_check_id", "receive_order_confirm_ids",
+                  "receive_order_important_check_id", "receive_order_important_check_name",
+                  "receive_order_goods_amount", "receive_order_delivery_fee_amount", "receive_order_total_amount",
+                  "receive_order_delivery_id", "receive_order_delivery_name", "receive_order_worker_text",
+                  "receive_order_gruoping_tag", "receive_order_payment_method_name", "receive_order_cancel_type_id",
+                  "receive_order_last_modified_date"]
+CONFIRM_ROW_FIELDS = ["receive_order_row_receive_order_id", "receive_order_row_no", "receive_order_row_goods_id",
+                      "receive_order_row_goods_name", "receive_order_row_quantity", "receive_order_row_unit_price",
+                      "receive_order_row_cancel_flag"]
+
+
+def job_confirm_peek(job, budget):
+    """確認待ちの伝票の、確認内容・金額・明細（読むだけ）。order_ids か、status（受注状態）で指定。
+    確認内容のマスタ（ID→名前）も返す（取れなければ空）。"""
+    ids = [str(x) for x in job.get("order_ids") or []]
+    flt = ({"receive_order_id-in": ",".join(ids)} if ids else
+           {"receive_order_order_status_id-in": str(job.get("status") or "2"), "receive_order_cancel_type_id-eq": "0"})
+    alive, rows, dead = _alive_fields(budget, CONFIRM_FIELDS, flt)
+    oids = [str(r["receive_order_id"]) for r in rows][:500]
+    lines = search_all(budget, ROW_EP, CONFIRM_ROW_FIELDS, {"receive_order_row_receive_order_id-in": ",".join(oids)}) if oids else []
+    master = {}
+    try:
+        m = budget.call("api_v1_system_confirm/info", {})
+        master = {str(x.get("confirm_id")): x.get("confirm_name") for x in m.get("data", [])}
+    except Exception as exc:  # noqa: BLE001
+        master = {"_error": str(exc)[:200]}
+    return {"ok": True, "fields_ng": dead, "orders": rows, "rows": lines, "confirm_master": master}
+
+
 JOBS = {"ping": job_ping, "snapshot": job_snapshot, "apply": job_apply, "ship": job_ship,
-        "holds": job_holds, "inspect": job_inspect, "fields": job_fields, "csvsrc": job_csvsrc, "history": job_history, "shipped_list": job_shipped_list, "exit": job_exit}
+        "holds": job_holds, "inspect": job_inspect, "fields": job_fields, "csvsrc": job_csvsrc, "history": job_history, "shipped_list": job_shipped_list, "confirm_peek": job_confirm_peek, "exit": job_exit}
 
 
 def run_job(job):
