@@ -271,9 +271,14 @@ def job_apply(job, budget):
                     res.update(ok=True, dry_run=True, fields=sorted(fields))
                     break
                 try:
-                    budget.call(UPDATE_EP, {"receive_order_id": oid,
-                                            "receive_order_last_modified_date": cur["receive_order_last_modified_date"],
-                                            "data": xml})
+                    params = {"receive_order_id": oid,
+                              "receive_order_last_modified_date": cur["receive_order_last_modified_date"],
+                              "data": xml}
+                    # 出荷確定済み（倉庫の出荷検品の後）でも直せるように。旗が無いと 011010 で断られる（11/19 確認）。
+                    # 便種・個口の変更は検品のスキャンの後に起きる（2026-11-20 ユーザー指示：印刷済み・出荷済みどちらでも）
+                    if str(cur.get("receive_order_order_status_id")) == "50":
+                        params["receive_order_shipped_update_flag"] = "1"
+                    budget.call(UPDATE_EP, params)
                     res.update(ok=True, fields=sorted(fields), attempts=attempt + 1)
                     break
                 except Exception as exc:  # noqa: BLE001
