@@ -59,7 +59,8 @@ ROW_EP = "api_v1_receiveorder_row/search"
 UPDATE_EP = "api_v1_receiveorder_base/update"
 SHIPPED_EP = "api_v1_receiveorder_base/shipped"
 
-POLL_SECONDS = 15          # 1回読むごとに shared_secret_reads に1行残る（出荷日に数百行）
+POLL_SECONDS = 5           # 1回読むごとに shared_secret_reads に1行残る（5秒で1時間720行）。便種・個口の変更で
+                           # 待ち時間が目立ったため 15→5秒（2026-11-20）
 ALIVE_EVERY = 300          # 待受の印を更新する間隔（秒）
 IDLE_EXIT_MINUTES = 75     # 出荷日でも、この時間なにも指示が来なければ終わる（PCが止まっている）
 JOB_BUDGET = 400           # 1つの指示で使ってよい NE API 回数
