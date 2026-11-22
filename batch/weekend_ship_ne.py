@@ -19,6 +19,8 @@
 【NE API の無料枠】
   月1000回まで無料。1つの指示で使ってよい回数を JOB_BUDGET で決め、超える指示は
   途中で止めて「どこまでやったか」を結果に書く（黙って全部やったことにしない）。
+  伝票の更新・出荷確定は bulkupdate / bulkupdateshipped でまとめて送る（1回1000件まで）。1件ずつだと
+  本番の1日（40件）で約165回かかり、2026-11-22 に無料枠を超えた。まとめて送れないときだけ1件ずつに戻す。
 
 PC → ここ（指示・出荷日の一覧）: 共通の置き場（Supabase shared_secrets）に Fernet で暗号化して追記
   weekend_ship_job      {"id": "...", "kind": "ping|snapshot|apply|ship", "dry_run": bool, ...}（最新の1行だけ見る）
@@ -27,7 +29,7 @@ PC → ここ（指示・出荷日の一覧）: 共通の置き場（Supabase sh
   ※ ドライブで往復しないのは、両方の Google 認可が drive.file で、相手のアプリが作ったファイルが見えないため
 
 起動: PC が枝 weekend-ship-trigger に合図を push する（weekend-ship-trigger.yml・数十秒で起動）。
-      時刻指定（7:40・12:00）は GitHub の混雑で数時間遅れることがある（2026-11-17 に 12:00 の回が 13:46）ので予備
+      時刻指定の起動（7:40・12:00）は 2026-11-19 に外した（weekend-ship-ne.yml の on: を参照）
 
 実行:
     python batch/weekend_ship_ne.py --probe            # 使う項目があるか・発送方法の一覧（API 3〜4回）
