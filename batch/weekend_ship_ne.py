@@ -58,6 +58,10 @@ BASE_EP = "api_v1_receiveorder_base/search"
 ROW_EP = "api_v1_receiveorder_row/search"
 UPDATE_EP = "api_v1_receiveorder_base/update"
 SHIPPED_EP = "api_v1_receiveorder_base/shipped"
+# まとめて送る（1回1000件まで）。1件ずつだと本番の1日で約165回かかり、月1000回の無料枠を超えた（2026-11-22）
+BULK_UPDATE_EP = "api_v1_receiveorder_base/bulkupdate"
+BULK_SHIPPED_EP = "api_v1_receiveorder_base/bulkupdateshipped"
+BULK_MAX = 1000
 
 POLL_SECONDS = 5           # 1回読むごとに shared_secret_reads に1行残る（5秒で1時間720行）。便種・個口の変更で
                            # 待ち時間が目立ったため 15→5秒（2026-11-20）
@@ -174,6 +178,46 @@ def update_xml(fields):
             + "".join(parts) + "</receiveorder_base></root>")
 
 
+def _attr(v):
+    return escape(str(v), {'"': "&quot;"})
+
+
+def bulk_update_xml(items):
+    """bulkupdate API の data（XML）。items: [{order_id, last_modified, fields}]（1回1000件まで）。
+    伝票ごとに最終更新日を付ける（NEが伝票ごとに照合し、違えば 020006）。"""
+    out = ['<?xml version="1.0" encoding="utf-8"?><root>']
+    for it in items:
+        bad = sorted(set(it["fields"]) - UPDATABLE)
+        if bad:
+            raise ValueError("更新を許していない項目です: {}".format(", ".join(bad)))
+        parts = "".join("<{0}>{1}</{0}>".format(k, escape(str(v))) for k, v in it["fields"].items())
+        out.append('<receiveorder receive_order_id="{}" receive_order_last_modified_date="{}">'
+                   '<receiveorder_base>{}</receiveorder_base></receiveorder>'.format(
+                       _attr(it["order_id"]), _attr(it["last_modified"]), parts))
+    out.append("</root>")
+    return "".join(out)
+
+
+def bulk_shipped_xml(items):
+    """bulkupdateshipped API の data（XML）。items: [{order_id, last_modified}]（1回1000件まで）。"""
+    return ('<?xml version="1.0" encoding="utf-8"?><root>' + "".join(
+        '<receiveorder receive_order_id="{}" receive_order_last_modified_date="{}"/>'.format(
+            _attr(it["order_id"]), _attr(it["last_modified"])) for it in items) + "</root>")
+
+
+def bulk_failures(message, order_ids):
+    """一括APIのエラー文から、伝票ごとの失敗を拾う → {order_id: その伝票のあたりの文}。
+    NEは失敗した伝票だけを receive_order_id つきで返す。どの伝票も書かれていない＝まるごと失敗
+    （形式の間違いなど）→ 空を返す。呼び出し側は1件ずつの更新に戻す。"""
+    msg = str(message or "")
+    found = {}
+    for oid in order_ids:
+        i = msg.find(str(oid))
+        if i >= 0:
+            found[str(oid)] = msg[max(0, i - 20): i + 200]
+    return found
+
+
 def search_all(budget, endpoint, fields, filters, page=10000):
     rows, offset = [], 0
     while True:
@@ -235,67 +279,194 @@ def _fresh_many(budget, order_ids):
     return out
 
 
+def _fields_for(op, cur):
+    """書く項目。作業用欄は先頭に足し、タグは後ろに足す（同じ印を二重に書かない）。"""
+    fields = dict(op.get("set") or {})
+    if op.get("prepend_worker_text"):
+        old = cur.get("receive_order_worker_text") or ""
+        if op["prepend_worker_text"] not in old:
+            fields["receive_order_worker_text"] = op["prepend_worker_text"] + ("\n" + old if old else "")
+    if op.get("add_tag"):
+        old = cur.get("receive_order_gruoping_tag") or ""
+        tag = "[{}]".format(op["add_tag"])
+        if tag not in old:
+            fields["receive_order_gruoping_tag"] = old + tag
+    return fields
+
+
+def _apply_one(budget, op, cur):
+    """1件ずつの更新（まとめて送れなかったときの戻り道。今までの作り）。"""
+    oid = str(op["order_id"])
+    res = {"order_id": oid}
+    try:
+        for attempt in range(3):
+            fields = _fields_for(op, cur)
+            xml = update_xml(fields)
+            try:
+                params = {"receive_order_id": oid,
+                          "receive_order_last_modified_date": cur["receive_order_last_modified_date"],
+                          "data": xml}
+                # 出荷確定済み（倉庫の出荷検品の後）でも直せるように。旗が無いと 011010 で断られる（11/19 確認）。
+                # 便種・個口の変更は検品のスキャンの後に起きる（2026-11-20 ユーザー指示：印刷済み・出荷済みどちらでも）
+                if str(cur.get("receive_order_order_status_id")) == "50":
+                    params["receive_order_shipped_update_flag"] = "1"
+                budget.call(UPDATE_EP, params)
+                res.update(ok=True, fields=sorted(fields), attempts=attempt + 1, way="one")
+                break
+            except Exception as exc:  # noqa: BLE001
+                # 011006＝読んだ後にNEの中で更新された（受注自動処理の直後など）。読み直して最大3回
+                if "011006" not in str(exc) or attempt == 2:
+                    raise
+                time.sleep(5)
+                cur = _fresh_many(budget, [oid]).get(oid) or cur
+    except Exception as exc:  # noqa: BLE001
+        res.update(ok=False, error=type(exc).__name__, detail=str(exc)[:300])
+    return res
+
+
+def _bulk_update(budget, items, shipped):
+    """まとめて更新する。items: [{order_id, last_modified, fields}]。
+    返り値: {order_id: None（成功）| エラー文}。まるごと失敗（どの伝票も名指しされない）なら None を返す。"""
+    out = {}
+    for i in range(0, len(items), BULK_MAX):
+        chunk = items[i:i + BULK_MAX]
+        ids = [str(it["order_id"]) for it in chunk]
+        params = {"data_type": "xml", "data": bulk_update_xml(chunk)}
+        if shipped:
+            params["receive_order_shipped_update_flag"] = "1"
+        try:
+            budget.call(BULK_UPDATE_EP, params)
+            out.update({oid: None for oid in ids})
+        except client.NEAuthError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            fails = bulk_failures(str(exc), ids)
+            # 全件が名指しで失敗（読んだ後の更新 020006 を除く）＝送り方の読み違いの疑い。1件ずつに戻す
+            if len(fails) == len(ids) and not any("020006" in m for m in fails.values()):
+                fails = {}
+            if not fails:
+                if out:
+                    # 前の塊は書けている。残りだけ1件ずつに戻すのは呼び出し側では区別できないので、エラーにする
+                    out.update({oid: "まとめて更新できませんでした（{}）".format(str(exc)[:200]) for oid in ids})
+                    continue
+                print("[weekend_ship] bulkupdate がまるごと失敗。1件ずつに戻します: {}".format(
+                    type(exc).__name__), flush=True)
+                return None
+            # 名指しされなかった伝票は、本当に書けたかを最終更新日で確かめる（成功を推測で書かない）
+            rest = [it for it in chunk if str(it["order_id"]) not in fails]
+            now = _fresh_many(budget, [it["order_id"] for it in rest]) if rest else {}
+            for it in rest:
+                oid = str(it["order_id"])
+                changed = (now.get(oid) or {}).get("receive_order_last_modified_date") != it["last_modified"]
+                out[oid] = None if changed else "まとめて更新した後に、書けたことを確かめられません"
+            out.update(fails)
+    return out
+
+
 def job_apply(job, budget):
     """伝票ごとに項目を更新する。ops: [{order_id, last_modified, set:{...}, prepend_worker_text, add_tag}]
     作業用欄は上書きせず、先頭に足す（大前提1）。最終更新日がPCの読んだ時点と違えば、
-    人がNEで触った後なので更新せずに返す（取り違えて上書きしない）。"""
+    人がNEで触った後なので更新せずに返す（取り違えて上書きしない）。
+    NEへは bulkupdate でまとめて送る（2026-11-22〜。1件ずつだとNE APIの無料枠を超える）。
+    まとめて送れなかったときだけ、今までどおり1件ずつ送る。"""
     dry = bool(job.get("dry_run"))
     ops = job.get("ops", [])
     now = _fresh_many(budget, [op["order_id"] for op in ops]) if ops else {}
-    results = []
+    res = {}
+    todo = []
     for op in ops:
         oid = str(op["order_id"])
-        res = {"order_id": oid}
+        r = res[oid] = {"order_id": oid}
+        cur = now.get(oid)
+        if not cur:
+            r.update(ok=False, error="RuntimeError", detail="伝票が見つかりません")
+            continue
+        if op.get("last_modified") and cur["receive_order_last_modified_date"] != op["last_modified"]:
+            r.update(ok=False, error="changed", detail="PCが読んだ後にNEで更新されています")
+            continue
         try:
-            cur = now.get(oid)
-            if not cur:
-                raise RuntimeError("伝票が見つかりません")
-            if op.get("last_modified") and cur["receive_order_last_modified_date"] != op["last_modified"]:
-                res.update(ok=False, error="changed", detail="PCが読んだ後にNEで更新されています")
-                results.append(res)
-                continue
-            for attempt in range(3):
-                fields = dict(op.get("set") or {})
-                if op.get("prepend_worker_text"):
-                    old = cur.get("receive_order_worker_text") or ""
-                    # やり直しで同じ印を二重に書かない
-                    if op["prepend_worker_text"] not in old:
-                        fields["receive_order_worker_text"] = op["prepend_worker_text"] + ("\n" + old if old else "")
-                if op.get("add_tag"):
-                    old = cur.get("receive_order_gruoping_tag") or ""
-                    tag = "[{}]".format(op["add_tag"])
-                    if tag not in old:
-                        fields["receive_order_gruoping_tag"] = old + tag
-                xml = update_xml(fields)
-                if dry:
-                    res.update(ok=True, dry_run=True, fields=sorted(fields))
-                    break
-                try:
-                    params = {"receive_order_id": oid,
-                              "receive_order_last_modified_date": cur["receive_order_last_modified_date"],
-                              "data": xml}
-                    # 出荷確定済み（倉庫の出荷検品の後）でも直せるように。旗が無いと 011010 で断られる（11/19 確認）。
-                    # 便種・個口の変更は検品のスキャンの後に起きる（2026-11-20 ユーザー指示：印刷済み・出荷済みどちらでも）
-                    if str(cur.get("receive_order_order_status_id")) == "50":
-                        params["receive_order_shipped_update_flag"] = "1"
-                    budget.call(UPDATE_EP, params)
-                    res.update(ok=True, fields=sorted(fields), attempts=attempt + 1)
-                    break
-                except Exception as exc:  # noqa: BLE001
-                    # 011006＝読んだ後にNEの中で更新された（受注自動処理の直後など）。読み直して最大3回
-                    if "011006" not in str(exc) or attempt == 2:
-                        raise
-                    time.sleep(5)
-                    cur = _fresh_many(budget, [oid]).get(oid) or cur
+            fields = _fields_for(op, cur)
+            update_xml(fields)      # 書いてよい項目かを先に確かめる
         except Exception as exc:  # noqa: BLE001
-            res.update(ok=False, error=type(exc).__name__, detail=str(exc)[:300])
-        results.append(res)
+            r.update(ok=False, error=type(exc).__name__, detail=str(exc)[:300])
+            continue
+        if dry:
+            r.update(ok=True, dry_run=True, fields=sorted(fields))
+            continue
+        todo.append(op)
+
+    by_id = {str(op["order_id"]): op for op in todo}
+    for attempt in range(3):
+        if not todo:
+            break
+        retry = []
+        for shipped in (False, True):
+            group = [op for op in todo
+                     if (str(now[str(op["order_id"])].get("receive_order_order_status_id")) == "50") == shipped]
+            if not group:
+                continue
+            items = [{"order_id": str(op["order_id"]),
+                      "last_modified": now[str(op["order_id"])]["receive_order_last_modified_date"],
+                      "fields": _fields_for(op, now[str(op["order_id"])])} for op in group]
+            got = _bulk_update(budget, items, shipped)
+            if got is None:
+                # まるごと失敗：1件ずつに戻す（今までの作り）
+                for op in group:
+                    res[str(op["order_id"])].update(_apply_one(budget, op, now[str(op["order_id"])]))
+                continue
+            for it in items:
+                oid = it["order_id"]
+                err = got.get(oid)
+                if err is None:
+                    res[oid].update(ok=True, fields=sorted(it["fields"]), attempts=attempt + 1, way="bulk")
+                elif "020006" in err and attempt < 2:
+                    retry.append(by_id[oid])     # 読んだ後にNEの中で更新された（受注自動処理の直後など）→ 読み直して再送
+                else:
+                    res[oid].update(ok=False, error="NEError", detail=err[:300])
+        todo = retry
+        if todo:
+            time.sleep(5)
+            now.update(_fresh_many(budget, [op["order_id"] for op in todo]))
+    results = [res[str(op["order_id"])] for op in ops]
     return {"ok": all(r.get("ok") for r in results), "results": results, "dry_run": dry}
+
+
+def _set_numbers(budget, pairs, shipped, ops, res):
+    """送り状番号をまとめて入れる。pairs: [(order_id, 今の伝票)]。失敗したものは res に書いて、成功した id を返す。
+    まとめて送れなかったときは1件ずつ（今までの作り）。"""
+    if not pairs:
+        return []
+    items = [{"order_id": oid, "last_modified": c["receive_order_last_modified_date"],
+              "fields": {"receive_order_delivery_cut_form_id": ops[oid]}} for oid, c in pairs]
+    got = _bulk_update(budget, items, shipped)
+    ok = []
+    for oid, c in pairs:
+        if got is None:
+            try:
+                params = {"receive_order_id": oid,
+                          "receive_order_last_modified_date": c["receive_order_last_modified_date"],
+                          "data": update_xml({"receive_order_delivery_cut_form_id": ops[oid]})}
+                if shipped:
+                    # 出荷確定済みは receive_order_shipped_update_flag=1 が無いと 011010 で断られる（11/19 確認）
+                    params["receive_order_shipped_update_flag"] = "1"
+                budget.call(UPDATE_EP, params)
+                ok.append(oid)
+            except Exception as exc:  # noqa: BLE001
+                res[oid].update(ok=False, error=type(exc).__name__,
+                                detail=("出荷確定済みの伝票に番号を入れられません：" if shipped else "") + str(exc)[:250])
+        elif got.get(oid) is None:
+            ok.append(oid)
+        else:
+            res[oid].update(ok=False, error="NEError",
+                            detail=("出荷確定済みの伝票に番号を入れられません：" if shipped else "") + got[oid][:250])
+    return ok
 
 
 def job_ship(job, budget):
     """送り状番号を入れてから出荷確定する。ops: [{order_id, tracking}]
-    既に出荷確定済み（受注状態50）のものは番号だけ確かめて飛ばす（二重に確定しない）。"""
+    既に出荷確定済み（受注状態50）のものは番号だけ確かめて飛ばす（二重に確定しない）。
+    番号は bulkupdate、出荷確定は bulkupdateshipped でまとめて送る（2026-11-22〜。1件ずつだと
+    40件で約80回かかり、NE APIの無料枠を超えた）。まとめて送れなかったときだけ1件ずつ。"""
     dry = bool(job.get("dry_run"))
     ops = {str(op["order_id"]): str(op["tracking"]).strip() for op in job.get("ops", [])}
     # only_if_shipped：ツールの締めの対象外でB2から出たもの（2回目の発行など）。出荷確定済みなら番号だけ入れ、
@@ -307,8 +478,9 @@ def job_ship(job, budget):
 
     # 1) 今の状態をまとめて読み、番号が違うものだけ番号を入れる
     cur = _fresh_many(budget, ops)
-    todo = []
-    number_only = []
+    todo = []            # 出荷確定するもの
+    need_number = []     # 確定前に番号を入れるもの（受注状態20・40）
+    number_only = []     # 出荷確定済みで番号だけ入れるもの（受注状態50）
     for oid, tracking in ops.items():
         c = cur.get(oid)
         if not c:
@@ -329,15 +501,7 @@ def job_ship(job, budget):
             if dry:
                 res[oid].update(ok=True, dry_run=True, number_only=True)
                 continue
-            try:
-                # 出荷確定済みは receive_order_shipped_update_flag=1 が無いと 011010 で断られる（11/19 確認）
-                budget.call(UPDATE_EP, {"receive_order_id": oid,
-                                        "receive_order_last_modified_date": c["receive_order_last_modified_date"],
-                                        "receive_order_shipped_update_flag": "1",
-                                        "data": update_xml({"receive_order_delivery_cut_form_id": tracking})})
-                number_only.append(oid)
-            except Exception as exc:  # noqa: BLE001
-                res[oid].update(ok=False, error=type(exc).__name__, detail="出荷確定済みの伝票に番号を入れられません：" + str(exc)[:250])
+            number_only.append((oid, c))
             continue
         if oid in soft:
             res[oid].update(ok=True, skipped="not_shipped_yet", detail="まだ出荷確定していないので触りません")
@@ -350,24 +514,44 @@ def job_ship(job, budget):
             res[oid].update(ok=True, dry_run=True)
             continue
         if have != tracking:
-            try:
-                budget.call(UPDATE_EP, {"receive_order_id": oid,
-                                        "receive_order_last_modified_date": c["receive_order_last_modified_date"],
-                                        "data": update_xml({"receive_order_delivery_cut_form_id": tracking})})
-            except Exception as exc:  # noqa: BLE001
-                res[oid].update(ok=False, error=type(exc).__name__, detail=str(exc)[:300])
-                continue
-        todo.append(oid)
+            need_number.append((oid, c))
+        else:
+            todo.append(oid)
+    number_only = _set_numbers(budget, number_only, True, ops, res)
+    todo += _set_numbers(budget, need_number, False, ops, res)
 
-    # 2) 最終更新日が変わったので読み直して、出荷確定
+    # 2) 最終更新日が変わったので読み直して、まとめて出荷確定
     if todo:
         cur = _fresh_many(budget, todo)
+        items = [{"order_id": oid, "last_modified": cur[oid]["receive_order_last_modified_date"]}
+                 for oid in todo if oid in cur]
         for oid in todo:
+            if oid not in cur:
+                res[oid].update(ok=False, error="missing", detail="番号を入れた後に伝票が読めません")
+        one_by_one = []
+        for i in range(0, len(items), BULK_MAX):
+            chunk = items[i:i + BULK_MAX]
             try:
-                budget.call(SHIPPED_EP, {"receive_order_id": oid,
-                                         "receive_order_last_modified_date": cur[oid]["receive_order_last_modified_date"]})
+                budget.call(BULK_SHIPPED_EP, {"data_type": "xml", "data": bulk_shipped_xml(chunk)})
+            except client.NEAuthError:
+                raise
             except Exception as exc:  # noqa: BLE001
-                res[oid].update(ok=False, error=type(exc).__name__, detail=str(exc)[:300])
+                # 一部失敗は 031500 で、失敗した伝票だけが名指しされる（ほかは出荷確定済み）。下の読み直しで確かめる
+                fails = bulk_failures(str(exc), [it["order_id"] for it in chunk])
+                if len(fails) == len(chunk):
+                    fails = {}      # 全件が名指しで失敗＝送り方の読み違いの疑い。1件ずつに戻す
+                if not fails:
+                    print("[weekend_ship] bulkupdateshipped がまるごと失敗。1件ずつに戻します: {}".format(
+                        type(exc).__name__), flush=True)
+                    one_by_one += chunk
+                for oid, msg in fails.items():
+                    res[oid].update(ok=False, error="NEError", detail=msg[:300])
+        for it in one_by_one:
+            try:
+                budget.call(SHIPPED_EP, {"receive_order_id": it["order_id"],
+                                         "receive_order_last_modified_date": it["last_modified"]})
+            except Exception as exc:  # noqa: BLE001
+                res[it["order_id"]].update(ok=False, error=type(exc).__name__, detail=str(exc)[:300])
 
         # 3) 本当に出荷確定済みで、番号が入っているかを確かめる（成功を推測で書かない）
         after = _fresh_many(budget, todo)
