@@ -968,6 +968,8 @@ def run_job(job):
     jid = str(job["id"])
     kind = job.get("kind")
     budget = Budget(int(job.get("budget") or JOB_BUDGET))
+    # NE APIの内訳：処理の種類ごとに数える。ドライランは試験＝単発（lib/ne_api/budget_plan.py）
+    usage.set_caller("土日祝出荷:{}".format(kind), oneoff=True if job.get("dry_run") else None)
     started = _now().isoformat(timespec="seconds")
     try:
         if kind not in JOBS:
@@ -1085,6 +1087,7 @@ def serve(until_hhmm, force=False):
 
 def probe():
     """使う項目が実在するかと、発送方法・受注状態の一覧を Drive に書く。ログには件数だけ。"""
+    usage.set_caller("土日祝出荷:probe", oneoff=True)   # 項目の確かめ＝試験
     budget = Budget(40)
     report = {"at": _now().isoformat(timespec="seconds"), "fields": {}, "lists": {}}
     alive = list(BASE_FIELDS)
