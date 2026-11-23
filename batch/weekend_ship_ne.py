@@ -69,6 +69,12 @@ POLL_SECONDS = 5           # 1回読むごとに shared_secret_reads に1行残�
                            # 待ち時間が目立ったため 15→5秒（2026-11-20）
 ALIVE_EVERY = 300          # 待受の印を更新する間隔（秒）
 IDLE_EXIT_MINUTES = 75     # 出荷日でも、この時間なにも指示が来なければ終わる（PCが止まっている）
+# 1件でも処理したあとは、この時間指示が来なければ席を空けて終わる。次の指示のときにPCが起こし直す（約1分）。
+# 受注明細・入出庫などと同じ順番待ち（concurrency: ne-keepalive）で、GitHubは待ちを1件しか持たないため、
+# 居座ると後ろのバッチが取り消される（2026-11-23 受注明細が cancelled）
+RELEASE_IDLE_MINUTES = 10
+EXIT_JOB_MAX_AGE_MINUTES = 3    # 終了の指示はこの時間を過ぎたら無視する（起こし直した担当がすぐ終わらないように）
+JOB_MAX_AGE_MINUTES = 30        # ほかの指示も、PCが待つのをやめた後の古いものは実行しない
 JOB_BUDGET = 400           # 1つの指示で使ってよい NE API 回数
 
 # snapshot で取る伝票の項目。氏名・住所は取らない（照合に要るのは購入者メールと店舗の注文番号だけ）
@@ -1010,9 +1016,29 @@ def _shared_get(name):
     return json.loads(Fernet(key.encode()).decrypt(rows[0]["ciphertext"].encode()).decode("utf-8"))
 
 
+def job_is_stale(job, now):
+    """置かれてから時間がたちすぎた指示か（純関数）。id の先頭は PC の日時（JST）YYYYmmdd_HHMMSS。
+    日時が読めない指示は古いとみなさない（今までどおり実行する）。"""
+    try:
+        at = datetime.datetime.strptime(str(job["id"])[:15], "%Y%m%d_%H%M%S").replace(tzinfo=JST)
+    except (KeyError, ValueError):
+        return False
+    limit = EXIT_JOB_MAX_AGE_MINUTES if job.get("kind") == "exit" else JOB_MAX_AGE_MINUTES
+    return (now - at).total_seconds() > limit * 60
+
+
+def idle_action(idle_seconds, handled):
+    """指示が来ていない間にどうするか（純関数）: None=待つ / "release"=席を空ける / "alert"=PCが止まった疑い。"""
+    if handled and idle_seconds > RELEASE_IDLE_MINUTES * 60:
+        return "release"
+    if not handled and idle_seconds > IDLE_EXIT_MINUTES * 60:
+        return "alert"
+    return None
+
+
 def pending_jobs():
     job = _shared_get("weekend_ship_job")
-    if not job:
+    if not job or job_is_stale(job, _now()):
         return []
     done = drive_master.find_file("ws_result_{}.json".format(job["id"]), _folder())
     return [] if done else [job]
@@ -1061,7 +1087,14 @@ def serve(until_hhmm, force=False):
                     return 0
         except Exception as exc:  # noqa: BLE001
             print("[weekend_ship] 待ち受け中のエラー: {}".format(type(exc).__name__), flush=True)
-        if time.time() - last_job > IDLE_EXIT_MINUTES * 60 and handled == 0:
+        action = idle_action(time.time() - last_job, handled)
+        if action == "release":
+            _write_json("ws_ne_alive.json", {"at": _now().isoformat(timespec="seconds"), "ended": True,
+                                             "handled": handled, "by": "idle"})
+            print("[weekend_ship] {}分間指示が無いので席を空けます handled={}".format(
+                RELEASE_IDLE_MINUTES, handled), flush=True)
+            return 0
+        if action == "alert":
             print("[weekend_ship] {}分間指示が来ません。PCが止まっている可能性があります。".format(
                 IDLE_EXIT_MINUTES), flush=True)
             _write_json("ws_ne_alive.json", {"at": _now().isoformat(timespec="seconds"), "idle_exit": True,

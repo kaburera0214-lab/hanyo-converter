@@ -34,3 +34,21 @@ def test_ne_screen_is_never_touched():
     src = open(w.__file__, encoding="utf-8").read()
     for bad in ("main.next-engine.com", "base.next-engine.org/users", "playwright", "selenium"):
         assert bad not in src
+
+
+def test_idle_release_after_work_only():
+    # 処理したあとは10分で席を空ける（後ろのバッチを取り消させない）。起動直後は75分待ってPC停止を知らせる
+    assert w.idle_action(599, handled=3) is None
+    assert w.idle_action(601, handled=3) == "release"
+    assert w.idle_action(601, handled=0) is None
+    assert w.idle_action(75 * 60 + 1, handled=0) == "alert"
+
+
+def test_stale_jobs_are_not_run():
+    import datetime as dt
+    now = dt.datetime(2026, 11, 23, 12, 0, 0, tzinfo=w.JST)
+    assert w.job_is_stale({"id": "20261123_115600_exit_abc", "kind": "exit"}, now)      # 終了は3分まで
+    assert not w.job_is_stale({"id": "20261123_115830_exit_abc", "kind": "exit"}, now)
+    assert not w.job_is_stale({"id": "20261123_113500_apply_abc", "kind": "apply"}, now)
+    assert w.job_is_stale({"id": "20261122_113500_ship_abc", "kind": "ship"}, now)      # 前日の出荷確定は実行しない
+    assert not w.job_is_stale({"id": "manual", "kind": "ping"}, now)
