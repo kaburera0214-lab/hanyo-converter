@@ -81,8 +81,47 @@ if req:
 s, err = read_state(day)
 if err:
     st.error(err)
-if s and time.time() - float(s.get("published_ts") or 0) > 300:
+# 倉庫のPCの担当が止まったとき（2026-11-24 ユーザー決定）。担当は1分後に自動で起き直す（1日10回まで）。
+# 起き直した担当は止まっていた間の依頼を拾わないので、ここで「もう一度押して」と出す。
+# 起き直せないとき（上限・PCが落ちている）は、ここから管理者のChatworkへ直接知らせる（稼働監視の赤には頼らない）
+now_h = datetime.datetime.now(JST).hour
+stale = bool(s) and time.time() - float(s.get("published_ts") or 0) > 300
+gave_up = bool(s) and bool(s.get("gave_up"))
+restarted = bool(req and s and not gave_up and not stale
+                 and float(s.get("started_ts") or 0) > float(req.get("sent_ts") or 0)
+                 and req["req_id"] not in (s.get("requests") or {}))
+
+
+def _tell_admin(why):
+    """依頼が止まっているときだけ、依頼ごとに1回。"""
+    key = "chg_admin_told_" + req["req_id"]
+    if st.session_state.get(key):
+        return True
+    from lib.notify import chatwork
+    ok = chatwork.create_task("[便種・個口の変更] 伝票{}の依頼が進みません：{}".format(req["order_id"], why),
+                              limit_days=1, audience=chatwork.ADMIN)
+    st.session_state[key] = ok
+    return ok
+
+
+if req and not (8 <= now_h < 20):
+    st.warning("便種・個口の変更の受付は 8:00〜20:00 です。")
+elif req and gave_up:
+    st.error("倉庫のPC（変更の担当）が今日何度も止まったため、止めています。管理者にChatworkで知らせてあります。")
+elif req and (stale or not s) and not err:
+    told = _tell_admin("倉庫のPCの担当が5分以上動いていません（PCが止まっている可能性）")
+    st.error("倉庫のPC（変更の担当）が5分以上動いていません。"
+             + ("管理者にChatworkで知らせました。" if told else "Chatworkで管理者に連絡してください。"))
+elif stale:
     st.error("倉庫のPC（変更の担当）が5分以上動いていません。Chatworkで管理者に連絡してください。")
+if restarted:
+    if st.session_state.get("chg_ran") == req["req_id"]:
+        # 「実行」の後に止まった：NEやB2が途中まで変わっていることがある。確かめ直せば今の状態から計画し直す
+        st.warning("倉庫のPC（変更の担当）が実行の途中で起き直しました。もう一度「確かめる」を押すと、"
+                   "今のNEとB2の状態から確かめ直します。")
+    else:
+        st.warning("倉庫のPC（変更の担当）が起き直しました。この依頼は届いていません。もう一度「確かめる」を押してください。")
+    st.session_state.pop("chg_ran", None)
 
 with st.form("chg_form"):
     oid = st.text_input("伝票番号（NEの伝票番号）", value=(req or {}).get("order_id", ""), max_chars=12)
@@ -97,11 +136,11 @@ if go:
     else:
         req = {"req_id": uuid.uuid4().hex[:12], "order_id": oid, "delivery_id": dv, "boxes": int(boxes)}
         send("check", req)
-        st.session_state["chg_req"] = req
+        st.session_state["chg_req"] = dict(req, sent_ts=time.time())   # 担当が起き直す前の依頼かを見分ける
         st.session_state.pop("chg_ran", None)
         st.rerun()
 
-if req:
+if req and not restarted:
     r = ((s or {}).get("requests") or {}).get(req["req_id"])
     box = st.container(border=True)
     with box:
@@ -135,8 +174,9 @@ if req:
             if st.session_state.get("chg_ran") == req["req_id"]:
                 st.info("実行しています…")
             elif st.button("実行", type="primary", use_container_width=True, disabled=not ok_warn):
-                send("run", dict(req, warn_ack=bool(r.get("warn"))))
+                send("run", dict({k: v for k, v in req.items() if k != "sent_ts"}, warn_ack=bool(r.get("warn"))))
                 st.session_state["chg_ran"] = req["req_id"]
+                st.session_state["chg_req"] = dict(req, sent_ts=time.time())
                 st.rerun()
         elif r.get("status") == "running":
             st.info("実行しています（NEの修正 → B2の削除 → 発行・印刷）…")
