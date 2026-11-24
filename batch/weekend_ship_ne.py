@@ -68,11 +68,10 @@ BULK_MAX = 1000
 POLL_SECONDS = 5           # 1回読むごとに shared_secret_reads に1行残る（5秒で1時間720行）。便種・個口の変更で
                            # 待ち時間が目立ったため 15→5秒（2026-11-20）
 ALIVE_EVERY = 300          # 待受の印を更新する間隔（秒）
-IDLE_EXIT_MINUTES = 75     # 出荷日でも、この時間なにも指示が来なければ終わる（PCが止まっている）
-# 1件でも処理したあとは、この時間指示が来なければ席を空けて終わる。次の指示のときにPCが起こし直す（約1分）。
-# 受注明細・入出庫などと同じ順番待ち（concurrency: ne-keepalive）で、GitHubは待ちを1件しか持たないため、
-# 居座ると後ろのバッチが取り消される（2026-11-23 受注明細が cancelled）
-RELEASE_IDLE_MINUTES = 10
+# NE担当は必要なときだけ起動し、居座らない。受注明細・入出庫などと同じ順番（concurrency: ne-keepalive・queue: max）に
+# 先着順で並ぶので、席を持っている間は後ろのバッチが待つ（2026-11-24 ユーザー決定）。
+RELEASE_IDLE_MINUTES = 10   # 1件でも処理したあと、この時間指示が来なければ終わる。次の指示でPCが起こし直す（約1分）
+NO_JOB_EXIT_MINUTES = 2     # 起動して指示が来なければ終わる（合図が重なって余分に起動した担当。PCは起動を確かめてから指示を置く）
 EXIT_JOB_MAX_AGE_MINUTES = 3    # 終了の指示はこの時間を過ぎたら無視する（起こし直した担当がすぐ終わらないように）
 JOB_MAX_AGE_MINUTES = 30        # ほかの指示も、PCが待つのをやめた後の古いものは実行しない
 JOB_BUDGET = 400           # 1つの指示で使ってよい NE API 回数
@@ -1028,12 +1027,9 @@ def job_is_stale(job, now):
 
 
 def idle_action(idle_seconds, handled):
-    """指示が来ていない間にどうするか（純関数）: None=待つ / "release"=席を空ける / "alert"=PCが止まった疑い。"""
-    if handled and idle_seconds > RELEASE_IDLE_MINUTES * 60:
-        return "release"
-    if not handled and idle_seconds > IDLE_EXIT_MINUTES * 60:
-        return "alert"
-    return None
+    """指示が来ていない間にどうするか（純関数）: None=待つ / "release"=席を空けて終わる。"""
+    limit = RELEASE_IDLE_MINUTES if handled else NO_JOB_EXIT_MINUTES
+    return "release" if idle_seconds > limit * 60 else None
 
 
 def pending_jobs():
@@ -1092,24 +1088,8 @@ def serve(until_hhmm, force=False):
             _write_json("ws_ne_alive.json", {"at": _now().isoformat(timespec="seconds"), "ended": True,
                                              "handled": handled, "by": "idle"})
             print("[weekend_ship] {}分間指示が無いので席を空けます handled={}".format(
-                RELEASE_IDLE_MINUTES, handled), flush=True)
+                RELEASE_IDLE_MINUTES if handled else NO_JOB_EXIT_MINUTES, handled), flush=True)
             return 0
-        if action == "alert":
-            print("[weekend_ship] {}分間指示が来ません。PCが止まっている可能性があります。".format(
-                IDLE_EXIT_MINUTES), flush=True)
-            _write_json("ws_ne_alive.json", {"at": _now().isoformat(timespec="seconds"), "idle_exit": True,
-                                             "handled": handled})
-            # PC 側が止まっていると、PC からは知らせられない。ここ（クラウド）から管理者へ知らせる
-            try:
-                from lib.notify import chatwork
-                chatwork.create_task(
-                    "[info][title]🔴 土日祝出荷：PCから指示が来ません[/title]"
-                    "今日は出荷日ですが、{}分間 weekend-shipping（倉庫のPC）から指示がありません。"
-                    "PCの電源・スリープ・Wi-Fiを確かめてください。伝票は出ていません。[/info]".format(IDLE_EXIT_MINUTES),
-                    limit_days=1, audience=chatwork.ADMIN)
-            except Exception:  # noqa: BLE001
-                pass
-            return 1    # 赤にして気づけるようにする
         usage.flush()
         time.sleep(POLL_SECONDS)
     _write_json("ws_ne_alive.json", {"at": _now().isoformat(timespec="seconds"), "ended": True,

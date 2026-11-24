@@ -37,11 +37,23 @@ def test_ne_screen_is_never_touched():
 
 
 def test_idle_release_after_work_only():
-    # 処理したあとは10分で席を空ける（後ろのバッチを取り消させない）。起動直後は75分待ってPC停止を知らせる
+    # 処理したあとは10分、指示が来ないまま起動した担当は2分で席を空ける（居座らない）
     assert w.idle_action(599, handled=3) is None
     assert w.idle_action(601, handled=3) == "release"
-    assert w.idle_action(601, handled=0) is None
-    assert w.idle_action(75 * 60 + 1, handled=0) == "alert"
+    assert w.idle_action(119, handled=0) is None
+    assert w.idle_action(121, handled=0) == "release"
+
+
+def test_ne_workflows_queue_first_come_first_served():
+    # 同じ順番に並ぶワークフローは全部 queue: max。1本でも欠けると、待っているバッチが取り消される
+    import glob
+    found = []
+    for p in glob.glob(os.path.join(ROOT, ".github", "workflows", "*.yml")):
+        s = open(p, encoding="utf-8").read()
+        if "group: ne-keepalive" in s:
+            found.append(os.path.basename(p))
+            assert "queue: max" in s and "cancel-in-progress: false" in s, p
+    assert len(found) >= 8
 
 
 def test_stale_jobs_are_not_run():

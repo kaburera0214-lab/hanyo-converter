@@ -34,6 +34,7 @@ on:
 
 concurrency:
   group: ne-keepalive
+  queue: max                # 待ちを捨てず先着順に実行（既定は1件で、古い待ちが取り消される）
   cancel-in-progress: false
 
 jobs:
