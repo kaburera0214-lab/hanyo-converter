@@ -11,9 +11,12 @@ name: ne-order-rows
 # concurrency group は auth-keepalive.yml と同じ "ne-keepalive"。
 # NEはトークンが再発行されると旧トークンが即失効するため、延命バッチと同時に走らせない。
 
+# 起動は GapBoard の毎朝の同期（このPC 6:30）が、枝 ne-order-rows-trigger へ合図を push して行う（2026-11-24〜）。
+# 時刻指定（cron 5:30）は GitHub の混雑で 9:30〜14:00 に遅れ、6:30 の同期が前日の明細で原価を計算していたため。
+# 合図の枝にはこのファイルの写しと日時しか無いので、コードは main から取る（checkout の ref: main）。
 on:
-  schedule:
-    - cron: "30 20 * * *"   # 毎日 20:30 UTC = 翌05:30 JST（GapBoardの日次同期 06:30 の前）
+  push:
+    branches: [ne-order-rows-trigger]
   workflow_dispatch:
     inputs:
       probe:
@@ -49,6 +52,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main
 
       - uses: actions/setup-python@v5
         with:
