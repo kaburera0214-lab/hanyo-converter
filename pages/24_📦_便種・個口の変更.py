@@ -10,12 +10,12 @@ NEの修正（発送方法・送り状・時間帯・個口＝発送伝票備考
 - 倉庫のPC → このページ: 共通の置き場（Supabase shared_secret_get）の weekend_ship_change_YYYYMMDD。
   伝票番号・便・個口・商品名・数・判定の文言だけ（氏名・住所は無い）
 - やってよい変更かの決まりの正本は weekend-shipping の src/change_rules.py（このページに決まりを書かない）
-- Team EC（Eシス）の注文はプルダウンで選ぶ。J番号で「実行」だけ（確かめる工程なし）。B2だけを直し、
+- 番号はバーコードのスキャンで入れ、どちらの注文かは読んだ値で決まる（lib/scan_code.py。2026-11-26）
+- Team EC（Eシス）の注文は J番号で「実行」だけ（確かめる工程なし）。B2だけを直し、
   同じ便なら増えた分だけ足す／余った分だけ消す（weekend-shipping の src/te_change.py。2026-11-26）
 """
 import datetime
 import json
-import re
 import time
 import uuid
 
@@ -29,7 +29,7 @@ require_role("receiving")
 
 from streamlit_autorefresh import st_autorefresh  # noqa: E402
 
-from lib import master_store                       # noqa: E402
+from lib import master_store, scan_code            # noqa: E402
 from lib.invoice import drive_master               # noqa: E402
 
 JST = datetime.timezone(datetime.timedelta(hours=9))
@@ -39,8 +39,6 @@ CHOICES = {"20": "ヤマト 宅急便", "28": "ヤマト ネコポス", "17": "�
 # Team EC（Eシス）の注文：B2で出す2つだけ。確かめる工程なしでB2だけ直す（2026-11-26 ユーザー指示。
 # 正本は weekend-shipping の src/te_change.py）
 TE_CHOICES = {"20": "ヤマト 宅急便", "28": "ヤマト ネコポス"}
-TARGETS = ("パピー（NEの伝票）", "Team EC（Eシスの注文）")
-J_NO = re.compile(r"^[Jj]\d{4,7}$")
 
 
 def _secret(k):
@@ -135,44 +133,36 @@ if restarted:
         st.warning("倉庫のPC（変更の担当）が起き直しました。この依頼は届いていません。もう一度「確かめる」を押してください。")
     st.session_state.pop("chg_ran", None)
 
-target = st.selectbox("どちらの注文ですか", TARGETS, index=1 if (req or {}).get("te") else 0)
-te = target == TARGETS[1]
-with st.form("chg_form"):
-    if te:
-        oid = st.text_input("Eシスの番号（送り状の品名にある J から始まる番号。例 J81828）",
-                            value=(req or {}).get("order_id", "") if (req or {}).get("te") else "", max_chars=10)
-    else:
-        oid = st.text_input("伝票番号（NEの伝票番号）",
-                            value="" if (req or {}).get("te") else (req or {}).get("order_id", ""), max_chars=12)
-    c1, c2 = st.columns(2)
-    menu = TE_CHOICES if te else CHOICES
-    dv = c1.selectbox("配送会社・便", list(menu), format_func=menu.get)
-    boxes = c2.selectbox("個口", list(range(1, 11)))
-    go = st.form_submit_button("実行" if te else "確かめる", type="primary", use_container_width=True)
+# 番号はバーコードのスキャンで入れる（2026-11-26 ユーザー指示）。どちらの注文かは読んだ値で決まる
+# （NEの納品書＝NW-7の数字、Eシスのピッキングリスト＝J番号）。読み替えの決まりは lib/scan_code.py。
+# 欄はフォームの外に置く：スキャナーが最後に送る改行は、ここでは値を確定するだけで「確かめる」「実行」は押されない
+raw = st.text_input("番号：NEの納品書か、Eシスのピッキングリストのバーコードを読んでください",
+                    value=(req or {}).get("order_id", ""), placeholder="ここを押してからスキャン")
+kind, oid = scan_code.parse(raw)
+if raw.strip() and not kind:
+    st.error(oid)
+elif kind == "te":
+    st.info("Team EC（Eシスの注文） {}　※B2の送り状だけを直します".format(oid))
+elif kind == "ne":
+    st.info("パピー（NEの伝票） {}".format(oid))
+te = kind == "te"
+c1, c2 = st.columns(2)
+menu = TE_CHOICES if te else CHOICES
+dv = c1.selectbox("配送会社・便", list(menu), format_func=menu.get, disabled=not kind)
+boxes = c2.selectbox("個口", list(range(1, 11)), disabled=not kind)
+go = st.button("実行" if te else "確かめる", type="primary", use_container_width=True, disabled=not kind)
 if go and te:
-    oid = oid.strip().upper()
-    if oid.isdigit():
-        st.error("数字だけの番号はパピー（NEの伝票番号）です。上で「パピー」を選んでください")
-    elif not J_NO.match(oid):
-        st.error("J から始まる番号（例 J81828）で入れてください")
-    else:
-        req = {"req_id": uuid.uuid4().hex[:12], "order_id": oid, "delivery_id": dv, "boxes": int(boxes), "te": True}
-        send("te_run", req)
-        st.session_state["chg_req"] = dict(req, sent_ts=time.time())
-        st.session_state["chg_ran"] = req["req_id"]
-        st.rerun()
+    req = {"req_id": uuid.uuid4().hex[:12], "order_id": oid, "delivery_id": dv, "boxes": int(boxes), "te": True}
+    send("te_run", req)
+    st.session_state["chg_req"] = dict(req, sent_ts=time.time())
+    st.session_state["chg_ran"] = req["req_id"]
+    st.rerun()
 elif go:
-    oid = oid.strip()
-    if J_NO.match(oid):
-        st.error("J から始まる番号は Team EC の注文です。上で「Team EC」を選んでください")
-    elif not oid.isdigit():
-        st.error("伝票番号は数字だけで入れてください")
-    else:
-        req = {"req_id": uuid.uuid4().hex[:12], "order_id": oid, "delivery_id": dv, "boxes": int(boxes)}
-        send("check", req)
-        st.session_state["chg_req"] = dict(req, sent_ts=time.time())   # 担当が起き直す前の依頼かを見分ける
-        st.session_state.pop("chg_ran", None)
-        st.rerun()
+    req = {"req_id": uuid.uuid4().hex[:12], "order_id": oid, "delivery_id": dv, "boxes": int(boxes)}
+    send("check", req)
+    st.session_state["chg_req"] = dict(req, sent_ts=time.time())   # 担当が起き直す前の依頼かを見分ける
+    st.session_state.pop("chg_ran", None)
+    st.rerun()
 
 if req and req.get("te") and not restarted:
     r = ((s or {}).get("requests") or {}).get(req["req_id"])
