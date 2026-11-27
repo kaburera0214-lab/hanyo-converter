@@ -17,7 +17,7 @@ on:
   workflow_dispatch:
     inputs:
       file:
-        description: "計画CSVのファイル名（Googleドライブの商品マスタのフォルダに置いたもの）"
+        description: "計画CSVのファイル名（ドライブの商品マスタのフォルダ）か shared:<共通の置き場の名前>"
         required: true
       only:
         description: "登録するセット商品コード（カンマ区切り）。空なら計画CSVの全部"
@@ -49,7 +49,7 @@ jobs:
           python-version: "3.11"
 
       # auth-keepalive.yml と同じ依存。streamlitはシムで置換するため不要。
-      - run: pip install pandas requests google-api-python-client google-auth
+      - run: pip install pandas requests google-api-python-client google-auth cryptography
 
       - name: NE setgoods upload
         env:
@@ -58,6 +58,11 @@ jobs:
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           NE_CLIENT_ID: ${{ secrets.NE_CLIENT_ID }}
           NE_CLIENT_SECRET: ${{ secrets.NE_CLIENT_SECRET }}
+          # 計画を共通の置き場（shared:<名前>）から読むとき用。PCとこのリポジトリのGoogle認可がどちらも
+          # drive.file で、PCがドライブに置いた計画はここから見えないため（2026-11-27）
+          SHARED_SECRETS_URL: ${{ secrets.SHARED_SECRETS_URL }}
+          SHARED_SECRETS_ANON_KEY: ${{ secrets.SHARED_SECRETS_ANON_KEY }}
+          SHARED_SECRETS_KEY: ${{ secrets.SHARED_SECRETS_KEY }}
           IN_FILE: ${{ inputs.file }}
           IN_ONLY: ${{ inputs.only }}
           IN_APPLY: ${{ inputs.apply }}

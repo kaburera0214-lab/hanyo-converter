@@ -21,7 +21,13 @@
   1件ごとの結果は Google ドライブ（非公開）の `ne_setgoods_result_YYYYMMDD_NNN.csv` に書く。
 
 【計画CSV】
-  Google ドライブの商品マスタと同じフォルダに置く。見出しは日本語（1行＝内訳1つ）:
+  次のどちらかに置く。見出しは日本語（1行＝内訳1つ）:
+    - Google ドライブの商品マスタと同じフォルダ（--file にファイル名）
+      ※ このリポジトリのGoogle認可は drive.file なので、ここ（汎用コンバーター）が作ったファイルしか見えない。
+        PCや別のアプリからドライブに置いた計画は「見つかりません」になる（2026-11-27 に確認）
+    - 共通の置き場（GapBoard の Supabase・shared_secrets）（--file に shared:<名前>）
+      PCが {"csv": "<計画CSVの本文>"} を Fernet で暗号化して追記したものの最新1行を読む。
+      土日祝出荷（batch/weekend_ship_ne.py）と同じ道
     セット商品コード,セット商品名,セット商品販売価格,商品コード,数量,代表商品コード
 
 実行:
@@ -63,13 +69,50 @@ def save_result(folder, rows):
     return drive_master.upload_versioned(buf.getvalue().encode("utf-8-sig"), RESULT_PREFIX, folder)
 
 
-def run(file_name, only, apply, with_daihyo):
-    folder = master_store.folder_id()
+SHARED_PREFIX = "shared:"
+
+
+def _shared_get(name):
+    """共通の置き場（GapBoard の Supabase・shared_secrets）から最新の1行を読んで復号する。
+    batch/weekend_ship_ne.py の _shared_get と同じ読み方（読んだ記録は shared_secret_reads に残る）。"""
+    import json
+    import requests
+    from cryptography.fernet import Fernet
+    url = os.environ.get("SHARED_SECRETS_URL", "").rstrip("/")
+    anon = os.environ.get("SHARED_SECRETS_ANON_KEY", "")
+    key = os.environ.get("SHARED_SECRETS_KEY", "")
+    if not (url and anon and key):
+        raise RuntimeError("SHARED_SECRETS_* が未設定です")
+    r = requests.post(url + "/rest/v1/rpc/shared_secret_get", timeout=20,
+                      headers={"apikey": anon, "Authorization": "Bearer " + anon, "Content-Type": "application/json"},
+                      json={"p_name": name, "p_reader": "github-actions"})
+    r.raise_for_status()
+    rows = r.json() or []
+    if not rows:
+        return None
+    return json.loads(Fernet(key.encode()).decrypt(rows[0]["ciphertext"].encode()).decode("utf-8"))
+
+
+def load_plan_text(file_name, folder):
+    """計画CSVの本文を返す（見つからなければ None）。shared:<名前> なら共通の置き場、それ以外はドライブ。"""
+    if file_name.startswith(SHARED_PREFIX):
+        data = _shared_get(file_name[len(SHARED_PREFIX):])
+        if not data or not isinstance(data.get("csv"), str):
+            return None
+        return data["csv"].lstrip("\ufeff")
     found = drive_master.find_file(file_name, folder)
     if not found:
-        print(f"{TAG} FAILED: 計画CSVがドライブに見つかりません（ファイル名を確かめてください）", flush=True)
+        return None
+    return drive_master.download_bytes(found["id"]).decode("utf-8-sig")
+
+
+def run(file_name, only, apply, with_daihyo):
+    folder = master_store.folder_id()
+    text = load_plan_text(file_name, folder)
+    if text is None:
+        where = "共通の置き場" if file_name.startswith(SHARED_PREFIX) else "ドライブ"
+        print(f"{TAG} FAILED: 計画CSVが{where}に見つかりません（名前を確かめてください）", flush=True)
         return 1
-    text = drive_master.download_bytes(found["id"]).decode("utf-8-sig")
     try:
         everything = setgoods.parse_plan(text)
         sets = setgoods.pick(everything, only)
@@ -96,7 +139,7 @@ def run(file_name, only, apply, with_daihyo):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--file", required=True, help="ドライブに置いた計画CSVのファイル名")
+    parser.add_argument("--file", required=True, help="ドライブに置いた計画CSVのファイル名、または shared:<共通の置き場の名前>")
     parser.add_argument("--only", default="", help="登録するセット商品コード（カンマ区切り）。空なら全部")
     parser.add_argument("--apply", action="store_true", help="NEへ送る（付けなければ確認だけ）")
     parser.add_argument("--no-daihyo", action="store_true", help="代表商品コードの列を付けずに送る")
